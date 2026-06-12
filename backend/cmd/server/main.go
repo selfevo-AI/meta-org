@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/harness-org/backend/internal/domain/identity"
 	"github.com/harness-org/backend/internal/gateway"
 	"github.com/harness-org/backend/internal/pkg/config"
 	"github.com/harness-org/backend/internal/pkg/database"
@@ -31,8 +32,14 @@ func main() {
 		log.Fatalf("migrations failed: %v", err)
 	}
 
+	identRepo := identity.NewRepository(db)
+	identSvc := identity.NewService(identRepo, cfg.JWTSecret)
+	identHandler := identity.NewHandler(identSvc)
+
 	router := server.NewRouter(cfg.CorsOrigins)
-	gateway.RegisterRoutes(router)
+	gateway.RegisterRoutes(router, &gateway.Dependencies{
+		IdentityHandler: identHandler,
+	})
 
 	srv := server.New(router, cfg.ServerPort)
 	go func() {

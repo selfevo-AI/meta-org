@@ -5,11 +5,19 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/harness-org/backend/internal/domain/identity"
 )
 
-func RegisterRoutes(r *chi.Mux) {
+type Dependencies struct {
+	IdentityHandler *identity.Handler
+}
+
+func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", healthCheck)
+		if deps != nil && deps.IdentityHandler != nil {
+			deps.IdentityHandler.RegisterRoutes(r)
+		}
 	})
 }
 
