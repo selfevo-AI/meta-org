@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/harness-org/backend/internal/domain/capability"
 	"github.com/harness-org/backend/internal/domain/identity"
 	"github.com/harness-org/backend/internal/domain/layer"
 	"github.com/harness-org/backend/internal/domain/organization"
@@ -46,11 +47,16 @@ func main() {
 	layerClassifier := layer.NewClassifierService(layerRepo)
 	layerHandler := layer.NewHandler(layerClassifier)
 
+	capRepo := capability.NewRepository(db)
+	capRouter := capability.NewRouter(capRepo)
+	capHandler := capability.NewHandler(capRepo, capRouter)
+
 	router := server.NewRouter(cfg.CorsOrigins)
 	gateway.RegisterRoutes(router, &gateway.Dependencies{
 		IdentityHandler:     identHandler,
 		OrganizationHandler: orgHandler,
 		LayerHandler:        layerHandler,
+		CapabilityHandler:   capHandler,
 	})
 
 	srv := server.New(router, cfg.ServerPort)

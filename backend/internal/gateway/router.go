@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/harness-org/backend/internal/domain/capability"
 	"github.com/harness-org/backend/internal/domain/identity"
 	"github.com/harness-org/backend/internal/domain/layer"
 	"github.com/harness-org/backend/internal/domain/organization"
@@ -14,6 +15,7 @@ type Dependencies struct {
 	IdentityHandler     *identity.Handler
 	OrganizationHandler *organization.Handler
 	LayerHandler        *layer.Handler
+	CapabilityHandler   *capability.Handler
 }
 
 func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
@@ -28,6 +30,9 @@ func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
 		}
 		if deps.LayerHandler != nil {
 			deps.LayerHandler.RegisterRoutes(r)
+		}
+		if deps.CapabilityHandler != nil {
+			deps.CapabilityHandler.RegisterRoutes(r)
 		}
 	})
 }
