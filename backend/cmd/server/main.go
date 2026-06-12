@@ -26,6 +26,10 @@ func main() {
 	}
 	defer db.Close()
 
+	if err := database.RunMigrations(ctx, db, "migrations"); err != nil {
+		log.Fatalf("migrations failed: %v", err)
+	}
+
 	router := server.NewRouter(cfg.CorsOrigins)
 	gateway.RegisterRoutes(router)
 
