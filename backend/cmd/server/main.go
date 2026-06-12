@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/harness-org/backend/internal/domain/identity"
+	"github.com/harness-org/backend/internal/domain/organization"
 	"github.com/harness-org/backend/internal/gateway"
 	"github.com/harness-org/backend/internal/pkg/config"
 	"github.com/harness-org/backend/internal/pkg/database"
@@ -36,9 +37,14 @@ func main() {
 	identSvc := identity.NewService(identRepo, cfg.JWTSecret)
 	identHandler := identity.NewHandler(identSvc)
 
+	orgRepo := organization.NewRepository(db)
+	orgSvc := organization.NewService(orgRepo)
+	orgHandler := organization.NewHandler(orgSvc)
+
 	router := server.NewRouter(cfg.CorsOrigins)
 	gateway.RegisterRoutes(router, &gateway.Dependencies{
-		IdentityHandler: identHandler,
+		IdentityHandler:     identHandler,
+		OrganizationHandler: orgHandler,
 	})
 
 	srv := server.New(router, cfg.ServerPort)

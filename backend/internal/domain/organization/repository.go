@@ -9,15 +9,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type Repository struct {
+type PostgresRepository struct {
 	db *pgxpool.Pool
 }
 
-func NewRepository(db *pgxpool.Pool) *Repository {
-	return &Repository{db: db}
+func NewRepository(db *pgxpool.Pool) *PostgresRepository {
+	return &PostgresRepository{db: db}
 }
 
-func (r *Repository) CreateOrganization(ctx context.Context, input CreateOrganizationInput) (*Organization, error) {
+func (r *PostgresRepository) CreateOrganization(ctx context.Context, input CreateOrganizationInput) (*Organization, error) {
 	org := &Organization{}
 	err := r.db.QueryRow(ctx,
 		`INSERT INTO organizations (name, description) VALUES ($1, $2)
@@ -30,7 +30,7 @@ func (r *Repository) CreateOrganization(ctx context.Context, input CreateOrganiz
 	return org, nil
 }
 
-func (r *Repository) GetOrganizationByID(ctx context.Context, id uuid.UUID) (*Organization, error) {
+func (r *PostgresRepository) GetOrganizationByID(ctx context.Context, id uuid.UUID) (*Organization, error) {
 	org := &Organization{}
 	err := r.db.QueryRow(ctx,
 		`SELECT id, name, description, created_at, updated_at FROM organizations WHERE id = $1`, id,
@@ -41,7 +41,7 @@ func (r *Repository) GetOrganizationByID(ctx context.Context, id uuid.UUID) (*Or
 	return org, nil
 }
 
-func (r *Repository) CreateMVRU(ctx context.Context, input CreateMVRUInput) (*MVRU, error) {
+func (r *PostgresRepository) CreateMVRU(ctx context.Context, input CreateMVRUInput) (*MVRU, error) {
 	boundaryJSON, _ := json.Marshal(input.Boundary)
 	configJSON, _ := json.Marshal(input.Config)
 
@@ -60,7 +60,7 @@ func (r *Repository) CreateMVRU(ctx context.Context, input CreateMVRUInput) (*MV
 	return mvru, nil
 }
 
-func (r *Repository) GetMVRUByID(ctx context.Context, id uuid.UUID) (*MVRU, error) {
+func (r *PostgresRepository) GetMVRUByID(ctx context.Context, id uuid.UUID) (*MVRU, error) {
 	mvru := &MVRU{}
 	var boundaryJSON, configJSON []byte
 	err := r.db.QueryRow(ctx,
@@ -75,7 +75,7 @@ func (r *Repository) GetMVRUByID(ctx context.Context, id uuid.UUID) (*MVRU, erro
 	return mvru, nil
 }
 
-func (r *Repository) ListMVRUs(ctx context.Context, orgID uuid.UUID) ([]MVRU, error) {
+func (r *PostgresRepository) ListMVRUs(ctx context.Context, orgID uuid.UUID) ([]MVRU, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT id, organization_id, name, description, status, boundary, config, parent_id, created_at, updated_at
 		 FROM muvrs WHERE organization_id = $1 ORDER BY created_at`, orgID)
@@ -101,7 +101,7 @@ func (r *Repository) ListMVRUs(ctx context.Context, orgID uuid.UUID) ([]MVRU, er
 	return muvrs, nil
 }
 
-func (r *Repository) UpdateMVRUStatus(ctx context.Context, id uuid.UUID, status MVRUStatus) error {
+func (r *PostgresRepository) UpdateMVRUStatus(ctx context.Context, id uuid.UUID, status MVRUStatus) error {
 	_, err := r.db.Exec(ctx, `UPDATE muvrs SET status = $1, updated_at = NOW() WHERE id = $2`, status, id)
 	if err != nil {
 		return fmt.Errorf("update mvru status: %w", err)
@@ -109,7 +109,7 @@ func (r *Repository) UpdateMVRUStatus(ctx context.Context, id uuid.UUID, status 
 	return nil
 }
 
-func (r *Repository) AddMember(ctx context.Context, member MVRUMember) error {
+func (r *PostgresRepository) AddMember(ctx context.Context, member MVRUMember) error {
 	_, err := r.db.Exec(ctx,
 		`INSERT INTO mvru_members (mvru_id, user_id, agent_id, role_id) VALUES ($1, $2, $3, $4)
 		 ON CONFLICT (mvru_id, COALESCE(user_id, agent_id)) DO UPDATE SET role_id = $4`,
@@ -120,7 +120,7 @@ func (r *Repository) AddMember(ctx context.Context, member MVRUMember) error {
 	return nil
 }
 
-func (r *Repository) RemoveMember(ctx context.Context, mvruID, userID, agentID *uuid.UUID) error {
+func (r *PostgresRepository) RemoveMember(ctx context.Context, mvruID, userID, agentID *uuid.UUID) error {
 	if userID != nil {
 		_, err := r.db.Exec(ctx, `DELETE FROM mvru_members WHERE mvru_id = $1 AND user_id = $2`, mvruID, *userID)
 		if err != nil {
@@ -135,7 +135,7 @@ func (r *Repository) RemoveMember(ctx context.Context, mvruID, userID, agentID *
 	return nil
 }
 
-func (r *Repository) CreateRelationship(ctx context.Context, rel MVRURelationship) (*MVRURelationship, error) {
+func (r *PostgresRepository) CreateRelationship(ctx context.Context, rel MVRURelationship) (*MVRURelationship, error) {
 	configJSON, _ := json.Marshal(rel.Config)
 	err := r.db.QueryRow(ctx,
 		`INSERT INTO mvru_relationships (source_mvru_id, target_mvru_id, rel_type, config)
@@ -150,7 +150,7 @@ func (r *Repository) CreateRelationship(ctx context.Context, rel MVRURelationshi
 	return &rel, nil
 }
 
-func (r *Repository) GetOrgChart(ctx context.Context, orgID uuid.UUID) ([]MVRU, error) {
+func (r *PostgresRepository) GetOrgChart(ctx context.Context, orgID uuid.UUID) ([]MVRU, error) {
 	all, err := r.ListMVRUs(ctx, orgID)
 	if err != nil {
 		return nil, err
