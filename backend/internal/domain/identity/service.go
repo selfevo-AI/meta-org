@@ -154,6 +154,10 @@ func (s *Service) RegisterAgent(ctx context.Context, input CreateAgentInput) (*R
 	return &RegisterAgentResponse{Agent: *agent, APIKey: apiKey}, nil
 }
 
+func (s *Service) ListRoles(ctx context.Context) ([]Role, error) {
+	return s.repo.ListRoles(ctx)
+}
+
 func (s *Service) ValidateToken(tokenString string) (string, string, error) {
 	claims, err := s.parseJWT(tokenString)
 	if err != nil {

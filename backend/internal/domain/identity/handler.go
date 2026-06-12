@@ -119,7 +119,7 @@ func (h *Handler) authenticateAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listRoles(w http.ResponseWriter, r *http.Request) {
-	roles, err := h.service.repo.ListRoles(r.Context())
+	roles, err := h.service.ListRoles(r.Context())
 	if err != nil {
 		http.Error(w, `{"error":"failed to list roles"}`, http.StatusInternalServerError)
 		return
