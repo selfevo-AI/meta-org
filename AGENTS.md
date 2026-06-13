@@ -1,0 +1,41 @@
+# Repository Guidelines
+
+## Project Structure & Module Organization
+
+This repository contains a self-evolving organization management platform. The Go backend lives in `backend/`; its entry point is `backend/cmd/server/main.go`. Domain code is under `backend/internal/domain/<domain>/` with `model.go`, `repository.go`, `service.go`, and `handler.go`. Shared packages are in `backend/internal/pkg/`, and route registration is in `backend/internal/gateway/`.
+
+The Next.js frontend lives in `frontend/`, with App Router files in `frontend/src/app/` and shared client utilities in `frontend/src/lib/`. SQL migrations are stored in root-level `migrations/` and are numbered in execution order.
+
+## Build, Test, and Development Commands
+
+- `docker compose up --build`: start PostgreSQL, backend, and frontend from `docker-compose.yml`.
+- `cd backend && go run ./cmd/server`: run the API on port `8080`; outside Docker, set `MIGRATIONS_PATH=../migrations`.
+- `cd backend && go build ./cmd/server`: compile the backend server.
+- `cd backend && go test ./...`: run all Go tests.
+- `cd frontend && npm run dev`: start the Next.js development server on port `3000`.
+- `cd frontend && npm run build`: create a production frontend build.
+- `cd frontend && npm run lint`: run Next.js linting.
+
+## Coding Style & Naming Conventions
+
+Format Go code with `gofmt`; keep package names short and lowercase. Preserve the existing layering: handlers parse HTTP, services hold business rules, repositories handle persistence, and models define API/database shapes.
+
+Frontend code uses TypeScript, React, Tailwind CSS, two-space indentation, single quotes, and no trailing semicolons. Prefer the `@/*` path alias for imports from `frontend/src/`.
+
+## Testing Guidelines
+
+No test files are currently present. Add Go tests as `*_test.go` beside the code they cover, and prefer table-driven tests for services and repositories. For frontend additions, add focused component or integration tests if a framework is introduced, and document the command in `frontend/package.json`.
+
+## Commit & Pull Request Guidelines
+
+Local history does not show an established commit convention beyond the initial clone. Use concise, imperative commit subjects such as `Add workflow approval tests` or `Fix identity token expiry`.
+
+Pull requests should include a short description, affected backend/frontend domains, migration notes, configuration changes, and screenshots for visible UI changes. Mention any manual verification commands run.
+
+## Security & Configuration Tips
+
+Configuration is environment-driven in `backend/internal/pkg/config/config.go`. Do not commit real secrets; override `DATABASE_URL`, `JWT_SECRET`, `SERVER_PORT`, `CORS_ORIGINS`, and `NEXT_PUBLIC_API_URL` per environment.
+
+## Agent-Specific Instructions
+
+Do not use scripts to batch delete files or directories. Delete files only one at a time with `Remove-Item`. If bulk deletion is required, stop and ask the user to confirm manually.

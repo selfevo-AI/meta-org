@@ -78,15 +78,16 @@ func main() {
 
 	router := server.NewRouter(cfg.CorsOrigins)
 	gateway.RegisterRoutes(router, &gateway.Dependencies{
-		IdentityHandler:       identHandler,
-		OrganizationHandler:   orgHandler,
-		LayerHandler:          layerHandler,
-		CapabilityHandler:     capHandler,
-		WorkflowHandler:       wfHandler,
-		ObservabilityHandler:  obsHandler,
-		VerificationHandler:   verHandler,
-		GovernanceHandler:     govHandler,
-		EvolutionHandler:      evoHandler,
+		JWTSecret:            cfg.JWTSecret,
+		IdentityHandler:      identHandler,
+		OrganizationHandler:  orgHandler,
+		LayerHandler:         layerHandler,
+		CapabilityHandler:    capHandler,
+		WorkflowHandler:      wfHandler,
+		ObservabilityHandler: obsHandler,
+		VerificationHandler:  verHandler,
+		GovernanceHandler:    govHandler,
+		EvolutionHandler:     evoHandler,
 	})
 
 	srv := server.New(router, cfg.ServerPort)

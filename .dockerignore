@@ -1,0 +1,15 @@
+.git
+.gitignore
+AGENTS.md
+README.md
+
+frontend/node_modules
+frontend/.next
+frontend/out
+frontend/coverage
+
+backend/main
+backend/server
+backend/*.exe
+backend/*.test
+backend/*.out

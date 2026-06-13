@@ -19,11 +19,19 @@ func NewHandler(service *Service) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
+	h.RegisterPublicRoutes(r)
+	h.RegisterProtectedRoutes(r)
+}
+
+func (h *Handler) RegisterPublicRoutes(r chi.Router) {
 	r.Post("/auth/login", h.login)
 	r.Post("/auth/register", h.register)
-	r.Post("/agents/register", h.registerAgent)
 	r.Post("/agents/auth", h.authenticateAgent)
 	r.Get("/roles", h.listRoles)
+}
+
+func (h *Handler) RegisterProtectedRoutes(r chi.Router) {
+	r.Post("/agents/register", h.registerAgent)
 }
 
 type loginRequest struct {

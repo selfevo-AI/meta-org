@@ -1,5 +1,7 @@
 # HarnessCompany - 自进化组织管理系统
 
+[English](README_EN.md) | 简体中文
+
 一个面向混合人力（人类员工 + AI Agent）的自进化组织管理平台，基于 **ETCLOVG** 框架（Execution, Tooling, Context, Lifecycle, Observability, Verification, Governance）构建。
 
 ## 核心思想
@@ -14,7 +16,7 @@
 
 | 层 | 技术 |
 |---|---|
-| 前端 | Next.js 14 (App Router, React 18, TypeScript, Tailwind CSS) |
+| 前端 | Next.js 16 (App Router, React 19, TypeScript, Tailwind CSS) |
 | 后端 | Go 1.22 (DDD 模块化单体, Chi Router v5) |
 | 数据库 | PostgreSQL 16 (多 schema 域隔离) |
 | 容器化 | Docker Compose |
@@ -36,7 +38,7 @@
 ## 快速开始
 
 ```bash
-docker-compose up --build
+docker compose up --build
 ```
 
 启动后：
@@ -50,7 +52,6 @@ docker-compose up --build
 backend/          # Go 后端 (9 域 handler/service/repository)
 frontend/         # Next.js 前端
 migrations/       # 10 个 SQL 迁移文件
-docs/             # 系统设计文档和开发计划
 docker-compose.yml
 ```
 
