@@ -109,8 +109,21 @@ func (r *Repository) Observability(ctx context.Context) (ObservabilitySummary, e
 			(SELECT COUNT(*) FROM traces WHERE status = 'completed'),
 			(SELECT COUNT(*) FROM traces WHERE status = 'failed'),
 			(SELECT COUNT(*) FROM spans WHERE started_at >= NOW() - INTERVAL '24 hours'),
-			(SELECT COUNT(*) FROM metrics WHERE recorded_at >= NOW() - INTERVAL '24 hours')
-	`).Scan(&s.ActiveTraces, &s.CompletedTraces, &s.FailedTraces, &s.Spans24h, &s.Metrics24h); err != nil {
+			(SELECT COUNT(*) FROM metrics WHERE recorded_at >= NOW() - INTERVAL '24 hours'),
+			(SELECT COUNT(*) FROM ai_invocations WHERE created_at >= NOW() - INTERVAL '24 hours'),
+			(SELECT COUNT(*) FROM tool_executions WHERE created_at >= NOW() - INTERVAL '24 hours'),
+			(SELECT COUNT(*) FROM finance_export_batches WHERE updated_at >= NOW() - INTERVAL '24 hours')
+				+ (SELECT COUNT(*) FROM finance_webhook_events WHERE created_at >= NOW() - INTERVAL '24 hours')
+	`).Scan(
+		&s.ActiveTraces,
+		&s.CompletedTraces,
+		&s.FailedTraces,
+		&s.Spans24h,
+		&s.Metrics24h,
+		&s.AIInvocations24h,
+		&s.ToolExecutions24h,
+		&s.FinanceEvents24h,
+	); err != nil {
 		return s, fmt.Errorf("query observability summary: %w", err)
 	}
 	return s, nil
@@ -185,6 +198,18 @@ func (r *Repository) RecentEvents(ctx context.Context, limit int) ([]RecentEvent
 			UNION ALL
 			SELECT id::text, 'trace' AS type, 'Execution trace' AS title, status, started_at AS created_at
 			FROM traces
+			UNION ALL
+			SELECT id::text, 'ai_invocation' AS type, COALESCE(NULLIF(source_surface, ''), 'AI') || ' model call' AS title, status, created_at
+			FROM ai_invocations
+			UNION ALL
+			SELECT id::text, 'tool_execution' AS type, 'Tool execution' AS title, status, created_at
+			FROM tool_executions
+			UNION ALL
+			SELECT id::text, 'finance_export' AS type, 'Finance export batch' AS title, status, updated_at AS created_at
+			FROM finance_export_batches
+			UNION ALL
+			SELECT id::text, 'finance_webhook' AS type, event_type AS title, CASE WHEN processed THEN 'processed' ELSE 'failed' END AS status, created_at
+			FROM finance_webhook_events
 		) events
 		ORDER BY created_at DESC
 		LIMIT $1

@@ -50,11 +50,14 @@ type CapabilitySummary struct {
 }
 
 type ObservabilitySummary struct {
-	ActiveTraces    int64 `json:"active_traces"`
-	CompletedTraces int64 `json:"completed_traces"`
-	FailedTraces    int64 `json:"failed_traces"`
-	Spans24h        int64 `json:"spans_24h"`
-	Metrics24h      int64 `json:"metrics_24h"`
+	ActiveTraces      int64 `json:"active_traces"`
+	CompletedTraces   int64 `json:"completed_traces"`
+	FailedTraces      int64 `json:"failed_traces"`
+	Spans24h          int64 `json:"spans_24h"`
+	Metrics24h        int64 `json:"metrics_24h"`
+	AIInvocations24h  int64 `json:"ai_invocations_24h"`
+	ToolExecutions24h int64 `json:"tool_executions_24h"`
+	FinanceEvents24h  int64 `json:"finance_events_24h"`
 }
 
 type VerificationSummary struct {

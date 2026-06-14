@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 )
 
 var (
@@ -17,6 +18,13 @@ var (
 )
 
 type AdapterRegistry map[string]ProviderAdapter
+
+type ObservabilityRecorder interface {
+	StartTrace(ctx context.Context, workflowID *uuid.UUID, metadata map[string]any) (*observability.Trace, error)
+	RecordSpan(ctx context.Context, input observability.RecordSpanInput) (*observability.Span, error)
+	RecordMetric(ctx context.Context, input observability.RecordMetricInput) (*observability.Metric, error)
+	CompleteTrace(ctx context.Context, id uuid.UUID, status string) error
+}
 
 type InvocationRepository interface {
 	ResolveInvocationTarget(ctx context.Context, input InvokeInput) (ResolvedModel, error)
@@ -42,23 +50,36 @@ type CatalogRepository interface {
 }
 
 type Service struct {
-	repo     InvocationRepository
-	catalog  CatalogRepository
-	adapters AdapterRegistry
-	client   *http.Client
+	repo          InvocationRepository
+	catalog       CatalogRepository
+	adapters      AdapterRegistry
+	client        *http.Client
+	observability ObservabilityRecorder
 }
 
-func NewService(repo InvocationRepository, adapters AdapterRegistry) *Service {
+type ServiceOption func(*Service)
+
+func WithObservability(recorder ObservabilityRecorder) ServiceOption {
+	return func(s *Service) {
+		s.observability = recorder
+	}
+}
+
+func NewService(repo InvocationRepository, adapters AdapterRegistry, opts ...ServiceOption) *Service {
 	catalog, _ := repo.(CatalogRepository)
 	if adapters == nil {
 		adapters = AdapterRegistry{}
 	}
-	return &Service{
+	s := &Service{
 		repo:     repo,
 		catalog:  catalog,
 		adapters: adapters,
 		client:   &http.Client{Timeout: 60 * time.Second},
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 type ResolvedModel struct {
@@ -231,6 +252,7 @@ func (s *Service) Invoke(ctx context.Context, input InvokeInput) (*InvokeOutput,
 	}
 
 	started := time.Now()
+	trace := s.startInvocationTrace(ctx, input, target, ModeSync)
 	invocation, err := s.repo.CreateInvocation(ctx, CreateInvocationInput{
 		ProviderID:  target.ProviderID,
 		ModelID:     target.ModelID,
@@ -240,6 +262,7 @@ func (s *Service) Invoke(ctx context.Context, input InvokeInput) (*InvokeOutput,
 		Metadata:    input.Metadata,
 	})
 	if err != nil {
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, err
 	}
 
@@ -252,37 +275,46 @@ func (s *Service) Invoke(ctx context.Context, input InvokeInput) (*InvokeOutput,
 	})
 	if err != nil {
 		s.recordFailedInvocation(ctx, invocation.ID, target, started, err)
+		s.recordInvocationSpan(ctx, trace, observability.SpanAIInvocation, invocation.ID, target, input.Attribution, StatusFailed, err.Error(), int(time.Since(started).Milliseconds()))
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, err
 	}
 
 	cost := CalculateCost(resp.Usage, target.Price)
+	currency := currencyOrDefault(target.Currency)
 	if err := s.repo.CreateUsageLedger(ctx, CreateUsageLedgerInput{
 		InvocationID:        invocation.ID,
 		ModelPriceVersionID: target.PriceVersionID,
 		LedgerType:          "usage",
 		Amount:              cost,
-		Currency:            currencyOrDefault(target.Currency),
+		Currency:            currency,
 		Usage:               resp.Usage,
 	}); err != nil {
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, err
 	}
 	completedAt := time.Now()
+	durationMS := int(completedAt.Sub(started).Milliseconds())
 	if err := s.repo.CompleteInvocation(ctx, invocation.ID, CompleteInvocationInput{
 		ProviderRequestID: resp.ProviderRequestID,
 		Usage:             resp.Usage,
 		CostAmount:        cost,
-		Currency:          currencyOrDefault(target.Currency),
-		DurationMS:        int(completedAt.Sub(started).Milliseconds()),
+		Currency:          currency,
+		DurationMS:        durationMS,
 	}); err != nil {
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, err
 	}
+	s.recordInvocationSpan(ctx, trace, observability.SpanAIInvocation, invocation.ID, target, input.Attribution, StatusCompleted, "", durationMS)
+	s.recordAIMetrics(ctx, invocation.ID, resp.Usage, cost, currency, map[string]any{"mode": ModeSync, "provider_type": target.ProviderType, "model": target.Model})
+	s.completeObservationTrace(ctx, trace, observability.TraceComplete)
 	return &InvokeOutput{
 		InvocationID:      invocation.ID,
 		ProviderRequestID: resp.ProviderRequestID,
 		Content:           resp.Content,
 		Usage:             resp.Usage,
 		CostAmount:        cost,
-		Currency:          currencyOrDefault(target.Currency),
+		Currency:          currency,
 		ToolCalls:         resp.ToolCalls,
 		CompletedAt:       completedAt,
 		ProviderType:      target.ProviderType,
@@ -303,6 +335,7 @@ func (s *Service) Stream(ctx context.Context, input InvokeInput) (*StreamResult,
 		return nil, err
 	}
 	started := time.Now()
+	trace := s.startInvocationTrace(ctx, input, target, ModeStream)
 	invocation, err := s.repo.CreateInvocation(ctx, CreateInvocationInput{
 		ProviderID:  target.ProviderID,
 		ModelID:     target.ModelID,
@@ -312,6 +345,7 @@ func (s *Service) Stream(ctx context.Context, input InvokeInput) (*StreamResult,
 		Metadata:    input.Metadata,
 	})
 	if err != nil {
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, err
 	}
 	events, err := adapter.Stream(ctx, ProviderRequest{
@@ -323,9 +357,11 @@ func (s *Service) Stream(ctx context.Context, input InvokeInput) (*StreamResult,
 	})
 	if err != nil {
 		s.recordFailedInvocation(ctx, invocation.ID, target, started, err)
+		s.recordInvocationSpan(ctx, trace, observability.SpanAIStream, invocation.ID, target, input.Attribution, StatusFailed, err.Error(), int(time.Since(started).Milliseconds()))
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, err
 	}
-	return &StreamResult{InvocationID: invocation.ID, Events: s.recordingStream(ctx, invocation.ID, target, started, events)}, nil
+	return &StreamResult{InvocationID: invocation.ID, Events: s.recordingStream(ctx, invocation.ID, target, input.Attribution, started, events, trace)}, nil
 }
 
 func (s *Service) CreateProvider(ctx context.Context, input CreateProviderInput) (*ModelProvider, error) {
@@ -408,7 +444,7 @@ func (s *Service) CostSummary(ctx context.Context) (*GatewayCostSummary, error) 
 	return s.catalogRepo().CostSummary(ctx)
 }
 
-func (s *Service) recordingStream(ctx context.Context, invocationID uuid.UUID, target ResolvedModel, started time.Time, events <-chan StreamEvent) <-chan StreamEvent {
+func (s *Service) recordingStream(ctx context.Context, invocationID uuid.UUID, target ResolvedModel, attribution Attribution, started time.Time, events <-chan StreamEvent, trace *observability.Trace) <-chan StreamEvent {
 	out := make(chan StreamEvent)
 	go func() {
 		defer close(out)
@@ -424,30 +460,41 @@ func (s *Service) recordingStream(ctx context.Context, invocationID uuid.UUID, t
 			select {
 			case <-ctx.Done():
 				_ = s.repo.FailInvocation(context.Background(), invocationID, FailInvocationInput{ErrorType: "cancelled", Message: ctx.Err().Error(), DurationMS: int(time.Since(started).Milliseconds()), Cancelled: true})
+				durationMS := int(time.Since(started).Milliseconds())
+				s.recordInvocationSpan(context.Background(), trace, observability.SpanAIStream, invocationID, target, attribution, StatusCancelled, ctx.Err().Error(), durationMS)
+				s.recordMetric(context.Background(), observability.MetricReliability, "ai_stream_disconnect", &invocationID, "ai_invocation", 1, map[string]any{"provider_type": target.ProviderType, "model": target.Model})
+				s.completeObservationTrace(context.Background(), trace, observability.TraceFailed)
 				return
 			case out <- event:
 			}
 		}
 		cost := CalculateCost(usage, target.Price)
+		currency := currencyOrDefault(target.Currency)
 		_ = s.repo.CreateUsageLedger(context.Background(), CreateUsageLedgerInput{
 			InvocationID:        invocationID,
 			ModelPriceVersionID: target.PriceVersionID,
 			LedgerType:          "usage",
 			Amount:              cost,
-			Currency:            currencyOrDefault(target.Currency),
+			Currency:            currency,
 			Usage:               usage,
 			Reason:              failed,
 		})
+		durationMS := int(time.Since(started).Milliseconds())
 		if failed != "" {
-			_ = s.repo.FailInvocation(context.Background(), invocationID, FailInvocationInput{ErrorType: "provider_error", Message: failed, DurationMS: int(time.Since(started).Milliseconds())})
+			_ = s.repo.FailInvocation(context.Background(), invocationID, FailInvocationInput{ErrorType: "provider_error", Message: failed, DurationMS: durationMS})
+			s.recordInvocationSpan(context.Background(), trace, observability.SpanAIStream, invocationID, target, attribution, StatusFailed, failed, durationMS)
+			s.completeObservationTrace(context.Background(), trace, observability.TraceFailed)
 			return
 		}
 		_ = s.repo.CompleteInvocation(context.Background(), invocationID, CompleteInvocationInput{
 			Usage:      usage,
 			CostAmount: cost,
-			Currency:   currencyOrDefault(target.Currency),
-			DurationMS: int(time.Since(started).Milliseconds()),
+			Currency:   currency,
+			DurationMS: durationMS,
 		})
+		s.recordInvocationSpan(context.Background(), trace, observability.SpanAIStream, invocationID, target, attribution, StatusCompleted, "", durationMS)
+		s.recordAIMetrics(context.Background(), invocationID, usage, cost, currency, map[string]any{"mode": ModeStream, "provider_type": target.ProviderType, "model": target.Model})
+		s.completeObservationTrace(context.Background(), trace, observability.TraceComplete)
 	}()
 	return out
 }
@@ -534,4 +581,106 @@ func currencyOrDefault(currency string) string {
 		return "CNY"
 	}
 	return currency
+}
+
+func (s *Service) startInvocationTrace(ctx context.Context, input InvokeInput, target ResolvedModel, mode string) *observability.Trace {
+	if s.observability == nil {
+		return nil
+	}
+	trace, err := s.observability.StartTrace(ctx, input.Attribution.WorkflowID, map[string]any{
+		"category":        "ai_invocation",
+		"mode":            mode,
+		"provider_id":     target.ProviderID.String(),
+		"provider_type":   target.ProviderType,
+		"model_id":        target.ModelID.String(),
+		"model":           target.Model,
+		"source_surface":  input.Attribution.SourceSurface,
+		"organization_id": optionalUUIDString(input.Attribution.OrganizationID),
+		"department_id":   optionalUUIDString(input.Attribution.DepartmentID),
+		"project_id":      optionalUUIDString(input.Attribution.ProjectID),
+		"requirement_id":  optionalUUIDString(input.Attribution.RequirementID),
+		"task_id":         optionalUUIDString(input.Attribution.TaskID),
+	})
+	if err != nil {
+		return nil
+	}
+	return trace
+}
+
+func (s *Service) recordInvocationSpan(ctx context.Context, trace *observability.Trace, spanType observability.SpanType, invocationID uuid.UUID, target ResolvedModel, attribution Attribution, status string, message string, durationMS int) {
+	if s.observability == nil || trace == nil {
+		return
+	}
+	actorID, actorType := actorFromAttribution(attribution)
+	_, _ = s.observability.RecordSpan(ctx, observability.RecordSpanInput{
+		TraceID:    trace.ID,
+		SpanType:   spanType,
+		EntityID:   &invocationID,
+		EntityType: "ai_invocation",
+		ActorID:    actorID,
+		ActorType:  actorType,
+		Input: map[string]any{
+			"provider_id":   target.ProviderID.String(),
+			"provider_type": target.ProviderType,
+			"model_id":      target.ModelID.String(),
+			"model":         target.Model,
+		},
+		Output: map[string]any{
+			"status": status,
+			"error":  message,
+		},
+		DurationMs: durationMS,
+		Metadata: map[string]any{
+			"source_surface": attribution.SourceSurface,
+			"project_id":     optionalUUIDString(attribution.ProjectID),
+		},
+	})
+}
+
+func (s *Service) recordAIMetrics(ctx context.Context, invocationID uuid.UUID, usage TokenUsage, cost float64, currency string, metadata map[string]any) {
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["currency"] = currency
+	s.recordMetric(ctx, observability.MetricUsage, "ai_tokens_input", &invocationID, "ai_invocation", float64(usage.InputTokens), metadata)
+	s.recordMetric(ctx, observability.MetricUsage, "ai_tokens_output", &invocationID, "ai_invocation", float64(usage.OutputTokens), metadata)
+	s.recordMetric(ctx, observability.MetricCost, "ai_cost_amount", &invocationID, "ai_invocation", cost, metadata)
+}
+
+func (s *Service) recordMetric(ctx context.Context, metricType observability.MetricType, name string, entityID *uuid.UUID, entityType string, value float64, metadata map[string]any) {
+	if s.observability == nil {
+		return
+	}
+	_, _ = s.observability.RecordMetric(ctx, observability.RecordMetricInput{
+		MetricType: metricType,
+		MetricName: name,
+		EntityID:   entityID,
+		EntityType: entityType,
+		Value:      value,
+		Metadata:   metadata,
+	})
+}
+
+func (s *Service) completeObservationTrace(ctx context.Context, trace *observability.Trace, status observability.TraceStatus) {
+	if s.observability == nil || trace == nil {
+		return
+	}
+	_ = s.observability.CompleteTrace(ctx, trace.ID, string(status))
+}
+
+func actorFromAttribution(attribution Attribution) (*uuid.UUID, string) {
+	if attribution.UserID != nil {
+		return attribution.UserID, "human"
+	}
+	if attribution.AgentID != nil {
+		return attribution.AgentID, "ai_agent"
+	}
+	return nil, ""
+}
+
+func optionalUUIDString(id *uuid.UUID) string {
+	if id == nil {
+		return ""
+	}
+	return id.String()
 }

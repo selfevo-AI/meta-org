@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
 )
 
@@ -41,10 +42,18 @@ type CostPoster interface {
 	CreateCostEntryFromAIUsage(ctx context.Context, projectID uuid.UUID, input project.CreateCostEntryInput) (*project.CostEntry, error)
 }
 
+type ObservabilityRecorder interface {
+	StartTrace(ctx context.Context, workflowID *uuid.UUID, metadata map[string]any) (*observability.Trace, error)
+	RecordSpan(ctx context.Context, input observability.RecordSpanInput) (*observability.Span, error)
+	RecordMetric(ctx context.Context, input observability.RecordMetricInput) (*observability.Metric, error)
+	CompleteTrace(ctx context.Context, id uuid.UUID, status string) error
+}
+
 type Service struct {
-	repo       Repository
-	httpClient *http.Client
-	costPoster CostPoster
+	repo          Repository
+	httpClient    *http.Client
+	costPoster    CostPoster
+	observability ObservabilityRecorder
 }
 
 type ServiceOption func(*Service)
@@ -60,6 +69,12 @@ func WithHTTPClient(client *http.Client) ServiceOption {
 func WithCostPoster(costPoster CostPoster) ServiceOption {
 	return func(s *Service) {
 		s.costPoster = costPoster
+	}
+}
+
+func WithObservability(recorder ObservabilityRecorder) ServiceOption {
+	return func(s *Service) {
+		s.observability = recorder
 	}
 }
 
@@ -179,6 +194,7 @@ func (s *Service) CreateExportBatch(ctx context.Context, input CreateExportBatch
 				"failed_stage": "project_cost_posting",
 			},
 		})
+		s.recordFinanceMetric(ctx, "finance_export_failed", &batch.ID, "finance_export_batch", 1, map[string]any{"stage": "project_cost_posting"})
 		return nil, err
 	}
 	return batch, nil
@@ -204,33 +220,61 @@ func (s *Service) SubmitExportBatch(ctx context.Context, id uuid.UUID) (*ExportB
 	if err != nil {
 		return nil, err
 	}
+	trace := s.startFinanceTrace(ctx, "finance_export", batch.AdapterID, &batch.ID, map[string]any{
+		"status":          batch.Status,
+		"currency":        batch.Currency,
+		"total_amount":    batch.TotalAmount,
+		"idempotency_key": batch.IdempotencyKey,
+	})
 	if batch.Status == BatchCancelled || batch.Status == BatchReconciled {
+		message := fmt.Sprintf("batch status %q cannot be submitted", batch.Status)
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceExport, &batch.ID, "finance_export_batch", map[string]any{"status": batch.Status}, map[string]any{"status": BatchFailed, "error": message}, 0)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, fmt.Errorf("%w: batch status %q cannot be submitted", ErrValidation, batch.Status)
 	}
 	if len(batch.Lines) == 0 {
+		message := "export batch has no lines"
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceExport, &batch.ID, "finance_export_batch", map[string]any{"status": batch.Status}, map[string]any{"status": BatchFailed, "error": message}, 0)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, fmt.Errorf("%w: export batch has no lines", ErrValidation)
 	}
 	adapter, err := s.repo.GetAdapterSecret(ctx, batch.AdapterID)
 	if err != nil {
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceExport, &batch.ID, "finance_export_batch", map[string]any{"adapter_id": batch.AdapterID.String()}, map[string]any{"status": BatchFailed, "error": err.Error()}, 0)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, err
 	}
 	if adapter.Status != AdapterActive {
+		message := fmt.Sprintf("finance adapter is %s", adapter.Status)
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceExport, &batch.ID, "finance_export_batch", map[string]any{"adapter_status": adapter.Status}, map[string]any{"status": BatchFailed, "error": message}, 0)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, fmt.Errorf("%w: finance adapter is %s", ErrValidation, adapter.Status)
 	}
 	payload := exportPayload(batch)
 	body, err := json.Marshal(payload)
 	if err != nil {
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceExport, &batch.ID, "finance_export_batch", map[string]any{"line_count": len(batch.Lines)}, map[string]any{"status": BatchFailed, "error": err.Error()}, 0)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, fmt.Errorf("marshal finance export payload: %w", err)
 	}
 	if _, err := s.repo.UpdateExportBatchStatus(ctx, id, UpdateExportBatchStatusInput{Status: BatchExporting, Submitted: true}); err != nil {
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceExport, &batch.ID, "finance_export_batch", map[string]any{"line_count": len(batch.Lines)}, map[string]any{"status": BatchFailed, "error": err.Error()}, 0)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, err
 	}
+	started := time.Now()
 	result, err := s.sendAdapterRequest(ctx, adapter, body, batch.IdempotencyKey)
+	durationMS := int(time.Since(started).Milliseconds())
 	if err != nil {
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceExport, &batch.ID, "finance_export_batch", map[string]any{"line_count": len(batch.Lines)}, map[string]any{"status": BatchFailed, "error": err.Error()}, durationMS)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return s.markExportFailed(ctx, id, fmt.Sprintf("submit finance export: %v", err))
 	}
 	responseBody := result.Body
 	if result.StatusCode < 200 || result.StatusCode >= 300 {
+		message := fmt.Sprintf("finance adapter returned HTTP %d", result.StatusCode)
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceExport, &batch.ID, "finance_export_batch", map[string]any{"line_count": len(batch.Lines)}, map[string]any{"status": BatchFailed, "error": message}, durationMS)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return s.markExportFailed(ctx, id, fmt.Sprintf("finance adapter returned HTTP %d: %s", result.StatusCode, strings.TrimSpace(string(responseBody))))
 	}
 	statusInput := UpdateExportBatchStatusInput{
@@ -254,7 +298,20 @@ func (s *Service) SubmitExportBatch(ctx context.Context, id uuid.UUID) (*ExportB
 			statusInput.Metadata[key] = value
 		}
 	}
-	return s.repo.UpdateExportBatchStatus(ctx, id, statusInput)
+	updated, err := s.repo.UpdateExportBatchStatus(ctx, id, statusInput)
+	if err != nil {
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceExport, &batch.ID, "finance_export_batch", map[string]any{"line_count": len(batch.Lines)}, map[string]any{"status": BatchFailed, "error": err.Error()}, durationMS)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
+		return nil, err
+	}
+	s.recordFinanceSpan(ctx, trace, observability.SpanFinanceExport, &batch.ID, "finance_export_batch", map[string]any{"line_count": len(batch.Lines)}, map[string]any{"status": updated.Status, "status_code": result.StatusCode}, durationMS)
+	if updated.Status == BatchFailed {
+		s.recordFinanceMetric(ctx, "finance_export_failed", &batch.ID, "finance_export_batch", 1, map[string]any{"stage": "adapter_response"})
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
+	} else {
+		s.completeObservationTrace(ctx, trace, observability.TraceComplete)
+	}
+	return updated, nil
 }
 
 func (s *Service) ReceiveWebhook(ctx context.Context, adapterID uuid.UUID, body []byte, signature string, authorization string) (*WebhookEvent, error) {
@@ -271,6 +328,10 @@ func (s *Service) ReceiveWebhook(ctx context.Context, adapterID uuid.UUID, body 
 			return nil, fmt.Errorf("%w: invalid webhook payload", ErrValidation)
 		}
 	}
+	trace := s.startFinanceTrace(ctx, "finance_webhook", adapterID, uuidFromPayload(payload, "batch_id"), map[string]any{
+		"event_type": stringFromPayload(payload, "event_type", "finance.webhook"),
+	})
+	started := time.Now()
 	valid := verifyAdapterCallback(adapter, body, signature, authorization)
 	eventInput := RecordWebhookEventInput{
 		AdapterID:      adapterID,
@@ -283,9 +344,21 @@ func (s *Service) ReceiveWebhook(ctx context.Context, adapterID uuid.UUID, body 
 	if !valid {
 		eventInput.ErrorMessage = "invalid signature"
 		event, _ := s.repo.RecordWebhookEvent(ctx, eventInput)
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceWebhook, nil, "finance_webhook_event", map[string]any{"adapter_id": adapterID.String()}, map[string]any{"signature_valid": false, "error": eventInput.ErrorMessage}, int(time.Since(started).Milliseconds()))
+		s.recordFinanceMetric(ctx, "finance_webhook_invalid_signature", nil, "finance_webhook_event", 1, map[string]any{"adapter_id": adapterID.String()})
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return event, fmt.Errorf("%w: invalid webhook signature", ErrForbidden)
 	}
 	if eventInput.BatchID != nil {
+		if amount, ok := externalAmountFloatFromPayload(payload); ok {
+			if batch, err := s.repo.GetExportBatch(ctx, *eventInput.BatchID); err == nil {
+				s.recordFinanceMetric(ctx, "finance_reconciliation_difference", eventInput.BatchID, "finance_export_batch", amount-batch.TotalAmount, map[string]any{
+					"external_amount": amount,
+					"total_amount":    batch.TotalAmount,
+					"currency":        batch.Currency,
+				})
+			}
+		}
 		status := mapExternalBatchStatus(firstNonEmptyString(payload, "status", "batch_status"))
 		if status != "" {
 			metadata := map[string]any{
@@ -303,13 +376,32 @@ func (s *Service) ReceiveWebhook(ctx context.Context, adapterID uuid.UUID, body 
 			if _, err := s.repo.UpdateExportBatchStatus(ctx, *eventInput.BatchID, update); err != nil {
 				eventInput.ErrorMessage = err.Error()
 				event, _ := s.repo.RecordWebhookEvent(ctx, eventInput)
+				s.recordFinanceSpan(ctx, trace, observability.SpanFinanceWebhook, eventInput.BatchID, "finance_export_batch", map[string]any{"adapter_id": adapterID.String()}, map[string]any{"processed": false, "error": err.Error()}, int(time.Since(started).Milliseconds()))
+				s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 				return event, err
+			}
+			if status == BatchFailed {
+				s.recordFinanceMetric(ctx, "finance_export_failed", eventInput.BatchID, "finance_export_batch", 1, map[string]any{"stage": "webhook"})
 			}
 		}
 	}
 	s.updateWebhookLines(ctx, payload)
 	eventInput.Processed = true
-	return s.repo.RecordWebhookEvent(ctx, eventInput)
+	event, err := s.repo.RecordWebhookEvent(ctx, eventInput)
+	if err != nil {
+		s.recordFinanceSpan(ctx, trace, observability.SpanFinanceWebhook, eventInput.BatchID, "finance_webhook_event", map[string]any{"adapter_id": adapterID.String()}, map[string]any{"processed": false, "error": err.Error()}, int(time.Since(started).Milliseconds()))
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
+		return nil, err
+	}
+	entityID := &event.ID
+	entityType := "finance_webhook_event"
+	if eventInput.BatchID != nil {
+		entityID = eventInput.BatchID
+		entityType = "finance_export_batch"
+	}
+	s.recordFinanceSpan(ctx, trace, observability.SpanFinanceWebhook, entityID, entityType, map[string]any{"adapter_id": adapterID.String(), "signature_valid": true}, map[string]any{"processed": true, "event_type": event.EventType}, int(time.Since(started).Milliseconds()))
+	s.completeObservationTrace(ctx, trace, observability.TraceComplete)
+	return event, nil
 }
 
 func (s *Service) ListReconciliation(ctx context.Context, limit int) ([]ReconciliationItem, error) {
@@ -328,6 +420,7 @@ func (s *Service) markExportFailed(ctx context.Context, id uuid.UUID, message st
 	if err != nil {
 		return nil, err
 	}
+	s.recordFinanceMetric(ctx, "finance_export_failed", &id, "finance_export_batch", 1, map[string]any{"message": message})
 	return batch, fmt.Errorf("%w: %s", ErrValidation, message)
 }
 
@@ -666,9 +759,91 @@ func externalAmountFromPayload(payload map[string]any) (any, bool) {
 	return nil, false
 }
 
+func externalAmountFloatFromPayload(payload map[string]any) (float64, bool) {
+	value, ok := externalAmountFromPayload(payload)
+	if !ok {
+		return 0, false
+	}
+	switch typed := value.(type) {
+	case float64:
+		return typed, true
+	case float32:
+		return float64(typed), true
+	case int:
+		return float64(typed), true
+	case int64:
+		return float64(typed), true
+	case json.Number:
+		parsed, err := typed.Float64()
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
 func uuidString(id *uuid.UUID) string {
 	if id == nil {
 		return ""
 	}
 	return id.String()
+}
+
+func (s *Service) startFinanceTrace(ctx context.Context, category string, adapterID uuid.UUID, batchID *uuid.UUID, metadata map[string]any) *observability.Trace {
+	if s.observability == nil {
+		return nil
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+	}
+	metadata["category"] = category
+	metadata["adapter_id"] = adapterID.String()
+	metadata["batch_id"] = uuidString(batchID)
+	trace, err := s.observability.StartTrace(ctx, nil, metadata)
+	if err != nil {
+		return nil
+	}
+	return trace
+}
+
+func (s *Service) recordFinanceSpan(ctx context.Context, trace *observability.Trace, spanType observability.SpanType, entityID *uuid.UUID, entityType string, input map[string]any, output map[string]any, durationMS int) {
+	if s.observability == nil || trace == nil {
+		return
+	}
+	_, _ = s.observability.RecordSpan(ctx, observability.RecordSpanInput{
+		TraceID:    trace.ID,
+		SpanType:   spanType,
+		EntityID:   entityID,
+		EntityType: entityType,
+		Input:      input,
+		Output:     output,
+		DurationMs: durationMS,
+		Metadata: map[string]any{
+			"category": string(spanType),
+		},
+	})
+}
+
+func (s *Service) recordFinanceMetric(ctx context.Context, name string, entityID *uuid.UUID, entityType string, value float64, metadata map[string]any) {
+	if s.observability == nil {
+		return
+	}
+	metricType := observability.MetricHealth
+	if name == "finance_reconciliation_difference" {
+		metricType = observability.MetricCost
+	}
+	_, _ = s.observability.RecordMetric(ctx, observability.RecordMetricInput{
+		MetricType: metricType,
+		MetricName: name,
+		EntityID:   entityID,
+		EntityType: entityType,
+		Value:      value,
+		Metadata:   metadata,
+	})
+}
+
+func (s *Service) completeObservationTrace(ctx context.Context, trace *observability.Trace, status observability.TraceStatus) {
+	if s.observability == nil || trace == nil {
+		return
+	}
+	_ = s.observability.CompleteTrace(ctx, trace.ID, string(status))
 }

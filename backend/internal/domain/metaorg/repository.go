@@ -188,6 +188,28 @@ func (r *PostgresRepository) costSummary(ctx context.Context) (CostSummary, erro
 		`).Scan(&summary.Unexported); err != nil {
 			return summary, fmt.Errorf("query unexported usage summary: %w", err)
 		}
+		rows, err := r.db.Query(ctx, `
+			SELECT mp.provider_type, COALESCE(SUM(l.amount), 0)::float8
+			FROM ai_usage_ledger l
+			JOIN ai_invocations i ON i.id = l.invocation_id
+			JOIN model_providers mp ON mp.id = i.provider_id
+			GROUP BY mp.provider_type
+		`)
+		if err != nil {
+			return summary, fmt.Errorf("query provider usage summary: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var provider string
+			var amount float64
+			if err := rows.Scan(&provider, &amount); err != nil {
+				return summary, fmt.Errorf("scan provider usage summary: %w", err)
+			}
+			summary.ByProvider[provider] = amount
+		}
+		if err := rows.Err(); err != nil {
+			return summary, fmt.Errorf("iterate provider usage summary: %w", err)
+		}
 	}
 	return summary, nil
 }
@@ -239,6 +261,14 @@ func (r *PostgresRepository) activity(ctx context.Context, limit int) ([]Activit
 			SELECT id::text, 'workflow' AS type, 'Workflow instance' AS title, status::text, created_at FROM workflow_instances
 			UNION ALL
 			SELECT id::text, 'signal' AS type, signal_type AS title, CASE WHEN acknowledged THEN 'acknowledged' ELSE 'open' END AS status, created_at FROM signals
+			UNION ALL
+			SELECT id::text, 'ai_invocation' AS type, COALESCE(NULLIF(source_surface, ''), 'AI') || ' model call' AS title, status::text, created_at FROM ai_invocations
+			UNION ALL
+			SELECT id::text, 'tool_execution' AS type, 'Tool execution' AS title, status::text, created_at FROM tool_executions
+			UNION ALL
+			SELECT id::text, 'finance_export' AS type, 'Finance export batch' AS title, status::text, updated_at AS created_at FROM finance_export_batches
+			UNION ALL
+			SELECT id::text, 'finance_webhook' AS type, event_type AS title, CASE WHEN processed THEN 'processed' ELSE 'failed' END AS status, created_at FROM finance_webhook_events
 		) events
 		ORDER BY created_at DESC
 		LIMIT $1
@@ -294,7 +324,7 @@ func (r *PostgresRepository) accessDecisionInbox(ctx context.Context, limit int)
 	rows, err := r.db.Query(ctx, `
 		SELECT id::text, 'governance_decision', action || ' ' || resource, decision, CASE WHEN risk_level = 'critical' THEN 'critical' ELSE 'high' END, 'governance', created_at
 		FROM access_decisions
-		WHERE risk_level IN ('high', 'critical') OR decision IN ('approve', 'deny')
+		WHERE risk_level IN ('high', 'critical') AND (NOT allowed OR decision = 'deny')
 		ORDER BY created_at DESC
 		LIMIT $1
 	`, limit)

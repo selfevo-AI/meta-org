@@ -88,8 +88,12 @@ func main() {
 	metaSvc := metaorg.NewService(metaRepo)
 	metaHandler := metaorg.NewHandler(metaSvc)
 
+	obsRepo := observability.NewRepository(db)
+	obsSvc := observability.NewService(obsRepo)
+	obsHandler := observability.NewHandler(obsSvc)
+
 	aiRepo := aigateway.NewRepository(db, modelSecretBox)
-	aiSvc := aigateway.NewService(aiRepo, nil)
+	aiSvc := aigateway.NewService(aiRepo, nil, aigateway.WithObservability(obsSvc))
 	aiHandler := aigateway.NewHandler(aiSvc)
 
 	wfRepo := workflow.NewRepository(db)
@@ -107,20 +111,16 @@ func main() {
 	projectHandler := project.NewHandler(projectSvc)
 
 	financeRepo := finance.NewRepository(db, modelSecretBox)
-	financeSvc := finance.NewService(financeRepo, finance.WithCostPoster(projectSvc))
+	financeSvc := finance.NewService(financeRepo, finance.WithCostPoster(projectSvc), finance.WithObservability(obsSvc))
 	financeHandler := finance.NewHandler(financeSvc)
 
 	toolRepo := toolruntime.NewRepository(db)
-	toolSvc := toolruntime.NewService(toolRepo, govSvc, toolruntime.InternalTools(projectSvc, financeSvc))
+	toolSvc := toolruntime.NewService(toolRepo, govSvc, toolruntime.InternalTools(projectSvc, financeSvc), toolruntime.WithObservability(obsSvc))
 	toolHandler := toolruntime.NewHandler(toolSvc)
 
 	verRepo := verification.NewRepository(db)
 	verSvc := verification.NewService(verRepo)
 	verHandler := verification.NewHandler(verSvc)
-
-	obsRepo := observability.NewRepository(db)
-	obsSvc := observability.NewService(obsRepo)
-	obsHandler := observability.NewHandler(obsSvc)
 
 	router := server.NewRouter(cfg.CorsOrigins)
 	gateway.RegisterRoutes(router, &gateway.Dependencies{

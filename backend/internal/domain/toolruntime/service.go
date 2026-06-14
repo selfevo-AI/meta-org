@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 )
 
 var (
@@ -35,17 +37,37 @@ type GovernanceService interface {
 	DecideAccess(context.Context, governance.AccessDecisionInput) (*governance.AccessDecision, error)
 }
 
-type Service struct {
-	repo       Repository
-	governance GovernanceService
-	adapters   map[string]ToolAdapter
+type ObservabilityRecorder interface {
+	StartTrace(ctx context.Context, workflowID *uuid.UUID, metadata map[string]any) (*observability.Trace, error)
+	RecordSpan(ctx context.Context, input observability.RecordSpanInput) (*observability.Span, error)
+	RecordMetric(ctx context.Context, input observability.RecordMetricInput) (*observability.Metric, error)
+	CompleteTrace(ctx context.Context, id uuid.UUID, status string) error
 }
 
-func NewService(repo Repository, governanceSvc GovernanceService, adapters map[string]ToolAdapter) *Service {
+type Service struct {
+	repo          Repository
+	governance    GovernanceService
+	adapters      map[string]ToolAdapter
+	observability ObservabilityRecorder
+}
+
+type ServiceOption func(*Service)
+
+func WithObservability(recorder ObservabilityRecorder) ServiceOption {
+	return func(s *Service) {
+		s.observability = recorder
+	}
+}
+
+func NewService(repo Repository, governanceSvc GovernanceService, adapters map[string]ToolAdapter, opts ...ServiceOption) *Service {
 	if adapters == nil {
 		adapters = map[string]ToolAdapter{}
 	}
-	return &Service{repo: repo, governance: governanceSvc, adapters: adapters}
+	s := &Service{repo: repo, governance: governanceSvc, adapters: adapters}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 type CreateExecutionInput struct {
@@ -145,6 +167,7 @@ func (s *Service) ExecuteTool(ctx context.Context, input ExecuteToolInput) (*Exe
 	if err != nil {
 		return nil, err
 	}
+	trace := s.startToolTrace(ctx, tool, execution, input, policy, governanceResult)
 	switch policy {
 	case PolicyDeny:
 		completed, err := s.repo.CompleteExecution(ctx, execution.ID, CompleteExecutionInput{
@@ -154,15 +177,22 @@ func (s *Service) ExecuteTool(ctx context.Context, input ExecuteToolInput) (*Exe
 		if err != nil {
 			return nil, err
 		}
+		s.recordToolMetric(ctx, "tool_governance_denied", execution.ID, 1, map[string]any{"tool_name": tool.Name, "risk_level": tool.RiskLevel})
+		s.recordToolSpan(ctx, trace, tool, completed, input, ExecutionDenied, governanceResult.Reason, 0)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return &ExecuteToolOutput{Execution: completed}, nil
 	case PolicyApprove:
 		approval, err := s.repo.CreateApproval(ctx, execution.ID, &input.ActorID, governanceResult.Reason)
 		if err != nil {
+			s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 			return nil, err
 		}
+		s.recordToolMetric(ctx, "tool_approval_required", execution.ID, 1, map[string]any{"tool_name": tool.Name, "risk_level": tool.RiskLevel})
+		s.recordToolSpan(ctx, trace, tool, execution, input, ExecutionApprovalRequired, governanceResult.Reason, 0)
+		s.completeObservationTrace(ctx, trace, observability.TraceComplete)
 		return &ExecuteToolOutput{Execution: execution, Approval: approval}, nil
 	default:
-		return s.runAdapter(ctx, tool, execution, input)
+		return s.runAdapter(ctx, tool, execution, input, trace)
 	}
 }
 
@@ -191,7 +221,7 @@ func (s *Service) Reject(ctx context.Context, id uuid.UUID, reviewedBy *uuid.UUI
 	return s.repo.UpdateApproval(ctx, id, ApprovalRejected, reviewedBy, reason)
 }
 
-func (s *Service) runAdapter(ctx context.Context, tool *ToolDefinition, execution *ToolExecution, input ExecuteToolInput) (*ExecuteToolOutput, error) {
+func (s *Service) runAdapter(ctx context.Context, tool *ToolDefinition, execution *ToolExecution, input ExecuteToolInput, trace *observability.Trace) (*ExecuteToolOutput, error) {
 	adapter, ok := s.adapters[tool.Name]
 	if !ok {
 		completed, err := s.repo.CompleteExecution(ctx, execution.ID, CompleteExecutionInput{
@@ -199,8 +229,11 @@ func (s *Service) runAdapter(ctx context.Context, tool *ToolDefinition, executio
 			ErrorMessage: "tool adapter is not configured",
 		})
 		if err != nil {
+			s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 			return nil, err
 		}
+		s.recordToolSpan(ctx, trace, tool, completed, input, ExecutionFailed, "tool adapter is not configured", 0)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return &ExecuteToolOutput{Execution: completed}, fmt.Errorf("%w: tool adapter is not configured", ErrNotFound)
 	}
 	started := time.Now()
@@ -214,17 +247,24 @@ func (s *Service) runAdapter(ctx context.Context, tool *ToolDefinition, executio
 		if updateErr != nil {
 			return nil, updateErr
 		}
+		durationMS := int(time.Since(started).Milliseconds())
+		s.recordToolSpan(ctx, trace, tool, completed, input, ExecutionFailed, err.Error(), durationMS)
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return &ExecuteToolOutput{Execution: completed}, err
 	}
+	durationMS := int(time.Since(started).Milliseconds())
 	completed, err := s.repo.CompleteExecution(ctx, execution.ID, CompleteExecutionInput{
 		Status:        ExecutionCompleted,
 		ResultSummary: result.Summary,
 		Result:        result.Data,
-		DurationMS:    int(time.Since(started).Milliseconds()),
+		DurationMS:    durationMS,
 	})
 	if err != nil {
+		s.completeObservationTrace(ctx, trace, observability.TraceFailed)
 		return nil, err
 	}
+	s.recordToolSpan(ctx, trace, tool, completed, input, ExecutionCompleted, "", durationMS)
+	s.completeObservationTrace(ctx, trace, observability.TraceComplete)
 	return &ExecuteToolOutput{Execution: completed}, nil
 }
 
@@ -254,4 +294,114 @@ func (s *Service) decide(ctx context.Context, tool *ToolDefinition, input Execut
 		return GovernanceResult{}, err
 	}
 	return GovernanceResult{Decision: decision.Decision, Allowed: decision.Allowed, Reason: decision.Reason}, nil
+}
+
+func (s *Service) startToolTrace(ctx context.Context, tool *ToolDefinition, execution *ToolExecution, input ExecuteToolInput, policy string, governanceResult GovernanceResult) *observability.Trace {
+	if s.observability == nil {
+		return nil
+	}
+	trace, err := s.observability.StartTrace(ctx, input.WorkflowID, map[string]any{
+		"category":            "tool_execution",
+		"tool_id":             tool.ID.String(),
+		"tool_name":           tool.Name,
+		"execution_id":        execution.ID.String(),
+		"policy":              policy,
+		"governance_decision": governanceResult.Decision,
+		"risk_level":          tool.RiskLevel,
+		"organization_id":     optionalUUIDString(input.OrganizationID),
+		"department_id":       optionalUUIDString(input.DepartmentID),
+		"project_id":          optionalUUIDString(input.ProjectID),
+		"task_id":             optionalUUIDString(input.TaskID),
+	})
+	if err != nil {
+		return nil
+	}
+	return trace
+}
+
+func (s *Service) recordToolSpan(ctx context.Context, trace *observability.Trace, tool *ToolDefinition, execution *ToolExecution, input ExecuteToolInput, status string, message string, durationMS int) {
+	if s.observability == nil || trace == nil {
+		return
+	}
+	_, _ = s.observability.RecordSpan(ctx, observability.RecordSpanInput{
+		TraceID:    trace.ID,
+		SpanType:   observability.SpanToolExecution,
+		EntityID:   &execution.ID,
+		EntityType: "tool_execution",
+		ActorID:    &input.ActorID,
+		ActorType:  input.ActorType,
+		Input: map[string]any{
+			"tool_id":         tool.ID.String(),
+			"tool_name":       tool.Name,
+			"arguments":       redactedMap(input.Arguments),
+			"idempotency_key": input.IdempotencyKey,
+		},
+		Output: map[string]any{
+			"status":         status,
+			"error":          message,
+			"result_summary": execution.ResultSummary,
+		},
+		DurationMs: durationMS,
+		Metadata: map[string]any{
+			"policy":              execution.Policy,
+			"governance_decision": execution.GovernanceDecision,
+			"risk_level":          tool.RiskLevel,
+		},
+	})
+}
+
+func (s *Service) recordToolMetric(ctx context.Context, name string, executionID uuid.UUID, value float64, metadata map[string]any) {
+	if s.observability == nil {
+		return
+	}
+	_, _ = s.observability.RecordMetric(ctx, observability.RecordMetricInput{
+		MetricType: observability.MetricHealth,
+		MetricName: name,
+		EntityID:   &executionID,
+		EntityType: "tool_execution",
+		Value:      value,
+		Metadata:   metadata,
+	})
+}
+
+func (s *Service) completeObservationTrace(ctx context.Context, trace *observability.Trace, status observability.TraceStatus) {
+	if s.observability == nil || trace == nil {
+		return
+	}
+	_ = s.observability.CompleteTrace(ctx, trace.ID, string(status))
+}
+
+func optionalUUIDString(id *uuid.UUID) string {
+	if id == nil {
+		return ""
+	}
+	return id.String()
+}
+
+func redactedMap(input map[string]any) map[string]any {
+	if input == nil {
+		return map[string]any{}
+	}
+	output := make(map[string]any, len(input))
+	for key, value := range input {
+		if sensitiveKey(key) {
+			output[key] = "[redacted]"
+			continue
+		}
+		if nested, ok := value.(map[string]any); ok {
+			output[key] = redactedMap(nested)
+			continue
+		}
+		output[key] = value
+	}
+	return output
+}
+
+func sensitiveKey(key string) bool {
+	normalized := strings.ToLower(key)
+	return strings.Contains(normalized, "secret") ||
+		strings.Contains(normalized, "token") ||
+		strings.Contains(normalized, "password") ||
+		strings.Contains(normalized, "api_key") ||
+		strings.Contains(normalized, "authorization")
 }
