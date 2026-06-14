@@ -232,6 +232,7 @@ docker compose up --build
 
 - 数据库：`postgres://postgres:postgres@postgres:5432/meta_org?sslmode=disable`
 - 后端端口：`8080`
+- 模型与财务密钥加密：`MODEL_SECRET_KEY=0123456789abcdef0123456789abcdef`
 - 前端 API 地址：`http://localhost:8080/api/v1`
 
 ## 本地开发

@@ -232,6 +232,7 @@ Default Docker environment values are defined in `docker-compose.yml`:
 
 - Database: `postgres://postgres:postgres@postgres:5432/meta_org?sslmode=disable`
 - Backend port: `8080`
+- Model and finance secret encryption: `MODEL_SECRET_KEY=0123456789abcdef0123456789abcdef`
 - Frontend API URL: `http://localhost:8080/api/v1`
 
 ## Local Development
