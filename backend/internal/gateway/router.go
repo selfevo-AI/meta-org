@@ -11,6 +11,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/identity"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/layer"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/metaorg"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
@@ -26,6 +27,7 @@ type Dependencies struct {
 	LayerHandler         *layer.Handler
 	CapabilityHandler    *capability.Handler
 	DashboardHandler     *dashboard.Handler
+	MetaOrgHandler       *metaorg.Handler
 	WorkflowHandler      *workflow.Handler
 	ProjectHandler       *project.Handler
 	ObservabilityHandler *observability.Handler
@@ -59,6 +61,9 @@ func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
 			}
 			if deps.DashboardHandler != nil {
 				deps.DashboardHandler.RegisterRoutes(r)
+			}
+			if deps.MetaOrgHandler != nil {
+				deps.MetaOrgHandler.RegisterRoutes(r)
 			}
 			if deps.WorkflowHandler != nil {
 				deps.WorkflowHandler.RegisterRoutes(r)

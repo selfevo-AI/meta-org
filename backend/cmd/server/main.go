@@ -15,6 +15,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/identity"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/layer"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/metaorg"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
@@ -74,6 +75,10 @@ func main() {
 	dashSvc := dashboard.NewService(dashRepo)
 	dashHandler := dashboard.NewHandler(dashSvc)
 
+	metaRepo := metaorg.NewRepository(db)
+	metaSvc := metaorg.NewService(metaRepo)
+	metaHandler := metaorg.NewHandler(metaSvc)
+
 	wfRepo := workflow.NewRepository(db)
 	wfSvc := workflow.NewService(wfRepo)
 	wfHandler := workflow.NewHandler(wfSvc)
@@ -104,6 +109,7 @@ func main() {
 		LayerHandler:         layerHandler,
 		CapabilityHandler:    capHandler,
 		DashboardHandler:     dashHandler,
+		MetaOrgHandler:       metaHandler,
 		WorkflowHandler:      wfHandler,
 		ProjectHandler:       projectHandler,
 		ObservabilityHandler: obsHandler,
