@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/aigateway"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/capability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/dashboard"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
@@ -24,6 +25,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/gateway"
 	"github.com/selfevo-AI/meta-org/backend/internal/pkg/config"
 	"github.com/selfevo-AI/meta-org/backend/internal/pkg/database"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/secretbox"
 	"github.com/selfevo-AI/meta-org/backend/internal/pkg/server"
 )
 
@@ -41,6 +43,11 @@ func main() {
 
 	if err := database.RunMigrations(context.Background(), db, cfg.MigrationsPath); err != nil {
 		log.Fatalf("migrations failed: %v", err)
+	}
+
+	modelSecretBox, err := secretbox.New(cfg.ModelSecretKey)
+	if err != nil {
+		log.Fatalf("model secret key invalid: %v", err)
 	}
 
 	identRepo := identity.NewRepository(db)
@@ -79,6 +86,10 @@ func main() {
 	metaSvc := metaorg.NewService(metaRepo)
 	metaHandler := metaorg.NewHandler(metaSvc)
 
+	aiRepo := aigateway.NewRepository(db, modelSecretBox)
+	aiSvc := aigateway.NewService(aiRepo, nil)
+	aiHandler := aigateway.NewHandler(aiSvc)
+
 	wfRepo := workflow.NewRepository(db)
 	wfSvc := workflow.NewService(wfRepo)
 	wfHandler := workflow.NewHandler(wfSvc)
@@ -110,6 +121,7 @@ func main() {
 		CapabilityHandler:    capHandler,
 		DashboardHandler:     dashHandler,
 		MetaOrgHandler:       metaHandler,
+		AIGatewayHandler:     aiHandler,
 		WorkflowHandler:      wfHandler,
 		ProjectHandler:       projectHandler,
 		ObservabilityHandler: obsHandler,
