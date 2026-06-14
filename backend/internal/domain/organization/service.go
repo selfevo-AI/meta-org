@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
-	"github.com/harness-org/backend/internal/domain/evolution"
-	"github.com/harness-org/backend/internal/domain/governance"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
 )
 
 var (

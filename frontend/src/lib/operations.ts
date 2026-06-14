@@ -89,8 +89,8 @@ export const apiOperations: ApiOperation[] = [
     method: 'POST',
     path: '/organizations',
     bodyTemplate: {
-      name: 'Harness Company',
-      description: 'Self evolving operating system',
+      name: 'Meta-Org',
+      description: 'AI-native organization operating platform',
     },
   },
   {
@@ -124,7 +124,7 @@ export const apiOperations: ApiOperation[] = [
     path: '/organizations/{id}',
     pathParams: [{ name: 'id', label: '组织 ID' }],
     bodyTemplate: {
-      name: 'Harness Company',
+      name: 'Meta-Org',
       description: 'Updated organization profile',
     },
   },

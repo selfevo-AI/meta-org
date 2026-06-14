@@ -4,8 +4,8 @@ import '@xyflow/react/dist/style.css'
 import './globals.css'
 
 export const metadata: Metadata = {
-  title: 'Harness Organization System',
-  description: 'Self-evolving organizational management platform',
+  title: 'Meta-Org',
+  description: 'AI-native organization operating platform',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

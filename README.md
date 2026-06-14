@@ -1,66 +1,296 @@
-# HarnessCompany - 自进化组织管理系统
+# Meta-Org - AI 原生组织操作平台
 
 [English](README_EN.md) | 简体中文
 
-一个面向混合人力（人类员工 + AI Agent）的自进化组织管理平台，基于 **ETCLOVG** 框架（Execution, Tooling, Context, Lifecycle, Observability, Verification, Governance）构建。
+Meta-Org 是一个面向混合人力组织的 AI 原生组织操作平台。它把人类员工、AI Agent、外部协作者、组织结构、项目交付、治理规则和持续学习机制放进同一套运行系统中，用于支持从需求进入、项目组建、工作流执行、交付验收、成本归集到反馈沉淀的完整业务闭环。
 
-## 核心思想
+项目基于 **ETCLOVG** 框架构建：Execution、Tooling、Context、Lifecycle、Observability、Verification、Governance。当前仓库已经包含 Go 后端、Next.js 前端、PostgreSQL 迁移、Docker Compose 编排、JWT 鉴权、组织/项目工作台和 API Workbench。
 
-- **AI Agent 与人类一视同仁**：Agent 作为一等公民参与组织运作，拥有独立的身份、角色和权限体系
-- **决策权重引擎**：六维算法动态评估每个参与者的信任/权威分数，驱动自动化决策
-- **P-E-R 工作流**：Planner → Executor → Reviewer 三阶段编排，根据风险/复杂度动态简化
-- **MVRU 沙箱执行**：最小可重组单元，在隔离环境中安全执行组织变更
-- **自进化闭环**：感知 → 学习 → 实验 → 验证 → 知识沉淀，持续优化组织运行
+## 项目目标
 
-## 技术栈
+Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 AI Agent 参与后持续可靠地运转”：
 
-| 层 | 技术 |
+- **人类与 AI Agent 同域管理**：用户、Agent、外部成员都作为组织参与者接入身份、角色、岗位、权限和项目分工。
+- **组织结构可执行化**：部门、岗位、岗位任命、MVRU、工作流模板和项目成员不是静态目录，而是调度、授权和评估的依据。
+- **需求到反馈闭环**：需求可以上传材料、进入分析工作流、审批、转项目、绑定成员和工作流、管理交付物、记录成本并关闭反馈。
+- **治理内嵌到流程**：权限原则、控制规则、访问决策、风险等级和决策权重在项目关键动作中参与判断。
+- **自进化能力沉淀**：通过权重计算、执行结果、实验、知识库和信号机制，让组织运行经验能够被记录和再利用。
+
+## 核心概念
+
+| 概念 | 说明 |
 |---|---|
-| 前端 | Next.js 16 (App Router, React 19, TypeScript, Tailwind CSS) |
-| 后端 | Go 1.22 (DDD 模块化单体, Chi Router v5) |
-| 数据库 | PostgreSQL 16 (多 schema 域隔离) |
-| 容器化 | Docker Compose |
+| ETCLOVG | Execution、Tooling、Context、Lifecycle、Observability、Verification、Governance 七类组织运行能力。 |
+| AI Agent 一等公民 | Agent 有独立身份、权限等级、能力、来源、服务商、风险等级和元数据，可以参与项目与工作流。 |
+| MVRU | Minimal Viable Reconfigurable Unit，最小可重组组织单元，用于承载可调整的组织结构、成员和关系。当前 API 路径沿用 `/muvrs`。 |
+| P-E-R 工作流 | Planner、Executor、Reviewer 三类阶段组成的工作流模板与实例，支持任务、决策和上下文记录。 |
+| 决策权重 | 结合能力、历史结果、风险、组织上下文等因素，为人类或 Agent 计算可信度和决策权重。 |
+| 治理访问决策 | 基于权限、治理原则、控制规则、风险等级、所需权限级别和权重快照生成访问判断。 |
+| 能力匹配 | 按能力、风险、上下文和候选对象，匹配合适的人类成员、Agent 或能力资源。 |
+| 自进化闭环 | 感知信号、实验、验证、知识沉淀和权重更新共同形成持续优化机制。 |
 
-## 领域架构（9 大域）
+## 当前能力总览
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                       Evolution (自进化)                       │
-│  决策权重引擎 · 感知引擎 · 学习引擎 · 知识引擎                   │
-├──────────┬──────────┬──────────┬──────────┬──────────────────┤
-│Identity  │Organizat │  Layer   │Capability│   Workflow       │
-│(身份)    │ion(组织) │ (分层)   │ (能力)   │  (工作流)         │
-├──────────┴──────────┴──────────┴──────────┴──────────────────┤
-│   Observability (可观测) · Verification (验证) · Governance (治理) │
-└──────────────────────────────────────────────────────────────┘
-```
+### 业务闭环
+
+系统当前支持一条从需求到反馈的项目生命周期：
+
+1. **需求进入**：创建需求，记录组织、部门、提交人、优先级、风险等级、预算和元数据。
+2. **材料与分析**：上传需求文档，启动需求分析工作流，同步工作流输出，沉淀分析结果。
+3. **需求审批**：由人类或 Agent 作为 actor 执行审批，审批动作可以触发治理校验和结果记录。
+4. **项目转化**：将已审批需求转为项目，保留组织、部门、预算、风险和上下文。
+5. **项目组建**：添加项目成员，关联组织岗位或岗位任命，按能力和风险匹配参与者。
+6. **流程绑定**：为项目绑定工作流模板，创建工作流实例，跟踪任务、决策和上下文。
+7. **交付管理**：创建、更新、提交、验收或拒绝交付物。
+8. **成本管理**：记录成本条目，刷新成本汇总，按来源类型聚合预算消耗。
+9. **反馈评估**：创建项目评价，关闭反馈，向演化域记录执行结果和可学习信号。
+
+### 组织能力
+
+- 多组织模型和当前组织查询。
+- 部门树、部门状态、排序和元数据。
+- 岗位、岗位权限级别、岗位所需能力和岗位任命。
+- 人类用户、AI Agent、外部成员三类组织成员。
+- 部门与 MVRU 关联。
+- 组织成员、项目成员和岗位任命之间的连接。
+- 面向任务和项目的成员匹配、能力匹配。
+
+### 治理与演化能力
+
+- 权限、原则、控制规则和访问决策记录。
+- AI Agent 来源、服务类别、供应商、合同引用、风险等级等治理字段。
+- 员工画像、上下文权重、能力评估和访问决策数据结构。
+- 权重计算、上下文权重计算、结果回写、实验、知识条目和信号确认。
+
+### 前端工作台
+
+前端是一个面向实际操作的单页工作台，而不是营销页：
+
+- 登录、注册、会话保存和退出。
+- 中英文语言切换，使用 `LanguageProvider` 和 `useI18n`。
+- 系统总览 Dashboard，展示身份、组织、工作流、能力、观测、验证、治理、演化统计和近期事件。
+- 可拖拽的侧边菜单分组：业务闭环、组织能力、治理演进、系统工具。
+- 组织工作台：组织、部门、岗位、成员、外部成员、岗位任命、MVRU 关联和匹配。
+- 控制工作台：治理、权重、能力评估、工作流设计、工作流匹配。
+- 项目生命周期工作台：需求、项目、交付、成本和反馈。
+- API Workbench：按域浏览和调用后端 API，支持路径参数、查询参数、请求体模板和认证 Token。
+
+## 技术架构
+
+| 层 | 当前实现 |
+|---|---|
+| 前端 | Next.js 16 App Router、React 19、TypeScript、Tailwind CSS、lucide-react、@xyflow/react |
+| 后端 | Go 1.22、Chi Router v5、领域模块化单体、pgx PostgreSQL 驱动 |
+| 数据库 | PostgreSQL 16，根目录 SQL migrations，后端启动时自动执行 |
+| 鉴权 | JWT Bearer Token；公开路由与受保护业务路由分组注册 |
+| 部署 | Docker Compose 启动 PostgreSQL、backend、frontend |
+
+### 后端结构
+
+后端入口是 `backend/cmd/server/main.go`。启动流程：
+
+1. 读取环境配置。
+2. 连接 PostgreSQL。
+3. 执行 `migrations/` 下的 SQL 迁移。
+4. 初始化各领域 repository、service、handler。
+5. 在 `backend/internal/gateway/router.go` 注册 `/api/v1` 路由。
+6. 启动 HTTP 服务并支持优雅关闭。
+
+后端领域按 `backend/internal/domain/<domain>/` 组织，通常包含：
+
+- `model.go`：API 和数据库模型。
+- `repository.go`：PostgreSQL 持久化。
+- `service.go`：业务规则和跨域编排。
+- `handler.go`：HTTP 参数解析和响应。
+
+共享包位于 `backend/internal/pkg/`，包含配置、数据库、迁移、中间件和服务器封装。
+
+### 后端领域
+
+| 领域 | 主要职责 |
+|---|---|
+| `identity` | 用户、AI Agent、角色、登录、注册、Agent 鉴权。 |
+| `organization` | 组织、部门树、岗位、岗位任命、外部成员、组织成员、MVRU、关系和匹配。 |
+| `layer` | 战略、战术、执行层分类和 MVRU 分层配置。 |
+| `capability` | 能力目录、能力绑定、能力匹配、能力评估。 |
+| `dashboard` | 聚合各域统计和近期事件，提供系统总览。 |
+| `workflow` | 工作流模板、实例、任务、决策和上下文。 |
+| `project` | 需求、文档、需求分析工作流、项目、成员、项目工作流、交付、成本、反馈。 |
+| `governance` | 权限、治理原则、控制规则、权限检查和访问决策。 |
+| `evolution` | 决策权重、上下文权重、实验、知识库、信号和结果回写。 |
+| `observability` | Trace、Span、Metric 和执行遥测。 |
+| `verification` | 验证报告、评审分配、评审完成和评分。 |
+
+### 前端结构
+
+| 路径 | 说明 |
+|---|---|
+| `frontend/src/app/page.tsx` | 应用主入口、登录注册、布局、总览、菜单和工作区切换。 |
+| `frontend/src/app/organization-workspace.tsx` | 组织、部门、岗位、成员、外部成员和 MVRU 相关操作。 |
+| `frontend/src/app/control-workspaces.tsx` | 治理、权重、能力评估、工作流设计和工作流匹配工作区。 |
+| `frontend/src/app/project-lifecycle-workspace.tsx` | 需求、项目、交付、成本和反馈工作区。 |
+| `frontend/src/app/api-workbench.tsx` | 通用 API 调用面板。 |
+| `frontend/src/lib/api.ts` | API 请求封装、基础类型和 Dashboard 数据结构。 |
+| `frontend/src/lib/operations.ts` | API Workbench 的域、路径、参数和请求体模板。 |
+| `frontend/src/lib/i18n.tsx` | 中英文语言包和 i18n Provider。 |
+| `frontend/src/lib/auth.ts` | Token 与会话存储。 |
+
+## 数据库迁移
+
+后端启动时会执行根目录 `migrations/` 中的 SQL 文件。当前迁移已到 `015`：
+
+| 迁移 | 主题 |
+|---|---|
+| `001_identity.sql` | schema migrations、users、ai_agents、roles、user_roles、agent_roles。 |
+| `002_seed_roles.sql` | 初始化 planner、executor、reviewer 角色。 |
+| `003_organization.sql` | organizations、muvrs、teams、mvru_members、mvru_relationships。 |
+| `004_layer.sql` | layer_configs、layer_routing_rules。 |
+| `005_capability.sql` | capabilities、capability_bindings、capability_invocations。 |
+| `006_workflow.sql` | workflow_templates、workflow_instances、tasks、decisions、workflow_contexts。 |
+| `007_observability.sql` | traces、spans、metrics。 |
+| `008_verification.sql` | verification_reports、review_assignments。 |
+| `009_governance.sql` | permissions、principles、control_rules。 |
+| `010_evolution.sql` | weight_scores、weight_alphas、experiments、knowledge_entries、signals。 |
+| `011_organization_tree.sql` | departments、external_members、organization_memberships、department_mvru_links。 |
+| `012_policy_weight_evaluation.sql` | Agent 治理字段、employee_profiles、access_decisions、context_weight_scores、capability_evaluations。 |
+| `013_project_lifecycle.sql` | requirements、projects、project_members、project_workflows、deliverables、project_cost_entries、project_evaluations。 |
+| `014_requirement_documents_workflow_analysis.sql` | requirement_documents、requirement_analysis_workflows。 |
+| `015_single_org_positions_workflow_graph.sql` | positions、position_assignments，并为工作流和项目成员补充组织、部门、岗位关联。 |
+
+## API 概览
+
+所有 API 默认挂载在 `/api/v1` 下。
+
+公开接口：
+
+- `GET /health`
+- `POST /auth/login`
+- `POST /auth/register`
+- `POST /agents/auth`
+- `GET /roles`
+
+其余业务接口通过 JWT Bearer Token 保护。
+
+| 域 | 主要接口 |
+|---|---|
+| Dashboard | `GET /dashboard/overview` |
+| Identity | `POST /agents/register`, `GET /agents` |
+| Organization | `GET/POST/PATCH /organizations`, `GET /organization/current`, 部门、部门树、岗位、岗位任命、组织成员、外部成员、MVRU、关系、成员匹配和能力匹配接口 |
+| Layer | `POST /layers/classify`, `GET/PUT /layers/config/{mvruId}`, `GET /layers/rules` |
+| Capability | `GET/POST /capabilities`, `GET /capabilities/{id}`, `POST /capabilities/match`, 能力评估、绑定和解绑接口 |
+| Workflow | 工作流模板、实例、状态、任务完成、决策记录和上下文读写接口 |
+| Project Lifecycle | 需求、需求文档、需求分析工作流、审批、转项目、项目成员、项目工作流、项目总览、交付物、成本、反馈接口 |
+| Governance | 权限、原则、控制规则、权限检查、访问决策和访问决策列表接口 |
+| Evolution | 权重计算、结果回写、上下文权重、alpha 配置、实验、知识、信号和信号确认接口 |
+| Observability | Trace、Span、Trace 完成、Metric 写入和查询接口 |
+| Verification | 验证报告、报告查询、评审分配和评审完成接口 |
+
+前端的 API Workbench 元数据位于 `frontend/src/lib/operations.ts`，它按 Dashboard、Identity、Organization、Layer、Capability、Workflow、Observability、Verification、Governance、Evolution、Requirement、Project、Delivery、Cost、Feedback 等操作域组织。
 
 ## 快速开始
+
+使用 Docker Compose 启动完整环境：
 
 ```bash
 docker compose up --build
 ```
 
-启动后：
-- PostgreSQL 16 → `:5432`
-- Go 后端 → `:8080`
-- Next.js 前端 → `:3000`
+服务地址：
 
-## 项目结构
+- PostgreSQL：`localhost:5432`
+- Go API：`http://localhost:8080`
+- API health：`http://localhost:8080/api/v1/health`
+- Next.js 前端：`http://localhost:3000`
 
+默认 Docker 环境变量见 `docker-compose.yml`：
+
+- 数据库：`postgres://postgres:postgres@postgres:5432/meta_org?sslmode=disable`
+- 后端端口：`8080`
+- 前端 API 地址：`http://localhost:8080/api/v1`
+
+## 本地开发
+
+后端：
+
+```bash
+cd backend
+go run ./cmd/server
+go test ./...
+go build ./cmd/server
 ```
-backend/          # Go 后端 (9 域 handler/service/repository)
-frontend/         # Next.js 前端
-migrations/       # 10 个 SQL 迁移文件
-docker-compose.yml
+
+如果不通过 Docker 运行后端，需要准备 PostgreSQL，并设置：
+
+```bash
+set MIGRATIONS_PATH=../migrations
+```
+
+PowerShell 可使用：
+
+```powershell
+$env:MIGRATIONS_PATH = '../migrations'
+go run ./cmd/server
+```
+
+前端：
+
+```bash
+cd frontend
+npm install
+npm run dev
+npm run lint
+npm run build
+```
+
+前端默认读取：
+
+```bash
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8080/api/v1
 ```
 
 ## 配置
 
-通过环境变量配置，详见 `backend/internal/pkg/config/config.go`。
+后端配置在 `backend/internal/pkg/config/config.go` 中读取：
 
-关键变量：`DATABASE_URL`, `JWT_SECRET`, `SERVER_PORT`, `CORS_ORIGINS`。
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `SERVER_PORT` | `8080` | 后端监听端口。 |
+| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/meta_org?sslmode=disable` | PostgreSQL 连接串。 |
+| `JWT_SECRET` | `dev-secret-change-in-production` | JWT 签名密钥，生产环境必须替换。 |
+| `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | 允许访问 API 的前端来源。 |
+| `MIGRATIONS_PATH` | `migrations` | SQL 迁移目录；本地从 `backend/` 运行时通常设为 `../migrations`。 |
 
-## 开发状态
+前端配置：
 
-全部 9 个领域已完成实现，包含完整的后端 API、SQL 迁移、Docker 编排和基础前端脚手架。
+| 环境变量 | 默认值 | 说明 |
+|---|---|---|
+| `NEXT_PUBLIC_API_URL` | `http://127.0.0.1:8080/api/v1` | 浏览器端调用的 API 基础地址。 |
+
+## 项目结构
+
+```text
+backend/
+  cmd/server/                 后端入口
+  internal/domain/            领域模块
+  internal/gateway/           路由注册
+  internal/pkg/               配置、数据库、迁移、中间件、server
+frontend/
+  src/app/                    Next.js App Router 页面和工作台
+  src/lib/                    API、认证、i18n、API Workbench 元数据
+migrations/                   PostgreSQL SQL 迁移 001-015
+docker-compose.yml            本地完整环境编排
+```
+
+## 当前状态与边界
+
+当前代码已经具备完整的组织管理、项目生命周期、治理、演化、观测和验证骨架，适合作为自进化组织平台的业务原型和二次开发基础。
+
+从旧 `harness_org` 数据库升级到 `meta_org` 时，必须先显式备份并迁移数据；系统不会自动删除或覆盖旧库。
+
+需要继续增强的方向：
+
+- 接入真实 LLM、Agent 执行器或外部工具运行时。
+- 将 MVRU 沙箱执行从数据模型扩展为可隔离执行环境。
+- 为关键服务补充自动化测试和端到端测试。
+- 完善生产级密钥管理、审计报表、告警和权限策略可视化。
+- 扩展多组织租户边界、审批流模板和更细粒度的操作审计。

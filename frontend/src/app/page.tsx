@@ -72,8 +72,10 @@ type MenuGroup = {
 
 const lifecycleDomains = ['Requirement', 'Project', 'Delivery', 'Cost', 'Feedback']
 const dedicatedDomains = new Set(['Organization', 'Governance', 'Evolution', 'Capability', 'Workflow', ...lifecycleDomains])
-const menuStorageKey = 'harness.menu.groups.v1'
-const expandedMenuStorageKey = 'harness.menu.expanded.v1'
+const menuStorageKey = 'meta_org.menu.groups.v1'
+const expandedMenuStorageKey = 'meta_org.menu.expanded.v1'
+const legacyMenuStorageKey = 'harness.menu.groups.v1'
+const legacyExpandedMenuStorageKey = 'harness.menu.expanded.v1'
 
 const defaultMenuGroups: MenuGroup[] = [
   {
@@ -169,7 +171,12 @@ function defaultExpandedGroups(): Record<string, boolean> {
 function loadMenuGroups(): MenuGroup[] {
   if (typeof window === 'undefined') return normalizeMenuGroups()
   try {
-    const raw = window.localStorage.getItem(menuStorageKey)
+    const legacyRaw = window.localStorage.getItem(legacyMenuStorageKey)
+    const raw = window.localStorage.getItem(menuStorageKey) || legacyRaw
+    if (legacyRaw && raw) {
+      window.localStorage.setItem(menuStorageKey, raw)
+      window.localStorage.removeItem(legacyMenuStorageKey)
+    }
     if (!raw) return normalizeMenuGroups()
     return normalizeMenuGroups(JSON.parse(raw))
   } catch {
@@ -180,7 +187,12 @@ function loadMenuGroups(): MenuGroup[] {
 function loadExpandedGroups(): Record<string, boolean> {
   if (typeof window === 'undefined') return defaultExpandedGroups()
   try {
-    const raw = window.localStorage.getItem(expandedMenuStorageKey)
+    const legacyRaw = window.localStorage.getItem(legacyExpandedMenuStorageKey)
+    const raw = window.localStorage.getItem(expandedMenuStorageKey) || legacyRaw
+    if (legacyRaw && raw) {
+      window.localStorage.setItem(expandedMenuStorageKey, raw)
+      window.localStorage.removeItem(legacyExpandedMenuStorageKey)
+    }
     if (!raw) return defaultExpandedGroups()
     return { ...defaultExpandedGroups(), ...JSON.parse(raw) }
   } catch {

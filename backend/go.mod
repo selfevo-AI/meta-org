@@ -1,4 +1,4 @@
-module github.com/harness-org/backend
+module github.com/selfevo-AI/meta-org/backend
 
 go 1.22
 

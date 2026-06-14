@@ -5,11 +5,12 @@ import type { ReactNode } from 'react'
 
 export type Locale = 'zh' | 'en'
 
-const languageStorageKey = 'harness.language.v1'
+const languageStorageKey = 'meta_org.language.v1'
+const legacyLanguageStorageKey = 'harness.language.v1'
 
 const en: Record<string, string> = {
-  'app.title': 'Self-evolving Organization Console',
-  'app.product': 'Harness Organization',
+  'app.title': 'Meta-Org Console',
+  'app.product': 'Meta-Org',
   'language.label': 'Language',
   'language.zh': '中文',
   'language.en': 'EN',
@@ -593,8 +594,8 @@ const en: Record<string, string> = {
 }
 
 const zh: Record<string, string> = {
-  'app.title': '自进化组织控制台',
-  'app.product': 'Harness Organization',
+  'app.title': 'Meta-Org 控制台',
+  'app.product': 'Meta-Org',
   'language.label': '语言',
   'language.zh': '中文',
   'language.en': 'EN',
@@ -705,7 +706,12 @@ export function LanguageProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>('zh')
 
   useEffect(() => {
-    const storedLocale = normalizeLocale(window.localStorage.getItem(languageStorageKey))
+    const legacyLocale = window.localStorage.getItem(legacyLanguageStorageKey)
+    const storedLocale = normalizeLocale(window.localStorage.getItem(languageStorageKey) || legacyLocale)
+    if (legacyLocale) {
+      window.localStorage.setItem(languageStorageKey, storedLocale)
+      window.localStorage.removeItem(legacyLanguageStorageKey)
+    }
     if (storedLocale === 'zh') return
     const timeout = window.setTimeout(() => setLocaleState(storedLocale), 0)
     return () => window.clearTimeout(timeout)
