@@ -4,7 +4,7 @@
 
 Meta-Org 是一个面向混合人力组织的 AI 原生组织操作平台。它把人类员工、AI Agent、外部协作者、组织结构、项目交付、治理规则和持续学习机制放进同一套运行系统中，用于支持从需求进入、项目组建、工作流执行、交付验收、成本归集到反馈沉淀的完整业务闭环。
 
-项目基于 **ETCLOVG** 框架构建：Execution、Tooling、Context、Lifecycle、Observability、Verification、Governance。当前仓库已经包含 Go 后端、Next.js 前端、PostgreSQL 迁移、Docker Compose 编排、JWT 鉴权、组织/项目工作台和 API Workbench。
+项目基于 **ETCLOVG** 框架构建：Execution、Tooling、Context、Lifecycle、Observability、Verification、Governance。当前仓库已经包含 Go 后端、Next.js 前端、PostgreSQL 迁移、Docker Compose 编排、JWT 鉴权、Meta-Org 首页、组织/项目工作台、Developer Tools、AI Gateway、工具运行闭环、成本核算和通用财务导出。
 
 ## 项目目标
 
@@ -62,6 +62,14 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 - 员工画像、上下文权重、能力评估和访问决策数据结构。
 - 权重计算、上下文权重计算、结果回写、实验、知识条目和信号确认。
 
+### AI 运行、工具与财务
+
+- Meta-Org 首页聚合组织健康、项目状态、Agent 状态、AI 成本、风险、近期事件和待办收件箱。
+- AI Gateway 支持 OpenAI、Anthropic、Gemini 三类模型供应商配置、加密密钥、模型目录、流式调用、调用日志和成本汇总。
+- Tool Runtime 支持工具注册、治理决策、审批策略、执行审计和内部工具调用。
+- Developer Tools 提供模型供应商、模型目录、工具注册表、接口文件、调用日志和成本汇总视图。
+- 财务导出支持通用财务适配器、HMAC/Bearer 鉴权、导出批次、Webhook 回调和对账差异。
+
 ### 前端工作台
 
 前端是一个面向实际操作的单页工作台，而不是营销页：
@@ -69,10 +77,14 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 - 登录、注册、会话保存和退出。
 - 中英文语言切换，使用 `LanguageProvider` 和 `useI18n`。
 - 系统总览 Dashboard，展示身份、组织、工作流、能力、观测、验证、治理、演化统计和近期事件。
+- Meta-Org Home，展示组织健康、AI 成本、风险、收件箱和上下文 AI 助手。
 - 可拖拽的侧边菜单分组：业务闭环、组织能力、治理演进、系统工具。
 - 组织工作台：组织、部门、岗位、成员、外部成员、岗位任命、MVRU 关联和匹配。
 - 控制工作台：治理、权重、能力评估、工作流设计、工作流匹配。
 - 项目生命周期工作台：需求、项目、交付、成本和反馈。
+- Developer Tools：模型供应商、模型目录、工具注册表、接口文件、调用日志和成本汇总。
+- Finance Exports：财务适配器、导出批次、对账和失败回调。
+- 上下文 AI 助手：支持 Meta-Org、组织、项目、治理和开发者工具场景的流式调用与成本展示。
 - API Workbench：按域浏览和调用后端 API，支持路径参数、查询参数、请求体模板和认证 Token。
 
 ## 技术架构
@@ -114,6 +126,10 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | `layer` | 战略、战术、执行层分类和 MVRU 分层配置。 |
 | `capability` | 能力目录、能力绑定、能力匹配、能力评估。 |
 | `dashboard` | 聚合各域统计和近期事件，提供系统总览。 |
+| `metaorg` | 聚合 Meta-Org 首页、组织健康、风险、活动和收件箱。 |
+| `aigateway` | 模型供应商、模型目录、流式调用、调用日志和 AI 使用成本。 |
+| `toolruntime` | 工具注册、治理策略、审批、执行审计和内部工具适配。 |
+| `finance` | 通用财务适配器、导出批次、Webhook 回调和对账。 |
 | `workflow` | 工作流模板、实例、任务、决策和上下文。 |
 | `project` | 需求、文档、需求分析工作流、项目、成员、项目工作流、交付、成本、反馈。 |
 | `governance` | 权限、治理原则、控制规则、权限检查和访问决策。 |
@@ -130,6 +146,9 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | `frontend/src/app/control-workspaces.tsx` | 治理、权重、能力评估、工作流设计和工作流匹配工作区。 |
 | `frontend/src/app/project-lifecycle-workspace.tsx` | 需求、项目、交付、成本和反馈工作区。 |
 | `frontend/src/app/api-workbench.tsx` | 通用 API 调用面板。 |
+| `frontend/src/app/ai-assistant.tsx` | 上下文 AI 助手和 SSE 流式响应面板。 |
+| `frontend/src/app/developer-tools-workspace.tsx` | 模型、工具、接口文件、调用日志和成本视图。 |
+| `frontend/src/app/finance-workspace.tsx` | 财务适配器、导出批次、对账和失败回调视图。 |
 | `frontend/src/lib/api.ts` | API 请求封装、基础类型和 Dashboard 数据结构。 |
 | `frontend/src/lib/operations.ts` | API Workbench 的域、路径、参数和请求体模板。 |
 | `frontend/src/lib/i18n.tsx` | 中英文语言包和 i18n Provider。 |
@@ -137,7 +156,7 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 
 ## 数据库迁移
 
-后端启动时会执行根目录 `migrations/` 中的 SQL 文件。当前迁移已到 `015`：
+后端启动时会执行根目录 `migrations/` 中的 SQL 文件。当前迁移已到 `018`：
 
 | 迁移 | 主题 |
 |---|---|
@@ -156,6 +175,9 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | `013_project_lifecycle.sql` | requirements、projects、project_members、project_workflows、deliverables、project_cost_entries、project_evaluations。 |
 | `014_requirement_documents_workflow_analysis.sql` | requirement_documents、requirement_analysis_workflows。 |
 | `015_single_org_positions_workflow_graph.sql` | positions、position_assignments，并为工作流和项目成员补充组织、部门、岗位关联。 |
+| `016_ai_gateway.sql` | 模型供应商、模型目录、价格版本、AI 调用和 AI 使用流水。 |
+| `017_tool_runtime.sql` | 工具定义、接口文件、工具执行、工具审批和首批内部工具。 |
+| `018_finance_exports.sql` | 财务适配器、导出批次、导出行、Webhook 事件和 AI 成本入账约束。 |
 
 ## API 概览
 
@@ -174,7 +196,11 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | 域 | 主要接口 |
 |---|---|
 | Dashboard | `GET /dashboard/overview` |
+| Meta-Org | `GET /meta-org/overview`, `GET /meta-org/inbox` |
 | Identity | `POST /agents/register`, `GET /agents` |
+| AI Gateway | 模型供应商、模型目录、`POST /ai-gateway/invoke`、`GET /ai-gateway/stream`、调用日志和成本汇总接口 |
+| Tool Runtime | 工具定义、工具测试、工具执行日志和工具审批接口 |
+| Finance | 财务适配器、导出批次、提交导出、Webhook 回调和对账接口 |
 | Organization | `GET/POST/PATCH /organizations`, `GET /organization/current`, 部门、部门树、岗位、岗位任命、组织成员、外部成员、MVRU、关系、成员匹配和能力匹配接口 |
 | Layer | `POST /layers/classify`, `GET/PUT /layers/config/{mvruId}`, `GET /layers/rules` |
 | Capability | `GET/POST /capabilities`, `GET /capabilities/{id}`, `POST /capabilities/match`, 能力评估、绑定和解绑接口 |
@@ -185,7 +211,7 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | Observability | Trace、Span、Trace 完成、Metric 写入和查询接口 |
 | Verification | 验证报告、报告查询、评审分配和评审完成接口 |
 
-前端的 API Workbench 元数据位于 `frontend/src/lib/operations.ts`，它按 Dashboard、Identity、Organization、Layer、Capability、Workflow、Observability、Verification、Governance、Evolution、Requirement、Project、Delivery、Cost、Feedback 等操作域组织。
+前端的 API Workbench 元数据位于 `frontend/src/lib/operations.ts`，它按 MetaOrg、DeveloperTools、Finance、Dashboard、Identity、Organization、Layer、Capability、Workflow、Observability、Verification、Governance、Evolution、Requirement、Project、Delivery、Cost、Feedback 等操作域组织。
 
 ## 快速开始
 
@@ -257,6 +283,7 @@ NEXT_PUBLIC_API_URL=http://127.0.0.1:8080/api/v1
 | `SERVER_PORT` | `8080` | 后端监听端口。 |
 | `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/meta_org?sslmode=disable` | PostgreSQL 连接串。 |
 | `JWT_SECRET` | `dev-secret-change-in-production` | JWT 签名密钥，生产环境必须替换。 |
+| `MODEL_SECRET_KEY` | `0123456789abcdef0123456789abcdef` | 32 字符密钥，用于模型供应商和财务适配器密钥加密，生产环境必须替换。 |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | 允许访问 API 的前端来源。 |
 | `MIGRATIONS_PATH` | `migrations` | SQL 迁移目录；本地从 `backend/` 运行时通常设为 `../migrations`。 |
 
@@ -277,20 +304,22 @@ backend/
 frontend/
   src/app/                    Next.js App Router 页面和工作台
   src/lib/                    API、认证、i18n、API Workbench 元数据
-migrations/                   PostgreSQL SQL 迁移 001-015
+migrations/                   PostgreSQL SQL 迁移 001-018
+docs/operations/              生产运维、财务适配器协议和排障文档
+.github/workflows/            GitHub Actions CI
 docker-compose.yml            本地完整环境编排
 ```
 
 ## 当前状态与边界
 
-当前代码已经具备完整的组织管理、项目生命周期、治理、演化、观测和验证骨架，适合作为自进化组织平台的业务原型和二次开发基础。
+当前代码已经具备单企业 Meta-Org 入口、组织管理、项目生命周期、AI Gateway、工具运行闭环、成本核算、财务导出、治理、演化、观测和验证骨架，适合作为 10-50 人团队与 50-250+ Agent 的生产 v1 基础。
 
 从旧 `harness_org` 数据库升级到 `meta_org` 时，必须先显式备份并迁移数据；系统不会自动删除或覆盖旧库。
 
 需要继续增强的方向：
 
-- 接入真实 LLM、Agent 执行器或外部工具运行时。
+- 扩展更多模型能力、Agent 执行器和外部工具运行时。
 - 将 MVRU 沙箱执行从数据模型扩展为可隔离执行环境。
-- 为关键服务补充自动化测试和端到端测试。
+- 为关键前端状态和端到端业务场景补充自动化测试。
 - 完善生产级密钥管理、审计报表、告警和权限策略可视化。
 - 扩展多组织租户边界、审批流模板和更细粒度的操作审计。

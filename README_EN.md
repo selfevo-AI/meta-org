@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 Meta-Org is an AI-native organization operating platform for hybrid human and AI-agent teams. It brings human employees, AI agents, external collaborators, organization structure, project delivery, governance rules, and continuous learning into one operating system. The current product flow covers requirement intake, project formation, workflow execution, deliverable acceptance, cost tracking, and feedback capture.
 
-The project is built around the **ETCLOVG** framework: Execution, Tooling, Context, Lifecycle, Observability, Verification, and Governance. This repository currently includes a Go backend, a Next.js frontend, PostgreSQL migrations, Docker Compose orchestration, JWT authentication, organization and project workspaces, and an API Workbench.
+The project is built around the **ETCLOVG** framework: Execution, Tooling, Context, Lifecycle, Observability, Verification, and Governance. This repository currently includes a Go backend, a Next.js frontend, PostgreSQL migrations, Docker Compose orchestration, JWT authentication, Meta-Org Home, organization and project workspaces, Developer Tools, AI Gateway, tool runtime, cost accounting, and generic finance exports.
 
 ## Product Goal
 
@@ -62,6 +62,14 @@ The system currently supports a full project lifecycle:
 - Employee profiles, context weights, capability evaluations, and access-decision data structures.
 - Weight computation, context-weight computation, outcome recording, experiments, knowledge entries, and signal acknowledgement.
 
+### AI Operations, Tools, and Finance
+
+- Meta-Org Home aggregates organization health, project status, agent status, AI cost, risks, recent events, and inbox items.
+- AI Gateway supports OpenAI, Anthropic, and Gemini provider configuration, encrypted secrets, model catalog, streaming calls, invocation logs, and cost summaries.
+- Tool Runtime supports tool registry, governance decisions, approval policy, execution audit, and internal tool adapters.
+- Developer Tools covers model providers, model catalog, tool registry, interface files, invocation logs, and cost summaries.
+- Finance Exports support generic finance adapters, HMAC/Bearer auth, export batches, webhook callbacks, and reconciliation differences.
+
 ### Frontend Workspaces
 
 The frontend is an operational single-page workspace:
@@ -69,10 +77,14 @@ The frontend is an operational single-page workspace:
 - Login, registration, session persistence, and logout.
 - Chinese and English language switching through `LanguageProvider` and `useI18n`.
 - Dashboard overview for identity, organization, workflow, capability, observability, verification, governance, evolution, and recent events.
+- Meta-Org Home for organization health, AI cost, risks, inbox items, and contextual AI assistance.
 - Draggable sidebar menu groups: business lifecycle, organization capabilities, governance evolution, and system tools.
 - Organization workspace for organizations, departments, positions, members, external members, position assignments, MVRU links, and matching.
 - Control workspaces for governance, weights, capability evaluations, workflow design, and workflow matching.
 - Project lifecycle workspace for requirements, projects, delivery, costs, and feedback.
+- Developer Tools for providers, models, tools, interface files, invocation logs, and cost summaries.
+- Finance Exports for adapters, export batches, reconciliation, and failed callbacks.
+- Context AI Assistant for Meta-Org, organization, project, governance, and developer-tool contexts with streaming and cost display.
 - API Workbench for browsing and calling backend APIs by domain, with path parameters, query parameters, request templates, and auth token support.
 
 ## Technical Architecture
@@ -114,6 +126,10 @@ Shared packages live under `backend/internal/pkg/` and cover configuration, data
 | `layer` | Strategic, tactical, and execution layer classification and MVRU layer configuration. |
 | `capability` | Capability catalog, capability bindings, capability matching, and capability evaluations. |
 | `dashboard` | Aggregated statistics and recent events for the system overview. |
+| `metaorg` | Meta-Org Home, organization health, risks, activity, and inbox aggregation. |
+| `aigateway` | Model providers, model catalog, streaming calls, invocation logs, and AI usage cost. |
+| `toolruntime` | Tool registry, governance policy, approvals, execution audit, and internal tool adapters. |
+| `finance` | Generic finance adapters, export batches, webhook callbacks, and reconciliation. |
 | `workflow` | Workflow templates, instances, tasks, decisions, and context. |
 | `project` | Requirements, documents, requirement-analysis workflows, projects, members, project workflows, delivery, costs, and feedback. |
 | `governance` | Permissions, governance principles, control rules, permission checks, and access decisions. |
@@ -130,6 +146,9 @@ Shared packages live under `backend/internal/pkg/` and cover configuration, data
 | `frontend/src/app/control-workspaces.tsx` | Governance, weights, capability evaluations, workflow design, and workflow matching. |
 | `frontend/src/app/project-lifecycle-workspace.tsx` | Requirement, project, delivery, cost, and feedback workspace. |
 | `frontend/src/app/api-workbench.tsx` | Generic API calling panel. |
+| `frontend/src/app/ai-assistant.tsx` | Context AI Assistant and SSE streaming response panel. |
+| `frontend/src/app/developer-tools-workspace.tsx` | Model, tool, interface file, invocation log, and cost views. |
+| `frontend/src/app/finance-workspace.tsx` | Finance adapter, export batch, reconciliation, and failed callback views. |
 | `frontend/src/lib/api.ts` | API request wrapper, base types, and dashboard data shapes. |
 | `frontend/src/lib/operations.ts` | API Workbench domain, path, parameter, and body-template metadata. |
 | `frontend/src/lib/i18n.tsx` | Chinese and English language packs and i18n provider. |
@@ -137,7 +156,7 @@ Shared packages live under `backend/internal/pkg/` and cover configuration, data
 
 ## Database Migrations
 
-The backend applies SQL files from the root `migrations/` directory at startup. The current migration set goes through `015`:
+The backend applies SQL files from the root `migrations/` directory at startup. The current migration set goes through `018`:
 
 | Migration | Topic |
 |---|---|
@@ -156,6 +175,9 @@ The backend applies SQL files from the root `migrations/` directory at startup. 
 | `013_project_lifecycle.sql` | requirements, projects, project_members, project_workflows, deliverables, project_cost_entries, project_evaluations. |
 | `014_requirement_documents_workflow_analysis.sql` | requirement_documents, requirement_analysis_workflows. |
 | `015_single_org_positions_workflow_graph.sql` | positions, position_assignments, plus organization, department, and position links for workflows and project members. |
+| `016_ai_gateway.sql` | Model providers, model catalog, price versions, AI invocations, and AI usage ledger. |
+| `017_tool_runtime.sql` | Tool definitions, interface files, tool executions, approvals, and initial internal tools. |
+| `018_finance_exports.sql` | Finance adapters, export batches, export lines, webhook events, and AI cost posting constraints. |
 
 ## API Overview
 
@@ -174,7 +196,11 @@ All other business routes require a JWT Bearer Token.
 | Domain | Main Routes |
 |---|---|
 | Dashboard | `GET /dashboard/overview` |
+| Meta-Org | `GET /meta-org/overview`, `GET /meta-org/inbox` |
 | Identity | `POST /agents/register`, `GET /agents` |
+| AI Gateway | Model providers, model catalog, `POST /ai-gateway/invoke`, `GET /ai-gateway/stream`, invocation logs, and cost summary routes |
+| Tool Runtime | Tool definition, tool test, tool execution log, and tool approval routes |
+| Finance | Finance adapter, export batch, submit export, webhook callback, and reconciliation routes |
 | Organization | `GET/POST/PATCH /organizations`, `GET /organization/current`, plus department, department tree, position, position assignment, organization member, external member, MVRU, relationship, member-matching, and capability-matching routes |
 | Layer | `POST /layers/classify`, `GET/PUT /layers/config/{mvruId}`, `GET /layers/rules` |
 | Capability | `GET/POST /capabilities`, `GET /capabilities/{id}`, `POST /capabilities/match`, capability evaluation, binding, and unbinding routes |
@@ -185,7 +211,7 @@ All other business routes require a JWT Bearer Token.
 | Observability | Trace, span, trace completion, metric recording, and metric query routes |
 | Verification | Verification report, report query, review assignment, and review completion routes |
 
-Frontend API Workbench metadata lives in `frontend/src/lib/operations.ts`. It groups operations by Dashboard, Identity, Organization, Layer, Capability, Workflow, Observability, Verification, Governance, Evolution, Requirement, Project, Delivery, Cost, and Feedback.
+Frontend API Workbench metadata lives in `frontend/src/lib/operations.ts`. It groups operations by MetaOrg, DeveloperTools, Finance, Dashboard, Identity, Organization, Layer, Capability, Workflow, Observability, Verification, Governance, Evolution, Requirement, Project, Delivery, Cost, and Feedback.
 
 ## Quick Start
 
@@ -257,6 +283,7 @@ Backend configuration is loaded in `backend/internal/pkg/config/config.go`:
 | `SERVER_PORT` | `8080` | Backend listen port. |
 | `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/meta_org?sslmode=disable` | PostgreSQL connection string. |
 | `JWT_SECRET` | `dev-secret-change-in-production` | JWT signing secret. Replace in production. |
+| `MODEL_SECRET_KEY` | `0123456789abcdef0123456789abcdef` | 32-character key for model provider and finance adapter secret encryption. Replace in production. |
 | `CORS_ORIGINS` | `http://localhost:3000,http://127.0.0.1:3000` | Frontend origins allowed to call the API. |
 | `MIGRATIONS_PATH` | `migrations` | SQL migration directory; when running from `backend/`, usually set it to `../migrations`. |
 
@@ -277,20 +304,22 @@ backend/
 frontend/
   src/app/                    Next.js App Router pages and workspaces
   src/lib/                    API, auth, i18n, API Workbench metadata
-migrations/                   PostgreSQL SQL migrations 001-015
 docker-compose.yml            Full local environment orchestration
+migrations/                   PostgreSQL SQL migrations 001-018
+docs/operations/              Production operations and finance adapter protocol docs
+.github/workflows/            GitHub Actions CI
 ```
 
 ## Current Status and Boundaries
 
-The codebase already provides a working organization management, project lifecycle, governance, evolution, observability, and verification foundation. It is suitable as a business prototype and as a base for further development of a self-evolving organization platform.
+The codebase now provides a single-enterprise Meta-Org entry, organization management, project lifecycle, AI Gateway, tool runtime loop, cost accounting, finance exports, governance, evolution, observability, and verification foundation. It is suitable as a production v1 base for 10-50 humans and 50-250+ agents.
 
 When upgrading from the old `harness_org` database to `meta_org`, explicitly back up and migrate data first. The system does not automatically delete or overwrite the old database.
 
 Important next steps:
 
-- Connect real LLMs, agent executors, or external tool runtimes.
+- Expand model capabilities, agent executors, and external tool runtimes.
 - Expand the MVRU sandbox concept from data model to isolated execution environment.
-- Add automated service tests and end-to-end tests for critical workflows.
+- Add automated frontend-state and end-to-end tests for critical workflows.
 - Improve production-grade secret management, audit reports, alerts, and permission-policy visualization.
 - Extend multi-organization tenant boundaries, approval-flow templates, and finer-grained operation audit trails.
