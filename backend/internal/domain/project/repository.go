@@ -545,6 +545,21 @@ func (r *Repository) CreateCostEntry(ctx context.Context, projectID uuid.UUID, i
 	return entry, nil
 }
 
+func (r *Repository) GetCostEntryBySource(ctx context.Context, sourceType string, sourceID uuid.UUID) (*CostEntry, error) {
+	entry := &CostEntry{}
+	err := scanCostEntry(r.db.QueryRow(ctx,
+		`SELECT id, project_id, source_type, source_id, actor_id, actor_type, amount,
+		        currency, occurred_at, description, metadata, created_at
+		 FROM project_cost_entries
+		 WHERE source_type = $1 AND source_id = $2
+		 ORDER BY created_at ASC
+		 LIMIT 1`, sourceType, sourceID), entry)
+	if err != nil {
+		return nil, fmt.Errorf("get cost entry by source: %w", err)
+	}
+	return entry, nil
+}
+
 func (r *Repository) ListCostEntries(ctx context.Context, projectID uuid.UUID) ([]CostEntry, error) {
 	rows, err := r.db.Query(ctx,
 		`SELECT id, project_id, source_type, source_id, actor_id, actor_type, amount,

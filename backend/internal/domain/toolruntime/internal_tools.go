@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/finance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
 )
@@ -17,10 +18,22 @@ type ProjectService interface {
 	CreateCostEntry(context.Context, uuid.UUID, project.CreateCostEntryInput) (*project.CostEntry, error)
 }
 
-func InternalTools(projectSvc ProjectService) map[string]ToolAdapter {
+type FinanceService interface {
+	CreateExportBatch(context.Context, finance.CreateExportBatchInput) (*finance.ExportBatch, error)
+}
+
+func InternalTools(projectSvc ProjectService, financeServices ...FinanceService) map[string]ToolAdapter {
+	var financeSvc FinanceService
+	if len(financeServices) > 0 {
+		financeSvc = financeServices[0]
+	}
 	tools := map[string]ToolAdapter{
-		"governance.explain_decision":  explainGovernanceDecision,
-		"finance.prepare_export_batch": notConfiguredTool("finance module is not available until finance integration is enabled"),
+		"governance.explain_decision": explainGovernanceDecision,
+	}
+	if financeSvc == nil {
+		tools["finance.prepare_export_batch"] = notConfiguredTool("finance module is not available until finance integration is enabled")
+	} else {
+		tools["finance.prepare_export_batch"] = prepareFinanceExportBatchTool(financeSvc)
 	}
 	if projectSvc == nil {
 		tools["requirement.analyze"] = notConfiguredTool("project service is not configured")
@@ -147,6 +160,28 @@ func createCostEntryTool(projectSvc ProjectService) ToolAdapter {
 			return ToolResult{}, err
 		}
 		return ToolResult{Summary: "Project cost entry created", Data: map[string]any{"cost_entry": entry}}, nil
+	}
+}
+
+func prepareFinanceExportBatchTool(financeSvc FinanceService) ToolAdapter {
+	return func(ctx context.Context, input ExecuteToolInput) (ToolResult, error) {
+		adapterID, err := uuidArg(input.Arguments, "adapter_id")
+		if err != nil {
+			return ToolResult{}, err
+		}
+		batch, err := financeSvc.CreateExportBatch(ctx, finance.CreateExportBatchInput{
+			AdapterID:   adapterID,
+			PeriodStart: stringArg(input.Arguments, "period_start"),
+			PeriodEnd:   stringArg(input.Arguments, "period_end"),
+			Currency:    stringArg(input.Arguments, "currency"),
+			ActorID:     &input.ActorID,
+			ActorType:   input.ActorType,
+			Metadata:    mapArg(input.Arguments, "metadata"),
+		})
+		if err != nil {
+			return ToolResult{}, err
+		}
+		return ToolResult{Summary: "Finance export batch prepared", Data: map[string]any{"export_batch": batch}}, nil
 	}
 }
 

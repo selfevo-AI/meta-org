@@ -13,6 +13,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/capability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/dashboard"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/finance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/identity"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/layer"
@@ -105,8 +106,12 @@ func main() {
 	)
 	projectHandler := project.NewHandler(projectSvc)
 
+	financeRepo := finance.NewRepository(db, modelSecretBox)
+	financeSvc := finance.NewService(financeRepo, finance.WithCostPoster(projectSvc))
+	financeHandler := finance.NewHandler(financeSvc)
+
 	toolRepo := toolruntime.NewRepository(db)
-	toolSvc := toolruntime.NewService(toolRepo, govSvc, toolruntime.InternalTools(projectSvc))
+	toolSvc := toolruntime.NewService(toolRepo, govSvc, toolruntime.InternalTools(projectSvc, financeSvc))
 	toolHandler := toolruntime.NewHandler(toolSvc)
 
 	verRepo := verification.NewRepository(db)
@@ -129,6 +134,7 @@ func main() {
 		AIGatewayHandler:     aiHandler,
 		WorkflowHandler:      wfHandler,
 		ProjectHandler:       projectHandler,
+		FinanceHandler:       financeHandler,
 		ToolRuntimeHandler:   toolHandler,
 		ObservabilityHandler: obsHandler,
 		VerificationHandler:  verHandler,

@@ -9,6 +9,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/capability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/dashboard"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/finance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/identity"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/layer"
@@ -33,6 +34,7 @@ type Dependencies struct {
 	AIGatewayHandler     *aigateway.Handler
 	WorkflowHandler      *workflow.Handler
 	ProjectHandler       *project.Handler
+	FinanceHandler       *finance.Handler
 	ToolRuntimeHandler   *toolruntime.Handler
 	ObservabilityHandler *observability.Handler
 	VerificationHandler  *verification.Handler
@@ -48,6 +50,9 @@ func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
 		r.Get("/health", healthCheck)
 		if deps.IdentityHandler != nil {
 			deps.IdentityHandler.RegisterPublicRoutes(r)
+		}
+		if deps.FinanceHandler != nil {
+			deps.FinanceHandler.RegisterPublicRoutes(r)
 		}
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.AuthMiddleware(deps.JWTSecret))
@@ -77,6 +82,9 @@ func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
 			}
 			if deps.ProjectHandler != nil {
 				deps.ProjectHandler.RegisterRoutes(r)
+			}
+			if deps.FinanceHandler != nil {
+				deps.FinanceHandler.RegisterRoutes(r)
 			}
 			if deps.ToolRuntimeHandler != nil {
 				deps.ToolRuntimeHandler.RegisterRoutes(r)

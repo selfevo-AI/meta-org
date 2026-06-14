@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
@@ -706,6 +708,28 @@ func (s *Service) CreateCostEntry(ctx context.Context, projectID uuid.UUID, inpu
 	return s.repo.CreateCostEntry(ctx, projectID, input)
 }
 
+func (s *Service) CreateCostEntryFromAIUsage(ctx context.Context, projectID uuid.UUID, input CreateCostEntryInput) (*CostEntry, error) {
+	if err := prepareAIUsageCostEntryInput(&input); err != nil {
+		return nil, err
+	}
+	existing, err := s.repo.GetCostEntryBySource(ctx, "ai_usage", *input.SourceID)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	entry, err := s.CreateCostEntry(ctx, projectID, input)
+	if err == nil {
+		return entry, nil
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return s.repo.GetCostEntryBySource(ctx, "ai_usage", *input.SourceID)
+	}
+	return nil, err
+}
+
 func (s *Service) ListCostEntries(ctx context.Context, projectID uuid.UUID) ([]CostEntry, error) {
 	entries, err := s.repo.ListCostEntries(ctx, projectID)
 	if entries == nil {
@@ -1079,6 +1103,25 @@ func normalizeCostEntryInput(input *CreateCostEntryInput) {
 		input.Metadata = map[string]any{}
 	}
 	input.EntryActorType = normalizeActorType(input.EntryActorType)
+}
+
+func prepareAIUsageCostEntryInput(input *CreateCostEntryInput) error {
+	if input.SourceID == nil || *input.SourceID == uuid.Nil {
+		return fmt.Errorf("%w: source_id is required for ai_usage cost entries", ErrValidation)
+	}
+	input.SourceType = "ai_usage"
+	if input.Currency == "" {
+		input.Currency = "CNY"
+	}
+	if input.Description == "" {
+		input.Description = "AI usage cost"
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+	input.Metadata["source_type"] = "ai_usage"
+	input.Metadata["ai_usage_ledger_id"] = input.SourceID.String()
+	return nil
 }
 
 func normalizeProjectEvaluationInput(input *CreateProjectEvaluationInput) {
