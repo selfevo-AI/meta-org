@@ -21,18 +21,14 @@ import {
   Workflow,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import type { DragEvent, FormEvent } from 'react'
-import {
-  getDashboardOverview,
-  listRoles,
-  login,
-  registerUser,
-} from '@/lib/api'
-import type { DashboardOverview, Role } from '@/lib/api'
+import type { DragEvent, FormEvent, ReactNode } from 'react'
+import { getMetaOrgInbox, getMetaOrgOverview, listRoles, login, registerUser } from '@/lib/api'
+import type { InboxItem, MetaOrgOverview, Role } from '@/lib/api'
 import { clearSession, getSessionUser, getToken, setSession } from '@/lib/auth'
 import { useI18n } from '@/lib/i18n'
 import { apiOperations, operationDomains } from '@/lib/operations'
 import { ApiWorkbench } from './api-workbench'
+import { AIAssistant } from './ai-assistant'
 import {
   CapabilityEvaluationWorkspace,
   GovernanceWorkspace,
@@ -40,6 +36,8 @@ import {
   WorkflowDesignerWorkspace,
   WorkflowMatchingWorkspace,
 } from './control-workspaces'
+import { DeveloperToolsWorkspace } from './developer-tools-workspace'
+import { FinanceWorkspace } from './finance-workspace'
 import { OrganizationWorkspace } from './organization-workspace'
 import { ProjectLifecycleWorkspace } from './project-lifecycle-workspace'
 
@@ -47,6 +45,7 @@ type AuthMode = 'login' | 'register'
 type WorkspaceView = 'overview' | `domain:${string}`
 
 const domainLabels: Record<string, string> = {
+  MetaOrg: 'Meta-Org',
   Dashboard: '系统',
   Identity: '身份',
   Organization: '组织',
@@ -62,6 +61,8 @@ const domainLabels: Record<string, string> = {
   Delivery: '交付',
   Cost: '成本',
   Feedback: '反馈评估',
+  DeveloperTools: '开发者工具',
+  Finance: '财务导出',
 }
 
 type MenuGroup = {
@@ -71,7 +72,16 @@ type MenuGroup = {
 }
 
 const lifecycleDomains = ['Requirement', 'Project', 'Delivery', 'Cost', 'Feedback']
-const dedicatedDomains = new Set(['Organization', 'Governance', 'Evolution', 'Capability', 'Workflow', ...lifecycleDomains])
+const dedicatedDomains = new Set([
+  'Organization',
+  'Governance',
+  'Evolution',
+  'Capability',
+  'Workflow',
+  'DeveloperTools',
+  'Finance',
+  ...lifecycleDomains,
+])
 const menuStorageKey = 'meta_org.menu.groups.v1'
 const expandedMenuStorageKey = 'meta_org.menu.expanded.v1'
 const legacyMenuStorageKey = 'harness.menu.groups.v1'
@@ -96,7 +106,7 @@ const defaultMenuGroups: MenuGroup[] = [
   {
     id: 'system',
     label: '系统工具',
-    domains: ['Dashboard', 'Identity', 'Layer', 'Observability'],
+    domains: ['MetaOrg', 'Dashboard', 'DeveloperTools', 'Finance', 'Identity', 'Layer', 'Observability'],
   },
 ]
 
@@ -117,6 +127,10 @@ function formatCompact(value: number): string {
 
 function formatPercent(value: number): string {
   return `${percentFormatter.format(value * 100)}%`
+}
+
+function formatMoney(value: number, currency = 'CNY'): string {
+  return `${currency} ${Number(value || 0).toFixed(2)}`
 }
 
 function formatDate(value: string): string {
@@ -209,7 +223,8 @@ export default function Home() {
   const [token, setToken] = useState<string | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
   const [userType, setUserType] = useState<string | null>(null)
-  const [overview, setOverview] = useState<DashboardOverview | null>(null)
+  const [overview, setOverview] = useState<MetaOrgOverview | null>(null)
+  const [inbox, setInbox] = useState<InboxItem[]>([])
   const [roles, setRoles] = useState<Role[]>([])
   const [loading, setLoading] = useState(false)
   const [overviewLoading, setOverviewLoading] = useState(false)
@@ -263,9 +278,12 @@ export default function Home() {
     if (!token) return
     let cancelled = false
 
-    getDashboardOverview(token)
-      .then((data) => {
-        if (!cancelled) setOverview(data)
+    Promise.all([getMetaOrgOverview(token), getMetaOrgInbox(token)])
+      .then(([overviewData, inboxData]) => {
+        if (!cancelled) {
+          setOverview(overviewData)
+          setInbox(inboxData)
+        }
       })
       .catch((err) => {
         if (!cancelled) setError(err instanceof Error ? err.message : t('加载概览失败'))
@@ -278,8 +296,8 @@ export default function Home() {
 
   const healthRatio = useMemo(() => {
     if (!overview) return 0
-    const active = overview.workflow.instances_by_status.active ?? 0
-    const total = Math.max(overview.workflow.instances, 1)
+    const active = overview.health.active_projects
+    const total = Math.max(overview.health.active_projects + overview.health.open_requirements, 1)
     return active / total
   }, [overview])
 
@@ -288,8 +306,9 @@ export default function Home() {
     setOverviewLoading(true)
     setError(null)
     try {
-      const data = await getDashboardOverview(activeToken)
-      setOverview(data)
+      const [overviewData, inboxData] = await Promise.all([getMetaOrgOverview(activeToken), getMetaOrgInbox(activeToken)])
+      setOverview(overviewData)
+      setInbox(inboxData)
     } catch (err) {
       setError(err instanceof Error ? err.message : t('加载概览失败'))
     } finally {
@@ -332,6 +351,7 @@ export default function Home() {
     setUserId(null)
     setUserType(null)
     setOverview(null)
+    setInbox([])
     setError(null)
     setWorkspaceView('overview')
   }
@@ -369,11 +389,11 @@ export default function Home() {
     setExpandedGroups(defaultExpandedGroups())
   }
 
-  const activeDomain = workspaceView === 'overview' ? 'Dashboard' : workspaceView.replace('domain:', '')
+  const activeDomain = workspaceView === 'overview' ? 'MetaOrg' : workspaceView.replace('domain:', '')
   const activeGroup = menuGroups.find((group) => group.domains.includes(activeDomain))
   const activeOperationCount =
     workspaceView === 'overview'
-      ? apiOperations.filter((operation) => operation.domain === 'Dashboard').length
+      ? apiOperations.filter((operation) => operation.domain === 'MetaOrg').length
       : apiOperations.filter((operation) => operation.domain === activeDomain).length
 
   return (
@@ -550,16 +570,20 @@ export default function Home() {
               )}
               {workspaceView === 'overview' ? (
                 overview ? (
-                  <Dashboard overview={overview} healthRatio={healthRatio} />
+                  <Dashboard overview={overview} inbox={inbox} healthRatio={healthRatio} token={token} />
                 ) : (
                   <div className="flex min-h-[420px] items-center justify-center rounded-lg border border-slate-200 bg-white">
                     <RefreshCw className="h-5 w-5 animate-spin text-slate-500" />
                   </div>
                 )
               ) : workspaceView === 'domain:Organization' ? (
-                <OrganizationWorkspace token={token} currentUserId={userId} />
+                <WorkspaceWithAssistant token={token} contextType="organization">
+                  <OrganizationWorkspace token={token} currentUserId={userId} />
+                </WorkspaceWithAssistant>
               ) : workspaceView === 'domain:Governance' ? (
-                <GovernanceWorkspace token={token} currentUserId={userId} />
+                <WorkspaceWithAssistant token={token} contextType="governance">
+                  <GovernanceWorkspace token={token} currentUserId={userId} />
+                </WorkspaceWithAssistant>
               ) : workspaceView === 'domain:Evolution' ? (
                 <WeightWorkspace token={token} currentUserId={userId} />
               ) : workspaceView === 'domain:Capability' ? (
@@ -572,11 +596,22 @@ export default function Home() {
               ) : ['domain:Requirement', 'domain:Project', 'domain:Delivery', 'domain:Cost', 'domain:Feedback'].includes(
                   workspaceView,
                 ) ? (
-                <ProjectLifecycleWorkspace
+                <WorkspaceWithAssistant
                   token={token}
-                  currentUserId={userId}
-                  mode={workspaceView.replace('domain:', '') as 'Requirement' | 'Project' | 'Delivery' | 'Cost' | 'Feedback'}
-                />
+                  contextType={workspaceView === 'domain:Requirement' ? 'requirement' : 'project'}
+                >
+                  <ProjectLifecycleWorkspace
+                    token={token}
+                    currentUserId={userId}
+                    mode={workspaceView.replace('domain:', '') as 'Requirement' | 'Project' | 'Delivery' | 'Cost' | 'Feedback'}
+                  />
+                </WorkspaceWithAssistant>
+              ) : workspaceView === 'domain:DeveloperTools' ? (
+                <WorkspaceWithAssistant token={token} contextType="developer_tools">
+                  <DeveloperToolsWorkspace token={token} />
+                </WorkspaceWithAssistant>
+              ) : workspaceView === 'domain:Finance' ? (
+                <FinanceWorkspace token={token} />
               ) : (
                 <ApiWorkbench
                   key={workspaceView}
@@ -755,132 +790,198 @@ function WorkspaceHeader({
   )
 }
 
-function Dashboard({ overview, healthRatio }: { overview: DashboardOverview; healthRatio: number }) {
+function WorkspaceWithAssistant({
+  token,
+  contextType,
+  children,
+}: {
+  token: string
+  contextType: 'requirement' | 'project' | 'organization' | 'governance' | 'developer_tools'
+  children: ReactNode
+}) {
+  return (
+    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="min-w-0">{children}</div>
+      <AIAssistant token={token} contextType={contextType} />
+    </div>
+  )
+}
+
+function Dashboard({
+  overview,
+  inbox,
+  healthRatio,
+  token,
+}: {
+  overview: MetaOrgOverview
+  inbox: InboxItem[]
+  healthRatio: number
+  token: string
+}) {
   const { t } = useI18n()
-  const agentCoverage =
-    overview.identity.total_agents > 0 ? overview.identity.active_agents / overview.identity.total_agents : 0
+  const agentCoverage = overview.agents.total > 0 ? overview.agents.active / overview.agents.total : 0
 
   return (
-    <div className="space-y-5">
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          icon={Users}
-          label={t('组织成员')}
-          value={formatNumber(overview.identity.users + overview.identity.total_agents)}
-          detail={`${formatNumber(overview.identity.active_agents)} ${t('个活跃 Agent')}`}
-          tone="blue"
-        />
-        <MetricCard
-          icon={GitBranch}
-          label={t('MVRU 单元')}
-          value={formatNumber(overview.organization.mvrus)}
-          detail={`${formatNumber(overview.organization.relationships)} ${t('条关系')}`}
-          tone="emerald"
-        />
-        <MetricCard
-          icon={Workflow}
-          label={t('工作流实例')}
-          value={formatNumber(overview.workflow.instances)}
-          detail={`${formatPercent(healthRatio)} active`}
-          tone="amber"
-        />
-        <MetricCard
-          icon={ShieldCheck}
-          label={t('治理覆盖')}
-          value={formatNumber(overview.governance.active_principles)}
-          detail={`${formatNumber(overview.governance.active_control_rules)} ${t('条规则启用')}`}
-          tone="violet"
-        />
-      </div>
+    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="min-w-0 space-y-5">
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            icon={Users}
+            label={t('meta.openRequirements')}
+            value={formatNumber(overview.health.open_requirements)}
+            detail={t('meta.pendingWork')}
+            tone="blue"
+          />
+          <MetricCard
+            icon={GitBranch}
+            label={t('meta.activeProjects')}
+            value={formatNumber(overview.health.active_projects)}
+            detail={`${formatPercent(healthRatio)} ${t('active')}`}
+            tone="emerald"
+          />
+          <MetricCard
+            icon={Bot}
+            label={t('meta.activeAgents')}
+            value={formatNumber(overview.health.active_agents)}
+            detail={`${formatNumber(overview.agents.total)} ${t('meta.totalAgents')}`}
+            tone="amber"
+          />
+          <MetricCard
+            icon={ShieldCheck}
+            label={t('meta.pendingApprovals')}
+            value={formatNumber(overview.health.pending_approvals)}
+            detail={formatMoney(overview.health.unexported_cost, overview.health.currency)}
+            tone="violet"
+          />
+        </div>
 
-      <div className="grid gap-4 xl:grid-cols-3">
-        <StatusBars
-          title={t('MVRU 状态')}
-          icon={GitBranch}
-          data={overview.organization.mvrus_by_status}
-          labels={{
-            designing: '设计中',
-            active: '运行中',
-            evaluating: '评估中',
-            evolving: '演进中',
-            dissolved: '已解散',
-          }}
-        />
-        <StatusBars
-          title={t('任务队列')}
-          icon={Activity}
-          data={overview.workflow.tasks_by_status}
-          labels={{
-            pending: '待处理',
-            assigned: '已分配',
-            in_progress: '执行中',
-            completed: '已完成',
-            rejected: '已拒绝',
-          }}
-        />
-        <StatusBars
-          title={t('实验状态')}
-          icon={BrainCircuit}
-          data={overview.evolution.experiments_by_status}
-          labels={{
-            proposed: '提议',
-            running: '运行',
-            completed: '完成',
-            failed: '失败',
-          }}
-        />
-      </div>
-
-      <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
-        <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between gap-3">
+        <div className="grid gap-4 xl:grid-cols-3">
+          <StatusBars
+            title={t('meta.projectStatus')}
+            icon={Workflow}
+            data={overview.projects.by_status}
+            labels={{
+              planning: 'planning',
+              active: 'active',
+              paused: 'paused',
+              delivering: 'delivering',
+              completed: 'completed',
+            }}
+          />
+          <StatusBars
+            title={t('meta.agentRisk')}
+            icon={BrainCircuit}
+            data={overview.agents.by_risk_level}
+            labels={{
+              low: 'low',
+              medium: 'medium',
+              high: 'high',
+              critical: 'critical',
+            }}
+          />
+          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex items-center gap-2">
-              <Gauge className="h-5 w-5 text-slate-500" />
-              <h2 className="text-base font-semibold text-slate-950">{t('运行信号')}</h2>
+              <Bot className="h-5 w-5 text-slate-500" />
+              <h2 className="text-base font-semibold text-slate-950">{t('meta.agentCoverage')}</h2>
             </div>
-            <StatusPill
-              label={overview.evolution.high_priority_signals > 0 ? t('高优先级') : t('稳定')}
-              tone={overview.evolution.high_priority_signals > 0 ? 'amber' : 'green'}
-            />
-          </div>
+            <div className="mt-5">
+              <div className="flex items-end justify-between">
+                <span className="text-3xl font-semibold text-slate-950">{formatPercent(agentCoverage)}</span>
+                <span className="text-sm text-slate-500">
+                  {formatNumber(overview.agents.active)} / {formatNumber(overview.agents.total)}
+                </span>
+              </div>
+              <div className="mt-3 h-2 rounded-full bg-slate-100">
+                <div
+                  className="h-2 rounded-full bg-emerald-500"
+                  style={{ width: `${Math.min(agentCoverage * 100, 100)}%` }}
+                />
+              </div>
+            </div>
+          </section>
+        </div>
 
-          <div className="mt-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <SignalStat label={t('能力调用 24h')} value={formatCompact(overview.capability.invocations_24h)} />
-            <SignalStat label={t('失败调用 24h')} value={formatCompact(overview.capability.failed_invocations_24h)} />
-            <SignalStat label={t('平均耗时')} value={`${Math.round(overview.capability.average_duration_ms)}ms`} />
-            <SignalStat label={t('观测 Span 24h')} value={formatCompact(overview.observability.spans_24h)} />
-            <SignalStat label={t('验证均分')} value={overview.verification.average_score.toFixed(2)} />
-            <SignalStat label={t('未确认信号')} value={formatCompact(overview.evolution.unacknowledged_signals)} />
-          </div>
-        </section>
+        <div className="grid gap-4 xl:grid-cols-[1fr_0.8fr]">
+          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2">
+                <Gauge className="h-5 w-5 text-slate-500" />
+                <h2 className="text-base font-semibold text-slate-950">{t('meta.costPanel')}</h2>
+              </div>
+              <StatusPill label={overview.cost.currency || 'CNY'} tone="blue" />
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <SignalStat label={t('meta.todayCost')} value={formatMoney(overview.cost.today, overview.cost.currency)} />
+              <SignalStat
+                label={t('meta.monthCost')}
+                value={formatMoney(overview.cost.month_to_date, overview.cost.currency)}
+              />
+              <SignalStat
+                label={t('meta.unexportedCost')}
+                value={formatMoney(overview.cost.unexported, overview.cost.currency)}
+              />
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              {Object.entries(overview.cost.by_provider).map(([provider, amount]) => (
+                <SignalStat key={provider} label={t(`provider.${provider}`)} value={formatMoney(amount, overview.cost.currency)} />
+              ))}
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="h-5 w-5 text-slate-500" />
+              <h2 className="text-base font-semibold text-slate-950">{t('meta.riskPanel')}</h2>
+            </div>
+            <div className="mt-4 divide-y divide-slate-100">
+              {overview.risks.length > 0 ? (
+                overview.risks.map((risk) => (
+                  <div key={`${risk.source}-${risk.id}`} className="grid gap-2 py-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-semibold text-slate-900">{risk.title}</p>
+                      <StatusPill label={risk.severity} tone={risk.severity === 'critical' || risk.severity === 'high' ? 'amber' : 'blue'} />
+                    </div>
+                    <p className="text-xs text-slate-500">{risk.source}</p>
+                  </div>
+                ))
+              ) : (
+                <p className="py-3 text-sm text-slate-500">{t('meta.noRisks')}</p>
+              )}
+            </div>
+          </section>
+        </div>
 
         <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex items-center gap-2">
-            <Bot className="h-5 w-5 text-slate-500" />
-            <h2 className="text-base font-semibold text-slate-950">{t('Agent 覆盖')}</h2>
+            <Activity className="h-5 w-5 text-slate-500" />
+            <h2 className="text-base font-semibold text-slate-950">{t('meta.inbox')}</h2>
           </div>
-          <div className="mt-5">
-            <div className="flex items-end justify-between">
-              <span className="text-3xl font-semibold text-slate-950">{formatPercent(agentCoverage)}</span>
-              <span className="text-sm text-slate-500">
-                {formatNumber(overview.identity.active_agents)} / {formatNumber(overview.identity.total_agents)}
-              </span>
-            </div>
-            <div className="mt-3 h-2 rounded-full bg-slate-100">
-              <div
-                className="h-2 rounded-full bg-emerald-500"
-                style={{ width: `${Math.min(agentCoverage * 100, 100)}%` }}
-              />
-            </div>
-          </div>
-          <div className="mt-5 grid grid-cols-2 gap-3">
-            <SignalStat label={t('能力库')} value={formatNumber(overview.capability.active_capabilities)} />
-            <SignalStat label={t('能力绑定')} value={formatNumber(overview.capability.bindings)} />
+          <div className="mt-5 divide-y divide-slate-100">
+            {inbox.length > 0 ? (
+              inbox.map((item) => (
+                <div key={`${item.type}-${item.id}`} className="grid gap-2 py-3 sm:grid-cols-[1fr_auto]">
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-slate-950">{item.title}</p>
+                    <p className="mt-1 text-xs text-slate-500">
+                      {item.type} · {item.source || t('common.none')} · {formatDate(item.created_at)}
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <StatusPill label={item.priority} tone={item.priority === 'high' || item.priority === 'critical' ? 'amber' : 'blue'} />
+                    <StatusPill label={item.status} tone="green" />
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="py-3 text-sm text-slate-500">{t('meta.noInbox')}</p>
+            )}
           </div>
         </section>
+
+        <RecentEvents events={overview.activity} />
       </div>
 
-      <RecentEvents events={overview.recent_events} />
+      <AIAssistant token={token} contextType="meta_org" />
     </div>
   )
 }
@@ -1003,7 +1104,7 @@ function SignalStat({ label, value }: { label: string; value: string }) {
   )
 }
 
-function RecentEvents({ events }: { events: DashboardOverview['recent_events'] }) {
+function RecentEvents({ events }: { events: MetaOrgOverview['activity'] }) {
   const { t } = useI18n()
   return (
     <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
