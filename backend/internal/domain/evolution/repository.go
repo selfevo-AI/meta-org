@@ -67,7 +67,7 @@ func (r *Repository) ListWeights(ctx context.Context, limit int) ([]DecisionWeig
 	}
 	defer rows.Close()
 
-	var weights []DecisionWeight
+	weights := make([]DecisionWeight, 0)
 	for rows.Next() {
 		var w DecisionWeight
 		if err := rows.Scan(&w.ID, &w.ActorID, &w.ActorType, &w.OverallScore, &w.ExpertiseScore, &w.TrackRecordScore, &w.ReliabilityScore, &w.RecencyScore, &w.ContextFitScore, &w.PrincipleScore, &w.DecisionCount, &w.LastUpdated); err != nil {
@@ -167,7 +167,7 @@ func (r *Repository) ListContextWeights(ctx context.Context, limit int) ([]Conte
 	}
 	defer rows.Close()
 
-	var weights []ContextDecisionWeight
+	weights := make([]ContextDecisionWeight, 0)
 	for rows.Next() {
 		var w ContextDecisionWeight
 		var contextJSON []byte
@@ -239,7 +239,7 @@ func (r *Repository) ListExperiments(ctx context.Context) ([]Experiment, error) 
 	}
 	defer rows.Close()
 
-	var experiments []Experiment
+	experiments := make([]Experiment, 0)
 	for rows.Next() {
 		var e Experiment
 		var overridesJSON, criteriaJSON []byte
@@ -298,7 +298,7 @@ func (r *Repository) ListKnowledge(ctx context.Context, limit int) ([]KnowledgeE
 	}
 	defer rows.Close()
 
-	var entries []KnowledgeEntry
+	entries := make([]KnowledgeEntry, 0)
 	for rows.Next() {
 		var e KnowledgeEntry
 		if err := rows.Scan(&e.ID, &e.WorkflowID, &e.Title, &e.Content, &e.Tags, &e.Source, &e.CreatedAt); err != nil {
@@ -355,7 +355,7 @@ func (r *Repository) ListSignals(ctx context.Context, acknowledged *bool, limit 
 	}
 	defer rows.Close()
 
-	var signals []Signal
+	signals := make([]Signal, 0)
 	for rows.Next() {
 		var s Signal
 		var dataJSON []byte

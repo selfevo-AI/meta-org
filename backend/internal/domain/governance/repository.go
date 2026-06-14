@@ -40,7 +40,7 @@ func (r *Repository) ListPermissions(ctx context.Context) ([]Permission, error) 
 	}
 	defer rows.Close()
 
-	var perms []Permission
+	perms := make([]Permission, 0)
 	for rows.Next() {
 		var p Permission
 		if err := rows.Scan(&p.ID, &p.Level, &p.Name, &p.Description, &p.Behavior, &p.CreatedAt); err != nil {
@@ -91,7 +91,7 @@ func (r *Repository) ListPrinciples(ctx context.Context) ([]Principle, error) {
 	}
 	defer rows.Close()
 
-	var principles []Principle
+	principles := make([]Principle, 0)
 	for rows.Next() {
 		var p Principle
 		var evalJSON []byte
@@ -146,7 +146,7 @@ func (r *Repository) ListControlRules(ctx context.Context) ([]ControlRule, error
 	}
 	defer rows.Close()
 
-	var rules []ControlRule
+	rules := make([]ControlRule, 0)
 	for rows.Next() {
 		var rule ControlRule
 		var condJSON []byte
@@ -173,7 +173,7 @@ func (r *Repository) GetControlRulesByTarget(ctx context.Context, entityType str
 	}
 	defer rows.Close()
 
-	var rules []ControlRule
+	rules := make([]ControlRule, 0)
 	for rows.Next() {
 		var rule ControlRule
 		var condJSON []byte
@@ -237,7 +237,7 @@ func (r *Repository) ListAccessDecisions(ctx context.Context, limit int) ([]Acce
 	}
 	defer rows.Close()
 
-	var decisions []AccessDecision
+	decisions := make([]AccessDecision, 0)
 	for rows.Next() {
 		var decision AccessDecision
 		var rulesJSON, contextJSON []byte

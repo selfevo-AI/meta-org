@@ -287,6 +287,10 @@ function splitCsv(value: string): string[] {
     .filter(Boolean)
 }
 
+function asArray<T>(value: T[] | null | undefined): T[] {
+  return Array.isArray(value) ? value : []
+}
+
 function flattenDepartmentPositions(nodes: Department[]): Position[] {
   return nodes.flatMap((node) => [...(node.positions ?? []), ...flattenDepartmentPositions(node.children ?? [])])
 }
@@ -311,8 +315,8 @@ export function GovernanceWorkspace({ token, currentUserId }: WorkspaceProps) {
     ])
       .then(([permissionData, decisionData]) => {
         if (cancelled) return
-        setPermissions(permissionData)
-        setDecisions(decisionData)
+        setPermissions(asArray(permissionData))
+        setDecisions(asArray(decisionData))
       })
       .catch(() => {
         if (!cancelled) {
@@ -331,8 +335,8 @@ export function GovernanceWorkspace({ token, currentUserId }: WorkspaceProps) {
       apiRequest<Permission[]>('/governance/permissions', { token }),
       apiRequest<AccessDecision[]>('/governance/access/decisions?limit=20', { token }),
     ])
-    setPermissions(permissionData)
-    setDecisions(decisionData)
+    setPermissions(asArray(permissionData))
+    setDecisions(asArray(decisionData))
   }
 
   async function run(action: () => Promise<void>, success: string) {
@@ -506,7 +510,7 @@ export function WeightWorkspace({ token, currentUserId }: WorkspaceProps) {
 
     apiRequest<ContextWeight[]>('/evolution/context-weights?limit=30', { token })
       .then((data) => {
-        if (!cancelled) setWeights(data)
+        if (!cancelled) setWeights(asArray(data))
       })
       .catch(() => {
         if (!cancelled) setWeights([])
@@ -519,7 +523,7 @@ export function WeightWorkspace({ token, currentUserId }: WorkspaceProps) {
 
   async function loadWeights() {
     const data = await apiRequest<ContextWeight[]>('/evolution/context-weights?limit=30', { token })
-    setWeights(data)
+    setWeights(asArray(data))
   }
 
   async function run(action: () => Promise<void>, success: string) {
@@ -673,10 +677,11 @@ export function CapabilityEvaluationWorkspace({ token, currentUserId }: Workspac
     ])
       .then(([capabilityData, evaluationData]) => {
         if (cancelled) return
-        setCapabilities(capabilityData)
-        setEvaluations(evaluationData)
-        if (capabilityData.length > 0) {
-          setForm((current) => (current.capability_id ? current : { ...current, capability_id: capabilityData[0].id }))
+        const nextCapabilities = asArray(capabilityData)
+        setCapabilities(nextCapabilities)
+        setEvaluations(asArray(evaluationData))
+        if (nextCapabilities.length > 0) {
+          setForm((current) => (current.capability_id ? current : { ...current, capability_id: nextCapabilities[0].id }))
         }
       })
       .catch(() => {
@@ -695,10 +700,11 @@ export function CapabilityEvaluationWorkspace({ token, currentUserId }: Workspac
       apiRequest<Capability[]>('/capabilities', { token }),
       apiRequest<CapabilityEvaluation[]>('/capabilities/evaluations?limit=30', { token }),
     ])
-    setCapabilities(capabilityData)
-    setEvaluations(evaluationData)
-    if (!form.capability_id && capabilityData.length > 0) {
-      setForm((current) => ({ ...current, capability_id: capabilityData[0].id }))
+    const nextCapabilities = asArray(capabilityData)
+    setCapabilities(nextCapabilities)
+    setEvaluations(asArray(evaluationData))
+    if (!form.capability_id && nextCapabilities.length > 0) {
+      setForm((current) => ({ ...current, capability_id: nextCapabilities[0].id }))
     }
   }
 
@@ -1088,9 +1094,10 @@ export function WorkflowMatchingWorkspace({ token }: WorkspaceProps) {
   useEffect(() => {
     apiRequest<Organization[]>('/organizations?limit=100', { token })
       .then((data) => {
-        setOrganizations(data)
-        if (data.length > 0) {
-          setForm((current) => (current.organization_id ? current : { ...current, organization_id: data[0].id }))
+        const nextOrganizations = asArray(data)
+        setOrganizations(nextOrganizations)
+        if (nextOrganizations.length > 0) {
+          setForm((current) => (current.organization_id ? current : { ...current, organization_id: nextOrganizations[0].id }))
         }
       })
       .catch(() => setOrganizations([]))
@@ -1100,7 +1107,7 @@ export function WorkflowMatchingWorkspace({ token }: WorkspaceProps) {
     if (!form.organization_id) return
     apiRequest<Department[]>(`/organizations/${form.organization_id}/departments/tree`, { token })
       .then((data) => {
-        const flat = flattenDepartments(data)
+        const flat = flattenDepartments(asArray(data))
         setDepartments(flat)
         if (flat.length > 0) {
           setForm((current) => (current.department_id ? current : { ...current, department_id: flat[0].id }))
@@ -1138,7 +1145,7 @@ export function WorkflowMatchingWorkspace({ token }: WorkspaceProps) {
           member_types: ['internal', 'external', 'agent'],
         },
       })
-      setCandidates(data)
+      setCandidates(asArray(data))
     }, '成员匹配已完成')
   }
 

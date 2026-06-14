@@ -76,7 +76,7 @@ func (r *Repository) ListCapabilities(ctx context.Context) ([]Capability, error)
 	}
 	defer rows.Close()
 
-	var caps []Capability
+	caps := make([]Capability, 0)
 	for rows.Next() {
 		var cap Capability
 		var inSchema, outSchema, preconds, errHandling, costEst []byte
@@ -128,7 +128,7 @@ func (r *Repository) ListBoundCapabilities(ctx context.Context, mvruID uuid.UUID
 	}
 	defer rows.Close()
 
-	var bindings []CapabilityBinding
+	bindings := make([]CapabilityBinding, 0)
 	for rows.Next() {
 		var b CapabilityBinding
 		var configJSON []byte
@@ -211,7 +211,7 @@ func (r *Repository) ListCapabilityEvaluations(ctx context.Context, capabilityID
 	}
 	defer rows.Close()
 
-	var evaluations []CapabilityEvaluation
+	evaluations := make([]CapabilityEvaluation, 0)
 	for rows.Next() {
 		var eval CapabilityEvaluation
 		var evidenceJSON []byte
