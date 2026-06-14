@@ -16,6 +16,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/toolruntime"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/verification"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/workflow"
 	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
@@ -32,6 +33,7 @@ type Dependencies struct {
 	AIGatewayHandler     *aigateway.Handler
 	WorkflowHandler      *workflow.Handler
 	ProjectHandler       *project.Handler
+	ToolRuntimeHandler   *toolruntime.Handler
 	ObservabilityHandler *observability.Handler
 	VerificationHandler  *verification.Handler
 	GovernanceHandler    *governance.Handler
@@ -75,6 +77,9 @@ func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
 			}
 			if deps.ProjectHandler != nil {
 				deps.ProjectHandler.RegisterRoutes(r)
+			}
+			if deps.ToolRuntimeHandler != nil {
+				deps.ToolRuntimeHandler.RegisterRoutes(r)
 			}
 			if deps.VerificationHandler != nil {
 				deps.VerificationHandler.RegisterRoutes(r)

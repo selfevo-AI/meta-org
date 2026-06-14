@@ -20,6 +20,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/toolruntime"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/verification"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/workflow"
 	"github.com/selfevo-AI/meta-org/backend/internal/gateway"
@@ -104,6 +105,10 @@ func main() {
 	)
 	projectHandler := project.NewHandler(projectSvc)
 
+	toolRepo := toolruntime.NewRepository(db)
+	toolSvc := toolruntime.NewService(toolRepo, govSvc, toolruntime.InternalTools(projectSvc))
+	toolHandler := toolruntime.NewHandler(toolSvc)
+
 	verRepo := verification.NewRepository(db)
 	verSvc := verification.NewService(verRepo)
 	verHandler := verification.NewHandler(verSvc)
@@ -124,6 +129,7 @@ func main() {
 		AIGatewayHandler:     aiHandler,
 		WorkflowHandler:      wfHandler,
 		ProjectHandler:       projectHandler,
+		ToolRuntimeHandler:   toolHandler,
 		ObservabilityHandler: obsHandler,
 		VerificationHandler:  verHandler,
 		GovernanceHandler:    govHandler,
