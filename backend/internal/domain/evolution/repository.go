@@ -81,6 +81,111 @@ func (r *Repository) ListWeights(ctx context.Context, limit int) ([]DecisionWeig
 	return weights, nil
 }
 
+func (r *Repository) UpsertContextWeight(ctx context.Context, w *ContextDecisionWeight) error {
+	contextJSON, _ := json.Marshal(w.Context)
+	err := r.db.QueryRow(ctx,
+		`INSERT INTO context_weight_scores (
+		    actor_id, actor_type, scope_hash, organization_id, department_id, workflow_template_id,
+		    workflow_stage, task_type, capability_id, risk_level, overall_score, expertise_score,
+		    track_record_score, reliability_score, recency_score, context_fit_score, principle_score,
+		    decision_count, context, last_updated
+		 )
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, NOW())
+		 ON CONFLICT (actor_id, actor_type, scope_hash) DO UPDATE SET
+		    organization_id = EXCLUDED.organization_id,
+		    department_id = EXCLUDED.department_id,
+		    workflow_template_id = EXCLUDED.workflow_template_id,
+		    workflow_stage = EXCLUDED.workflow_stage,
+		    task_type = EXCLUDED.task_type,
+		    capability_id = EXCLUDED.capability_id,
+		    risk_level = EXCLUDED.risk_level,
+		    overall_score = EXCLUDED.overall_score,
+		    expertise_score = EXCLUDED.expertise_score,
+		    track_record_score = EXCLUDED.track_record_score,
+		    reliability_score = EXCLUDED.reliability_score,
+		    recency_score = EXCLUDED.recency_score,
+		    context_fit_score = EXCLUDED.context_fit_score,
+		    principle_score = EXCLUDED.principle_score,
+		    decision_count = EXCLUDED.decision_count,
+		    context = EXCLUDED.context,
+		    last_updated = NOW()
+		 RETURNING id, actor_id, actor_type, scope_hash, organization_id, department_id, workflow_template_id,
+		           workflow_stage, task_type, capability_id, risk_level, overall_score, expertise_score,
+		           track_record_score, reliability_score, recency_score, context_fit_score, principle_score,
+		           decision_count, context, last_updated`,
+		w.ActorID, w.ActorType, w.ScopeHash, w.OrganizationID, w.DepartmentID, w.WorkflowTemplateID,
+		w.WorkflowStage, w.TaskType, w.CapabilityID, w.RiskLevel, w.OverallScore, w.ExpertiseScore,
+		w.TrackRecordScore, w.ReliabilityScore, w.RecencyScore, w.ContextFitScore, w.PrincipleScore,
+		w.DecisionCount, contextJSON,
+	).Scan(&w.ID, &w.ActorID, &w.ActorType, &w.ScopeHash, &w.OrganizationID, &w.DepartmentID, &w.WorkflowTemplateID,
+		&w.WorkflowStage, &w.TaskType, &w.CapabilityID, &w.RiskLevel, &w.OverallScore, &w.ExpertiseScore,
+		&w.TrackRecordScore, &w.ReliabilityScore, &w.RecencyScore, &w.ContextFitScore, &w.PrincipleScore,
+		&w.DecisionCount, &contextJSON, &w.LastUpdated)
+	if err != nil {
+		return fmt.Errorf("upsert context weight: %w", err)
+	}
+	json.Unmarshal(contextJSON, &w.Context)
+	return nil
+}
+
+func (r *Repository) GetContextWeight(ctx context.Context, actorID uuid.UUID, actorType string, scopeHash string) (*ContextDecisionWeight, error) {
+	w := &ContextDecisionWeight{}
+	var contextJSON []byte
+	err := r.db.QueryRow(ctx,
+		`SELECT id, actor_id, actor_type, scope_hash, organization_id, department_id, workflow_template_id,
+		        workflow_stage, task_type, capability_id, risk_level, overall_score, expertise_score,
+		        track_record_score, reliability_score, recency_score, context_fit_score, principle_score,
+		        decision_count, context, last_updated
+		 FROM context_weight_scores
+		 WHERE actor_id = $1 AND actor_type = $2 AND scope_hash = $3`,
+		actorID, actorType, scopeHash,
+	).Scan(&w.ID, &w.ActorID, &w.ActorType, &w.ScopeHash, &w.OrganizationID, &w.DepartmentID, &w.WorkflowTemplateID,
+		&w.WorkflowStage, &w.TaskType, &w.CapabilityID, &w.RiskLevel, &w.OverallScore, &w.ExpertiseScore,
+		&w.TrackRecordScore, &w.ReliabilityScore, &w.RecencyScore, &w.ContextFitScore, &w.PrincipleScore,
+		&w.DecisionCount, &contextJSON, &w.LastUpdated)
+	if err != nil {
+		return nil, fmt.Errorf("get context weight: %w", err)
+	}
+	json.Unmarshal(contextJSON, &w.Context)
+	return w, nil
+}
+
+func (r *Repository) ListContextWeights(ctx context.Context, limit int) ([]ContextDecisionWeight, error) {
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 100 {
+		limit = 100
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT id, actor_id, actor_type, scope_hash, organization_id, department_id, workflow_template_id,
+		        workflow_stage, task_type, capability_id, risk_level, overall_score, expertise_score,
+		        track_record_score, reliability_score, recency_score, context_fit_score, principle_score,
+		        decision_count, context, last_updated
+		 FROM context_weight_scores ORDER BY overall_score DESC, last_updated DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list context weights: %w", err)
+	}
+	defer rows.Close()
+
+	var weights []ContextDecisionWeight
+	for rows.Next() {
+		var w ContextDecisionWeight
+		var contextJSON []byte
+		if err := rows.Scan(&w.ID, &w.ActorID, &w.ActorType, &w.ScopeHash, &w.OrganizationID, &w.DepartmentID, &w.WorkflowTemplateID,
+			&w.WorkflowStage, &w.TaskType, &w.CapabilityID, &w.RiskLevel, &w.OverallScore, &w.ExpertiseScore,
+			&w.TrackRecordScore, &w.ReliabilityScore, &w.RecencyScore, &w.ContextFitScore, &w.PrincipleScore,
+			&w.DecisionCount, &contextJSON, &w.LastUpdated); err != nil {
+			return nil, fmt.Errorf("scan context weight: %w", err)
+		}
+		json.Unmarshal(contextJSON, &w.Context)
+		weights = append(weights, w)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list context weights iteration: %w", err)
+	}
+	return weights, nil
+}
+
 func (r *Repository) GetAlpha(ctx context.Context) (*AlphaConfig, error) {
 	a := &AlphaConfig{}
 	err := r.db.QueryRow(ctx,

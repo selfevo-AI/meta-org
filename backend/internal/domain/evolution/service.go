@@ -2,6 +2,9 @@ package evolution
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"math"
 
@@ -112,6 +115,101 @@ func (s *Service) ListWeights(ctx context.Context, limit int) ([]DecisionWeight,
 	return s.repo.ListWeights(ctx, limit)
 }
 
+func (s *Service) ComputeContextWeight(ctx context.Context, input ContextWeightInput) (*ContextDecisionWeight, error) {
+	if input.ActorID == uuid.Nil || input.ActorType == "" {
+		return nil, ErrValidation
+	}
+	normalizeScope(&input.Scope)
+	scopeHash := ScopeHash(input.Scope)
+	w, err := s.repo.GetContextWeight(ctx, input.ActorID, input.ActorType, scopeHash)
+	if err != nil {
+		global, globalErr := s.repo.GetWeight(ctx, input.ActorID, input.ActorType)
+		if globalErr != nil {
+			global = defaultDecisionWeight(input.ActorID, input.ActorType)
+		}
+		w = &ContextDecisionWeight{
+			DecisionWeight:     *global,
+			ScopeHash:          scopeHash,
+			OrganizationID:     input.Scope.OrganizationID,
+			DepartmentID:       input.Scope.DepartmentID,
+			WorkflowTemplateID: input.Scope.WorkflowTemplateID,
+			WorkflowStage:      input.Scope.WorkflowStage,
+			TaskType:           input.Scope.TaskType,
+			CapabilityID:       input.Scope.CapabilityID,
+			RiskLevel:          input.Scope.RiskLevel,
+			Context:            input.Scope.Context,
+		}
+		w.ID = uuid.Nil
+		w.ContextFitScore = contextFitScore(input.Scope)
+	}
+
+	w.OverallScore = computeOverall(w.DecisionWeight, alphaOrDefault(s, ctx))
+	w.OverallScore = applyRiskAdjustment(w.OverallScore, w.RiskLevel)
+	if err := s.repo.UpsertContextWeight(ctx, w); err != nil {
+		return nil, err
+	}
+	return w, nil
+}
+
+func (s *Service) RecordContextOutcome(ctx context.Context, input ContextOutcomeInput) (*ContextDecisionWeight, error) {
+	if input.ActorID == uuid.Nil || input.ActorType == "" {
+		return nil, ErrValidation
+	}
+	if input.OutcomeScore < 0 {
+		input.OutcomeScore = 0
+	}
+	if input.OutcomeScore > 1 {
+		input.OutcomeScore = 1
+	}
+	normalizeScope(&input.Scope)
+	scopeHash := ScopeHash(input.Scope)
+	w, err := s.repo.GetContextWeight(ctx, input.ActorID, input.ActorType, scopeHash)
+	if err != nil {
+		w, err = s.ComputeContextWeight(ctx, ContextWeightInput{
+			ActorID:   input.ActorID,
+			ActorType: input.ActorType,
+			Scope:     input.Scope,
+		})
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	n := float64(w.DecisionCount + 1)
+	w.TrackRecordScore = ((w.TrackRecordScore * (n - 1)) + input.OutcomeScore) / n
+	w.ReliabilityScore = ((w.ReliabilityScore * (n - 1)) + input.OutcomeScore) / n
+	w.RecencyScore = 1.0
+	w.ContextFitScore = (w.ContextFitScore + contextFitScore(input.Scope)) / 2
+	w.DecisionCount = int(n)
+	w.Context = input.Scope.Context
+	w.OverallScore = applyRiskAdjustment(computeOverall(w.DecisionWeight, alphaOrDefault(s, ctx)), w.RiskLevel)
+
+	if err := s.repo.UpsertContextWeight(ctx, w); err != nil {
+		return nil, err
+	}
+
+	if _, err := s.RecordOutcome(ctx, OutcomeInput{
+		ActorID:      input.ActorID,
+		ActorType:    input.ActorType,
+		OutcomeScore: input.OutcomeScore,
+		TaskContext:  input.Scope.Context,
+	}); err != nil && errors.Is(err, ErrNotFound) {
+		if _, computeErr := s.ComputeWeight(ctx, WeightInput{ActorID: input.ActorID, ActorType: input.ActorType}); computeErr == nil {
+			_, _ = s.RecordOutcome(ctx, OutcomeInput{
+				ActorID:      input.ActorID,
+				ActorType:    input.ActorType,
+				OutcomeScore: input.OutcomeScore,
+				TaskContext:  input.Scope.Context,
+			})
+		}
+	}
+	return w, nil
+}
+
+func (s *Service) ListContextWeights(ctx context.Context, limit int) ([]ContextDecisionWeight, error) {
+	return s.repo.ListContextWeights(ctx, limit)
+}
+
 func (s *Service) GetAlpha(ctx context.Context) (*AlphaConfig, error) {
 	return s.repo.GetAlpha(ctx)
 }
@@ -175,4 +273,91 @@ func (s *Service) ListSignals(ctx context.Context, acknowledged *bool, limit int
 
 func (s *Service) AcknowledgeSignal(ctx context.Context, id uuid.UUID) error {
 	return s.repo.AcknowledgeSignal(ctx, id)
+}
+
+func ScopeHash(scope ContextWeightScope) string {
+	normalizeScope(&scope)
+	payload, _ := json.Marshal(scope)
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:])
+}
+
+func normalizeScope(scope *ContextWeightScope) {
+	if scope.RiskLevel == "" {
+		scope.RiskLevel = "low"
+	}
+	if scope.Context == nil {
+		scope.Context = map[string]any{}
+	}
+}
+
+func defaultDecisionWeight(actorID uuid.UUID, actorType string) *DecisionWeight {
+	return &DecisionWeight{
+		ActorID:          actorID,
+		ActorType:        actorType,
+		OverallScore:     1.0,
+		ExpertiseScore:   0.5,
+		TrackRecordScore: 0.5,
+		ReliabilityScore: 0.5,
+		RecencyScore:     1.0,
+		ContextFitScore:  0.5,
+		PrincipleScore:   0.5,
+		DecisionCount:    0,
+	}
+}
+
+func alphaOrDefault(s *Service, ctx context.Context) *AlphaConfig {
+	a, err := s.repo.GetAlpha(ctx)
+	if err == nil {
+		return a
+	}
+	return &AlphaConfig{
+		Expertise:   0.25,
+		TrackRecord: 0.20,
+		Reliability: 0.15,
+		Recency:     0.10,
+		ContextFit:  0.10,
+		Principle:   0.20,
+	}
+}
+
+func computeOverall(w DecisionWeight, a *AlphaConfig) float64 {
+	overall := a.Expertise*w.ExpertiseScore +
+		a.TrackRecord*w.TrackRecordScore +
+		a.Reliability*w.ReliabilityScore +
+		a.Recency*w.RecencyScore +
+		a.ContextFit*w.ContextFitScore +
+		a.Principle*w.PrincipleScore
+	return math.Min(math.Max(overall, 0), 1)
+}
+
+func contextFitScore(scope ContextWeightScope) float64 {
+	score := 0.45
+	if scope.DepartmentID != nil {
+		score += 0.10
+	}
+	if scope.CapabilityID != nil {
+		score += 0.15
+	}
+	if scope.WorkflowTemplateID != nil {
+		score += 0.10
+	}
+	if scope.WorkflowStage != "" || scope.TaskType != "" {
+		score += 0.10
+	}
+	if len(scope.Context) > 0 {
+		score += 0.10
+	}
+	return math.Min(score, 1)
+}
+
+func applyRiskAdjustment(score float64, riskLevel string) float64 {
+	switch riskLevel {
+	case "critical":
+		return math.Max(score-0.15, 0)
+	case "high":
+		return math.Max(score-0.08, 0)
+	default:
+		return score
+	}
 }

@@ -21,6 +21,9 @@ func NewHandler(service *Service) *Handler {
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Post("/evolution/weights/compute", h.computeWeight)
 	r.Post("/evolution/weights/outcome", h.recordOutcome)
+	r.Post("/evolution/context-weights/compute", h.computeContextWeight)
+	r.Post("/evolution/context-weights/outcome", h.recordContextOutcome)
+	r.Get("/evolution/context-weights", h.listContextWeights)
 	r.Get("/evolution/weights/{actorType}/{actorID}", h.getWeight)
 	r.Get("/evolution/weights", h.listWeights)
 	r.Get("/evolution/alphas", h.getAlpha)
@@ -61,6 +64,49 @@ func (h *Handler) recordOutcome(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, wResult)
+}
+
+func (h *Handler) computeContextWeight(w http.ResponseWriter, r *http.Request) {
+	var input ContextWeightInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	wResult, err := h.service.ComputeContextWeight(r.Context(), input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, wResult)
+}
+
+func (h *Handler) recordContextOutcome(w http.ResponseWriter, r *http.Request) {
+	var input ContextOutcomeInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	wResult, err := h.service.RecordContextOutcome(r.Context(), input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, wResult)
+}
+
+func (h *Handler) listContextWeights(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	weights, err := h.service.ListContextWeights(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, weights)
 }
 
 func (h *Handler) getWeight(w http.ResponseWriter, r *http.Request) {

@@ -17,10 +17,10 @@ import (
 )
 
 var (
-	ErrInvalidCredentials   = errors.New("invalid credentials")
-	ErrUserNotFound         = errors.New("user not found")
-	ErrAgentNotFound        = errors.New("agent not found")
-	ErrValidation           = errors.New("validation error")
+	ErrInvalidCredentials = errors.New("invalid credentials")
+	ErrUserNotFound       = errors.New("user not found")
+	ErrAgentNotFound      = errors.New("agent not found")
+	ErrValidation         = errors.New("validation error")
 )
 
 type UserRepository interface {
@@ -29,13 +29,14 @@ type UserRepository interface {
 	GetUserByID(ctx context.Context, id uuid.UUID) (*User, error)
 	CreateAgent(ctx context.Context, input CreateAgentInput) (*AIAgent, string, error)
 	GetAgentByID(ctx context.Context, id uuid.UUID) (*AIAgent, error)
+	ListAgents(ctx context.Context, limit int) ([]AIAgent, error)
 	ListRoles(ctx context.Context) ([]Role, error)
 }
 
 type Service struct {
-	repo       UserRepository
-	jwtSecret  string
-	tokenTTL   time.Duration
+	repo      UserRepository
+	jwtSecret string
+	tokenTTL  time.Duration
 }
 
 type ServiceOption func(*Service)
@@ -147,11 +148,30 @@ func (s *Service) RegisterAgent(ctx context.Context, input CreateAgentInput) (*R
 	if input.PermissionLevel == "" {
 		input.PermissionLevel = PermissionL2
 	}
+	if input.AgentOrigin == "" {
+		input.AgentOrigin = "internal"
+	}
+	if input.AgentOrigin != "internal" && input.AgentOrigin != "external" {
+		return nil, fmt.Errorf("%w: invalid agent_origin", ErrValidation)
+	}
+	if input.ServiceClass == "" {
+		input.ServiceClass = "model"
+	}
+	if input.RiskLevel == "" {
+		input.RiskLevel = "medium"
+	}
+	if !isValidRiskLevel(input.RiskLevel) {
+		return nil, fmt.Errorf("%w: invalid risk_level", ErrValidation)
+	}
 	agent, apiKey, err := s.repo.CreateAgent(ctx, input)
 	if err != nil {
 		return nil, err
 	}
 	return &RegisterAgentResponse{Agent: *agent, APIKey: apiKey}, nil
+}
+
+func (s *Service) ListAgents(ctx context.Context, limit int) ([]AIAgent, error) {
+	return s.repo.ListAgents(ctx, limit)
 }
 
 func (s *Service) ListRoles(ctx context.Context) ([]Role, error) {
@@ -172,6 +192,15 @@ func (s *Service) ValidateToken(tokenString string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid token: missing type")
 	}
 	return userID, userType, nil
+}
+
+func isValidRiskLevel(level string) bool {
+	switch level {
+	case "low", "medium", "high", "critical":
+		return true
+	default:
+		return false
+	}
 }
 
 type jwtHeader struct {

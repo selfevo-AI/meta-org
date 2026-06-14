@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -32,6 +33,7 @@ func (h *Handler) RegisterPublicRoutes(r chi.Router) {
 
 func (h *Handler) RegisterProtectedRoutes(r chi.Router) {
 	r.Post("/agents/register", h.registerAgent)
+	r.Get("/agents", h.listAgents)
 }
 
 type loginRequest struct {
@@ -128,6 +130,21 @@ func (h *Handler) authenticateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) listAgents(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		if parsed, err := strconv.Atoi(raw); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	agents, err := h.service.ListAgents(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to list agents"})
+		return
+	}
+	writeJSON(w, http.StatusOK, agents)
 }
 
 func (h *Handler) listRoles(w http.ResponseWriter, r *http.Request) {

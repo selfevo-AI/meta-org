@@ -27,7 +27,7 @@ func (r *Repository) CreateUser(ctx context.Context, input CreateUserInput) (*Us
 	user := &User{}
 	err = r.db.QueryRow(ctx,
 		`INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3)
-		 RETURNING id, name, email, password_hash, avatar_url, created_at, updated_at`,
+		 RETURNING id, name, email, password_hash, COALESCE(avatar_url, ''), created_at, updated_at`,
 		input.Name, input.Email, string(hash),
 	).Scan(&user.ID, &user.Name, &user.Email, &user.PasswordHash, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
@@ -39,7 +39,7 @@ func (r *Repository) CreateUser(ctx context.Context, input CreateUserInput) (*Us
 func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, error) {
 	user := &User{}
 	err := r.db.QueryRow(ctx,
-		`SELECT id, name, email, password_hash, avatar_url, created_at, updated_at
+		`SELECT id, name, email, password_hash, COALESCE(avatar_url, ''), created_at, updated_at
 		 FROM users WHERE email = $1`, email,
 	).Scan(&user.ID, &user.Name, &user.Email, &user.PasswordHash, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
@@ -51,7 +51,7 @@ func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, e
 func (r *Repository) GetUserByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	user := &User{}
 	err := r.db.QueryRow(ctx,
-		`SELECT id, name, email, password_hash, avatar_url, created_at, updated_at
+		`SELECT id, name, email, password_hash, COALESCE(avatar_url, ''), created_at, updated_at
 		 FROM users WHERE id = $1`, id,
 	).Scan(&user.ID, &user.Name, &user.Email, &user.PasswordHash, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
@@ -78,18 +78,15 @@ func (r *Repository) CreateAgent(ctx context.Context, input CreateAgentInput) (*
 
 	agent := &AIAgent{}
 	err = r.db.QueryRow(ctx,
-		`INSERT INTO ai_agents (name, model_type, api_key_hash, capabilities, permission_level, metadata)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id, name, model_type, api_key_hash, capabilities, permission_level, metadata, is_active, created_at, updated_at`,
-		input.Name, input.ModelType, string(keyHash), capJSON, input.PermissionLevel, metaJSON,
-	).Scan(&agent.ID, &agent.Name, &agent.ModelType, &agent.APIKeyHash, &capJSON, &agent.PermissionLevel, &metaJSON, &agent.IsActive, &agent.CreatedAt, &agent.UpdatedAt)
+		`INSERT INTO ai_agents (name, model_type, api_key_hash, capabilities, permission_level, agent_origin, provider, service_class, vendor, contract_ref, risk_level, metadata)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		 RETURNING id, name, model_type, api_key_hash, capabilities, permission_level, agent_origin, COALESCE(provider, ''), service_class, COALESCE(vendor, ''), COALESCE(contract_ref, ''), risk_level, metadata, is_active, created_at, updated_at`,
+		input.Name, input.ModelType, string(keyHash), capJSON, input.PermissionLevel, input.AgentOrigin, input.Provider, input.ServiceClass, input.Vendor, input.ContractRef, input.RiskLevel, metaJSON,
+	).Scan(&agent.ID, &agent.Name, &agent.ModelType, &agent.APIKeyHash, &capJSON, &agent.PermissionLevel, &agent.AgentOrigin, &agent.Provider, &agent.ServiceClass, &agent.Vendor, &agent.ContractRef, &agent.RiskLevel, &metaJSON, &agent.IsActive, &agent.CreatedAt, &agent.UpdatedAt)
 	if err != nil {
 		return nil, "", fmt.Errorf("create agent: %w", err)
 	}
-	if err := json.Unmarshal(capJSON, &agent.Capabilities); err != nil {
-		return nil, "", fmt.Errorf("unmarshal capabilities: %w", err)
-	}
-	if err := json.Unmarshal(metaJSON, &agent.Metadata); err != nil {
+	if err := hydrateAgentJSON(agent, capJSON, metaJSON); err != nil {
 		return nil, "", fmt.Errorf("unmarshal metadata: %w", err)
 	}
 	return agent, apiKey, nil
@@ -99,24 +96,53 @@ func (r *Repository) GetAgentByID(ctx context.Context, id uuid.UUID) (*AIAgent, 
 	agent := &AIAgent{}
 	var capJSON, metaJSON []byte
 	err := r.db.QueryRow(ctx,
-		`SELECT id, name, model_type, api_key_hash, capabilities, permission_level, metadata, is_active, created_at, updated_at
+		`SELECT id, name, model_type, api_key_hash, capabilities, permission_level, agent_origin, COALESCE(provider, ''), service_class, COALESCE(vendor, ''), COALESCE(contract_ref, ''), risk_level, metadata, is_active, created_at, updated_at
 		 FROM ai_agents WHERE id = $1`, id,
-	).Scan(&agent.ID, &agent.Name, &agent.ModelType, &agent.APIKeyHash, &capJSON, &agent.PermissionLevel, &metaJSON, &agent.IsActive, &agent.CreatedAt, &agent.UpdatedAt)
+	).Scan(&agent.ID, &agent.Name, &agent.ModelType, &agent.APIKeyHash, &capJSON, &agent.PermissionLevel, &agent.AgentOrigin, &agent.Provider, &agent.ServiceClass, &agent.Vendor, &agent.ContractRef, &agent.RiskLevel, &metaJSON, &agent.IsActive, &agent.CreatedAt, &agent.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get agent by id: %w", err)
 	}
-	if err := json.Unmarshal(capJSON, &agent.Capabilities); err != nil {
-		return nil, fmt.Errorf("unmarshal capabilities: %w", err)
-	}
-	if err := json.Unmarshal(metaJSON, &agent.Metadata); err != nil {
-		return nil, fmt.Errorf("unmarshal metadata: %w", err)
+	if err := hydrateAgentJSON(agent, capJSON, metaJSON); err != nil {
+		return nil, err
 	}
 	return agent, nil
 }
 
+func (r *Repository) ListAgents(ctx context.Context, limit int) ([]AIAgent, error) {
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 100 {
+		limit = 100
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT id, name, model_type, api_key_hash, capabilities, permission_level, agent_origin, COALESCE(provider, ''), service_class, COALESCE(vendor, ''), COALESCE(contract_ref, ''), risk_level, metadata, is_active, created_at, updated_at
+		 FROM ai_agents ORDER BY created_at DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list agents: %w", err)
+	}
+	defer rows.Close()
+
+	var agents []AIAgent
+	for rows.Next() {
+		var agent AIAgent
+		var capJSON, metaJSON []byte
+		if err := rows.Scan(&agent.ID, &agent.Name, &agent.ModelType, &agent.APIKeyHash, &capJSON, &agent.PermissionLevel, &agent.AgentOrigin, &agent.Provider, &agent.ServiceClass, &agent.Vendor, &agent.ContractRef, &agent.RiskLevel, &metaJSON, &agent.IsActive, &agent.CreatedAt, &agent.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan agent: %w", err)
+		}
+		if err := hydrateAgentJSON(&agent, capJSON, metaJSON); err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list agents iteration: %w", err)
+	}
+	return agents, nil
+}
+
 func (r *Repository) ListRoles(ctx context.Context) ([]Role, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, name, role_type, description, permissions FROM roles ORDER BY name`)
+		`SELECT id, name, role_type, COALESCE(description, ''), permissions FROM roles ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list roles: %w", err)
 	}
@@ -138,4 +164,14 @@ func (r *Repository) ListRoles(ctx context.Context) ([]Role, error) {
 		return nil, fmt.Errorf("list roles iteration: %w", err)
 	}
 	return roles, nil
+}
+
+func hydrateAgentJSON(agent *AIAgent, capJSON, metaJSON []byte) error {
+	if err := json.Unmarshal(capJSON, &agent.Capabilities); err != nil {
+		return fmt.Errorf("unmarshal capabilities: %w", err)
+	}
+	if err := json.Unmarshal(metaJSON, &agent.Metadata); err != nil {
+		return fmt.Errorf("unmarshal metadata: %w", err)
+	}
+	return nil
 }

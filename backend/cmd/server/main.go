@@ -10,12 +10,14 @@ import (
 	"time"
 
 	"github.com/harness-org/backend/internal/domain/capability"
+	"github.com/harness-org/backend/internal/domain/dashboard"
 	"github.com/harness-org/backend/internal/domain/evolution"
 	"github.com/harness-org/backend/internal/domain/governance"
 	"github.com/harness-org/backend/internal/domain/identity"
 	"github.com/harness-org/backend/internal/domain/layer"
 	"github.com/harness-org/backend/internal/domain/observability"
 	"github.com/harness-org/backend/internal/domain/organization"
+	"github.com/harness-org/backend/internal/domain/project"
 	"github.com/harness-org/backend/internal/domain/verification"
 	"github.com/harness-org/backend/internal/domain/workflow"
 	"github.com/harness-org/backend/internal/gateway"
@@ -44,8 +46,20 @@ func main() {
 	identSvc := identity.NewService(identRepo, cfg.JWTSecret)
 	identHandler := identity.NewHandler(identSvc)
 
+	govRepo := governance.NewRepository(db)
+	govSvc := governance.NewService(govRepo)
+	govHandler := governance.NewHandler(govSvc)
+
+	evoRepo := evolution.NewRepository(db)
+	evoSvc := evolution.NewService(evoRepo)
+	evoHandler := evolution.NewHandler(evoSvc)
+
 	orgRepo := organization.NewRepository(db)
-	orgSvc := organization.NewService(orgRepo)
+	orgSvc := organization.NewService(
+		orgRepo,
+		organization.WithGovernanceService(govSvc),
+		organization.WithEvolutionService(evoSvc),
+	)
 	orgHandler := organization.NewHandler(orgSvc)
 
 	layerRepo := layer.NewRepository(db)
@@ -54,11 +68,25 @@ func main() {
 
 	capRepo := capability.NewRepository(db)
 	capRouter := capability.NewRouter(capRepo)
-	capHandler := capability.NewHandler(capRepo, capRouter)
+	capHandler := capability.NewHandler(capRepo, capRouter, evoSvc)
+
+	dashRepo := dashboard.NewRepository(db)
+	dashSvc := dashboard.NewService(dashRepo)
+	dashHandler := dashboard.NewHandler(dashSvc)
 
 	wfRepo := workflow.NewRepository(db)
 	wfSvc := workflow.NewService(wfRepo)
 	wfHandler := workflow.NewHandler(wfSvc)
+
+	projectRepo := project.NewRepository(db)
+	projectSvc := project.NewService(
+		projectRepo,
+		project.WithGovernanceService(govSvc),
+		project.WithEvolutionService(evoSvc),
+		project.WithOrganizationService(orgSvc),
+		project.WithWorkflowService(wfSvc),
+	)
+	projectHandler := project.NewHandler(projectSvc)
 
 	verRepo := verification.NewRepository(db)
 	verSvc := verification.NewService(verRepo)
@@ -68,14 +96,6 @@ func main() {
 	obsSvc := observability.NewService(obsRepo)
 	obsHandler := observability.NewHandler(obsSvc)
 
-	govRepo := governance.NewRepository(db)
-	govSvc := governance.NewService(govRepo)
-	govHandler := governance.NewHandler(govSvc)
-
-	evoRepo := evolution.NewRepository(db)
-	evoSvc := evolution.NewService(evoRepo)
-	evoHandler := evolution.NewHandler(evoSvc)
-
 	router := server.NewRouter(cfg.CorsOrigins)
 	gateway.RegisterRoutes(router, &gateway.Dependencies{
 		JWTSecret:            cfg.JWTSecret,
@@ -83,7 +103,9 @@ func main() {
 		OrganizationHandler:  orgHandler,
 		LayerHandler:         layerHandler,
 		CapabilityHandler:    capHandler,
+		DashboardHandler:     dashHandler,
 		WorkflowHandler:      wfHandler,
+		ProjectHandler:       projectHandler,
 		ObservabilityHandler: obsHandler,
 		VerificationHandler:  verHandler,
 		GovernanceHandler:    govHandler,

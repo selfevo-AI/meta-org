@@ -65,23 +65,130 @@ func (s *Service) ListControlRules(ctx context.Context) ([]ControlRule, error) {
 }
 
 func (s *Service) CheckPermission(ctx context.Context, input PermissionCheckInput) (*PermissionCheckResult, error) {
-	permissions, err := s.repo.ListPermissions(ctx)
+	decision, err := s.DecideAccess(ctx, AccessDecisionInput{
+		ActorID:       input.UserID,
+		ActorType:     "internal_human",
+		Action:        input.Action,
+		Resource:      input.Resource,
+		ResourceID:    input.ResourceID,
+		RequiredLevel: "L1",
+		RiskLevel:     "low",
+	})
 	if err != nil {
 		return nil, err
 	}
+	return &PermissionCheckResult{
+		Allowed:  decision.Allowed,
+		Level:    permissionLevelWeight(decision.RequiredLevel),
+		Behavior: decision.Behavior,
+		Reason:   decision.Reason,
+	}, nil
+}
 
-	for _, p := range permissions {
-		switch p.Behavior {
-		case "auto":
-			return &PermissionCheckResult{Allowed: true, Level: p.Level, Behavior: p.Behavior, Reason: "auto-allowed"}, nil
-		case "notify":
-			return &PermissionCheckResult{Allowed: true, Level: p.Level, Behavior: p.Behavior, Reason: "notify-allowed"}, nil
-		case "approve":
-			return &PermissionCheckResult{Allowed: false, Level: p.Level, Behavior: p.Behavior, Reason: "requires approval"}, nil
-		case "deny":
-			return &PermissionCheckResult{Allowed: false, Level: p.Level, Behavior: p.Behavior, Reason: "denied"}, nil
-		}
+func (s *Service) DecideAccess(ctx context.Context, input AccessDecisionInput) (*AccessDecision, error) {
+	if input.ActorID == uuid.Nil {
+		return nil, fmt.Errorf("%w: actor_id is required", ErrValidation)
+	}
+	if input.ActorType == "" || input.Action == "" || input.Resource == "" {
+		return nil, fmt.Errorf("%w: actor_type, action, and resource are required", ErrValidation)
+	}
+	if input.RequiredLevel == "" {
+		input.RequiredLevel = "L1"
+	}
+	if input.RiskLevel == "" {
+		input.RiskLevel = "low"
+	}
+	if input.Context == nil {
+		input.Context = map[string]any{}
 	}
 
-	return &PermissionCheckResult{Allowed: false, Level: 0, Behavior: "", Reason: "no matching permission"}, nil
+	behavior := "notify"
+	matchedRules := []string{"audit-first-default"}
+	if p, err := s.repo.GetPermissionByLevel(ctx, permissionLevelWeight(input.RequiredLevel)); err == nil && p.Behavior != "" {
+		behavior = p.Behavior
+		matchedRules = append(matchedRules, "permission-level:"+p.Name)
+	}
+
+	decision := behavior
+	reason := "audit allowed"
+	switch behavior {
+	case "auto":
+		decision = "allow"
+		reason = "permission behavior auto"
+	case "notify":
+		decision = "notify"
+		reason = "permission behavior notify"
+	case "approve":
+		decision = "approve"
+		reason = "permission behavior requires approval"
+	case "deny":
+		decision = "deny"
+		reason = "permission behavior denies access"
+	}
+
+	riskWeight := riskLevelWeight(input.RiskLevel)
+	requiredWeight := permissionLevelWeight(input.RequiredLevel)
+	if decision == "allow" || decision == "notify" {
+		if riskWeight >= 3 || requiredWeight >= 4 {
+			decision = "approve"
+			behavior = "approve"
+			reason = "high risk or L4 action requires human approval"
+			matchedRules = append(matchedRules, "high-risk-approval")
+		}
+		if input.WeightSnapshot != nil && *input.WeightSnapshot < 0.35 && riskWeight >= 2 {
+			decision = "approve"
+			behavior = "approve"
+			reason = "actor context weight below approval threshold"
+			matchedRules = append(matchedRules, "low-weight-approval")
+		}
+		if input.WeightSnapshot != nil && *input.WeightSnapshot < 0.20 {
+			decision = "deny"
+			behavior = "deny"
+			reason = "actor context weight below deny threshold"
+			matchedRules = append(matchedRules, "low-weight-deny")
+		}
+	}
+	if input.ActorType == "external_agent" && riskWeight >= 4 {
+		decision = "approve"
+		behavior = "approve"
+		reason = "external service agent on critical risk requires human approval"
+		matchedRules = append(matchedRules, "external-agent-critical-approval")
+	}
+
+	allowed := decision == "allow" || decision == "notify"
+	return s.repo.CreateAccessDecision(ctx, input, decision, behavior, reason, allowed, matchedRules)
+}
+
+func (s *Service) ListAccessDecisions(ctx context.Context, limit int) ([]AccessDecision, error) {
+	return s.repo.ListAccessDecisions(ctx, limit)
+}
+
+func permissionLevelWeight(level string) int {
+	switch level {
+	case "L1":
+		return 1
+	case "L2":
+		return 2
+	case "L3":
+		return 3
+	case "L4":
+		return 4
+	default:
+		return 1
+	}
+}
+
+func riskLevelWeight(level string) int {
+	switch level {
+	case "low":
+		return 1
+	case "medium":
+		return 2
+	case "high":
+		return 3
+	case "critical":
+		return 4
+	default:
+		return 1
+	}
 }

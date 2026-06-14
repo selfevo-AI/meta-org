@@ -160,3 +160,71 @@ func (r *Repository) RecordInvocation(ctx context.Context, inv CapabilityInvocat
 	json.Unmarshal(outputJSON, &inv.Output)
 	return &inv, nil
 }
+
+func (r *Repository) CreateCapabilityEvaluation(ctx context.Context, input CreateCapabilityEvaluationInput, overallScore float64) (*CapabilityEvaluation, error) {
+	evidenceJSON, _ := json.Marshal(input.Evidence)
+	eval := &CapabilityEvaluation{}
+	err := r.db.QueryRow(ctx,
+		`INSERT INTO capability_evaluations (
+		    capability_id, actor_id, actor_type, workflow_id, task_id, evaluator_id, evaluator_type,
+		    quality_score, reliability_score, cost_score, latency_score, risk_score, compliance_score,
+		    overall_score, evidence, conclusion
+		 )
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		 RETURNING id, capability_id, actor_id, COALESCE(actor_type, ''), workflow_id, task_id, evaluator_id, evaluator_type,
+		           quality_score, reliability_score, cost_score, latency_score, risk_score, compliance_score,
+		           overall_score, evidence, COALESCE(conclusion, ''), created_at`,
+		input.CapabilityID, input.ActorID, input.ActorType, input.WorkflowID, input.TaskID, input.EvaluatorID, input.EvaluatorType,
+		input.QualityScore, input.ReliabilityScore, input.CostScore, input.LatencyScore, input.RiskScore, input.ComplianceScore,
+		overallScore, evidenceJSON, input.Conclusion,
+	).Scan(&eval.ID, &eval.CapabilityID, &eval.ActorID, &eval.ActorType, &eval.WorkflowID, &eval.TaskID, &eval.EvaluatorID, &eval.EvaluatorType,
+		&eval.QualityScore, &eval.ReliabilityScore, &eval.CostScore, &eval.LatencyScore, &eval.RiskScore, &eval.ComplianceScore,
+		&eval.OverallScore, &evidenceJSON, &eval.Conclusion, &eval.CreatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("create capability evaluation: %w", err)
+	}
+	json.Unmarshal(evidenceJSON, &eval.Evidence)
+	return eval, nil
+}
+
+func (r *Repository) ListCapabilityEvaluations(ctx context.Context, capabilityID *uuid.UUID, limit int) ([]CapabilityEvaluation, error) {
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 100 {
+		limit = 100
+	}
+	query := `SELECT id, capability_id, actor_id, COALESCE(actor_type, ''), workflow_id, task_id, evaluator_id, evaluator_type,
+	                 quality_score, reliability_score, cost_score, latency_score, risk_score, compliance_score,
+	                 overall_score, evidence, COALESCE(conclusion, ''), created_at
+	          FROM capability_evaluations`
+	args := []any{}
+	if capabilityID != nil {
+		query += ` WHERE capability_id = $1 ORDER BY created_at DESC LIMIT $2`
+		args = append(args, *capabilityID, limit)
+	} else {
+		query += ` ORDER BY created_at DESC LIMIT $1`
+		args = append(args, limit)
+	}
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list capability evaluations: %w", err)
+	}
+	defer rows.Close()
+
+	var evaluations []CapabilityEvaluation
+	for rows.Next() {
+		var eval CapabilityEvaluation
+		var evidenceJSON []byte
+		if err := rows.Scan(&eval.ID, &eval.CapabilityID, &eval.ActorID, &eval.ActorType, &eval.WorkflowID, &eval.TaskID, &eval.EvaluatorID, &eval.EvaluatorType,
+			&eval.QualityScore, &eval.ReliabilityScore, &eval.CostScore, &eval.LatencyScore, &eval.RiskScore, &eval.ComplianceScore,
+			&eval.OverallScore, &evidenceJSON, &eval.Conclusion, &eval.CreatedAt); err != nil {
+			return nil, fmt.Errorf("scan capability evaluation: %w", err)
+		}
+		json.Unmarshal(evidenceJSON, &eval.Evidence)
+		evaluations = append(evaluations, eval)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list capability evaluations iteration: %w", err)
+	}
+	return evaluations, nil
+}

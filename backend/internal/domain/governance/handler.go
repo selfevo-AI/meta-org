@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -26,6 +27,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Post("/governance/control-rules", h.createControlRule)
 	r.Get("/governance/control-rules", h.listControlRules)
 	r.Post("/governance/check", h.checkPermission)
+	r.Post("/governance/access/decide", h.decideAccess)
+	r.Get("/governance/access/decisions", h.listAccessDecisions)
 }
 
 func (h *Handler) createPermission(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +126,35 @@ func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) decideAccess(w http.ResponseWriter, r *http.Request) {
+	var input AccessDecisionInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	result, err := h.service.DecideAccess(r.Context(), input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) listAccessDecisions(w http.ResponseWriter, r *http.Request) {
+	limit := 50
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if parsed, err := strconv.Atoi(l); err == nil && parsed > 0 {
+			limit = parsed
+		}
+	}
+	results, err := h.service.ListAccessDecisions(r.Context(), limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, results)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

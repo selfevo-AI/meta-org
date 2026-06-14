@@ -19,7 +19,7 @@ func Load() *Config {
 		ServerPort:     getEnvInt("SERVER_PORT", 8080),
 		DatabaseURL:    getEnv("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/harness_org?sslmode=disable"),
 		JWTSecret:      getEnv("JWT_SECRET", "dev-secret-change-in-production"),
-		CorsOrigins:    getEnvSlice("CORS_ORIGINS", "http://localhost:3000"),
+		CorsOrigins:    getEnvSlice("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000"),
 		MigrationsPath: getEnv("MIGRATIONS_PATH", "migrations"),
 	}
 }

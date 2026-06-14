@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS mvru_members (
         (user_id IS NOT NULL AND agent_id IS NULL) OR
         (user_id IS NULL AND agent_id IS NOT NULL)
     ),
-    PRIMARY KEY (mvru_id, COALESCE(user_id, agent_id))
+    CONSTRAINT uq_mvru_user UNIQUE (mvru_id, user_id),
+    CONSTRAINT uq_mvru_agent UNIQUE (mvru_id, agent_id)
 );
 
 CREATE TABLE IF NOT EXISTS mvru_relationships (

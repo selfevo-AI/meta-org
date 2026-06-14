@@ -22,6 +22,14 @@ Format Go code with `gofmt`; keep package names short and lowercase. Preserve th
 
 Frontend code uses TypeScript, React, Tailwind CSS, two-space indentation, single quotes, and no trailing semicolons. Prefer the `@/*` path alias for imports from `frontend/src/`.
 
+## Frontend Internationalization
+
+All user-facing frontend text must support Chinese and English. Use `LanguageProvider` and `useI18n` from `frontend/src/lib/i18n.tsx`; do not hardcode visible strings in new UI without adding both `zh` and `en` translations.
+
+Field-level text is included in this requirement: form labels, placeholders, validation and error fallback text, button text, status badges, table headers, menu labels, empty states, panel titles, API operation names, and API operation parameter labels must all go through the i18n layer. New modules should use stable translation keys. Chinese literal keys are allowed only when migrating existing UI incrementally.
+
+Any future frontend module or API-facing operation metadata must be designed with this same bilingual contract from the start, so human UI and agent-facing API workbench screens stay consistent.
+
 ## Testing Guidelines
 
 No test files are currently present. Add Go tests as `*_test.go` beside the code they cover, and prefer table-driven tests for services and repositories. For frontend additions, add focused component or integration tests if a framework is introduced, and document the command in `frontend/package.json`.

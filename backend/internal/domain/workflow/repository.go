@@ -20,40 +20,48 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 func (r *Repository) CreateTemplate(ctx context.Context, input CreateWorkflowInput) (*WorkflowTemplate, error) {
 	stagesJSON, _ := json.Marshal(input.Stages)
 	rulesJSON, _ := json.Marshal(input.RoutingRules)
+	graphJSON, _ := json.Marshal(input.VisualGraph)
 
 	t := &WorkflowTemplate{}
 	err := r.db.QueryRow(ctx,
-		`INSERT INTO workflow_templates (name, description, stages, assignee_type, required_weight, routing_rules)
-		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id, name, description, stages, assignee_type, required_weight, routing_rules, is_active, created_at, updated_at`,
-		input.Name, input.Description, stagesJSON, input.AssigneeType, input.RequiredWeight, rulesJSON,
-	).Scan(&t.ID, &t.Name, &t.Description, &stagesJSON, &t.AssigneeType, &t.RequiredWeight, &rulesJSON, &t.IsActive, &t.CreatedAt, &t.UpdatedAt)
+		`INSERT INTO workflow_templates (
+		    organization_id, department_id, name, description, stages, assignee_type, required_weight, routing_rules, visual_graph
+		 )
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		 RETURNING id, organization_id, department_id, name, description, stages, assignee_type, required_weight,
+		           routing_rules, visual_graph, is_active, created_at, updated_at`,
+		input.OrganizationID, input.DepartmentID, input.Name, input.Description, stagesJSON, input.AssigneeType, input.RequiredWeight, rulesJSON, graphJSON,
+	).Scan(&t.ID, &t.OrganizationID, &t.DepartmentID, &t.Name, &t.Description, &stagesJSON, &t.AssigneeType, &t.RequiredWeight, &rulesJSON, &graphJSON, &t.IsActive, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create template: %w", err)
 	}
 	json.Unmarshal(stagesJSON, &t.Stages)
 	json.Unmarshal(rulesJSON, &t.RoutingRules)
+	json.Unmarshal(graphJSON, &t.VisualGraph)
 	return t, nil
 }
 
 func (r *Repository) GetTemplate(ctx context.Context, id uuid.UUID) (*WorkflowTemplate, error) {
 	t := &WorkflowTemplate{}
-	var stagesJSON, rulesJSON []byte
+	var stagesJSON, rulesJSON, graphJSON []byte
 	err := r.db.QueryRow(ctx,
-		`SELECT id, name, description, stages, assignee_type, required_weight, routing_rules, is_active, created_at, updated_at
+		`SELECT id, organization_id, department_id, name, description, stages, assignee_type, required_weight,
+		        routing_rules, visual_graph, is_active, created_at, updated_at
 		 FROM workflow_templates WHERE id = $1`, id,
-	).Scan(&t.ID, &t.Name, &t.Description, &stagesJSON, &t.AssigneeType, &t.RequiredWeight, &rulesJSON, &t.IsActive, &t.CreatedAt, &t.UpdatedAt)
+	).Scan(&t.ID, &t.OrganizationID, &t.DepartmentID, &t.Name, &t.Description, &stagesJSON, &t.AssigneeType, &t.RequiredWeight, &rulesJSON, &graphJSON, &t.IsActive, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get template: %w", err)
 	}
 	json.Unmarshal(stagesJSON, &t.Stages)
 	json.Unmarshal(rulesJSON, &t.RoutingRules)
+	json.Unmarshal(graphJSON, &t.VisualGraph)
 	return t, nil
 }
 
 func (r *Repository) ListTemplates(ctx context.Context) ([]WorkflowTemplate, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, name, description, stages, assignee_type, required_weight, routing_rules, is_active, created_at, updated_at
+		`SELECT id, organization_id, department_id, name, description, stages, assignee_type, required_weight,
+		        routing_rules, visual_graph, is_active, created_at, updated_at
 		 FROM workflow_templates ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("list templates: %w", err)
@@ -63,12 +71,13 @@ func (r *Repository) ListTemplates(ctx context.Context) ([]WorkflowTemplate, err
 	var templates []WorkflowTemplate
 	for rows.Next() {
 		var t WorkflowTemplate
-		var stagesJSON, rulesJSON []byte
-		if err := rows.Scan(&t.ID, &t.Name, &t.Description, &stagesJSON, &t.AssigneeType, &t.RequiredWeight, &rulesJSON, &t.IsActive, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		var stagesJSON, rulesJSON, graphJSON []byte
+		if err := rows.Scan(&t.ID, &t.OrganizationID, &t.DepartmentID, &t.Name, &t.Description, &stagesJSON, &t.AssigneeType, &t.RequiredWeight, &rulesJSON, &graphJSON, &t.IsActive, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan template: %w", err)
 		}
 		json.Unmarshal(stagesJSON, &t.Stages)
 		json.Unmarshal(rulesJSON, &t.RoutingRules)
+		json.Unmarshal(graphJSON, &t.VisualGraph)
 		templates = append(templates, t)
 	}
 	if err := rows.Err(); err != nil {
@@ -81,10 +90,11 @@ func (r *Repository) CreateInstance(ctx context.Context, input StartWorkflowInpu
 	contextJSON, _ := json.Marshal(input.Context)
 	inst := &WorkflowInstance{}
 	err := r.db.QueryRow(ctx,
-		`INSERT INTO workflow_instances (template_id, context) VALUES ($1, $2)
-		 RETURNING id, template_id, status, current_stage, context, trace_id, created_at, updated_at`,
-		input.TemplateID, contextJSON,
-	).Scan(&inst.ID, &inst.TemplateID, &inst.Status, &inst.CurrentStage, &contextJSON, &inst.TraceID, &inst.CreatedAt, &inst.UpdatedAt)
+		`INSERT INTO workflow_instances (template_id, organization_id, department_id, project_id, context)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, template_id, organization_id, department_id, project_id, status, current_stage, context, trace_id, created_at, updated_at`,
+		input.TemplateID, input.OrganizationID, input.DepartmentID, input.ProjectID, contextJSON,
+	).Scan(&inst.ID, &inst.TemplateID, &inst.OrganizationID, &inst.DepartmentID, &inst.ProjectID, &inst.Status, &inst.CurrentStage, &contextJSON, &inst.TraceID, &inst.CreatedAt, &inst.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create instance: %w", err)
 	}
@@ -106,10 +116,11 @@ func (r *Repository) CreateInstanceWithTasks(ctx context.Context, input StartWor
 
 	inst := &WorkflowInstance{}
 	err = tx.QueryRow(ctx,
-		`INSERT INTO workflow_instances (template_id, context) VALUES ($1, $2)
-		 RETURNING id, template_id, status, current_stage, context, trace_id, created_at, updated_at`,
-		input.TemplateID, contextJSON,
-	).Scan(&inst.ID, &inst.TemplateID, &inst.Status, &inst.CurrentStage, &contextJSON, &inst.TraceID, &inst.CreatedAt, &inst.UpdatedAt)
+		`INSERT INTO workflow_instances (template_id, organization_id, department_id, project_id, context)
+		 VALUES ($1, $2, $3, $4, $5)
+		 RETURNING id, template_id, organization_id, department_id, project_id, status, current_stage, context, trace_id, created_at, updated_at`,
+		input.TemplateID, input.OrganizationID, input.DepartmentID, input.ProjectID, contextJSON,
+	).Scan(&inst.ID, &inst.TemplateID, &inst.OrganizationID, &inst.DepartmentID, &inst.ProjectID, &inst.Status, &inst.CurrentStage, &contextJSON, &inst.TraceID, &inst.CreatedAt, &inst.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create instance: %w", err)
 	}
@@ -123,7 +134,7 @@ func (r *Repository) CreateInstanceWithTasks(ctx context.Context, input StartWor
 			Stage:          i,
 			StageType:      stage.Type,
 			AssigneeType:   stage.AssigneeType,
-			Input:          input.Context,
+			Input:          taskInputFromStage(input.Context, stage),
 			WeightSnapshot: tmpl.RequiredWeight,
 			Status:         TaskPending,
 		}
@@ -162,13 +173,39 @@ func (r *Repository) CreateInstanceWithTasks(ctx context.Context, input StartWor
 	return inst, nil
 }
 
+func taskInputFromStage(base map[string]any, stage Stage) map[string]any {
+	taskInput := map[string]any{}
+	for key, value := range base {
+		taskInput[key] = value
+	}
+	taskInput["stage_id"] = stage.ID
+	taskInput["stage_name"] = stage.Name
+	if stage.PositionID != nil {
+		taskInput["position_id"] = stage.PositionID.String()
+	}
+	taskInput["position_code"] = stage.PositionCode
+	taskInput["required_roles"] = stage.RequiredRoles
+	taskInput["required_tools"] = stage.RequiredTools
+	taskInput["required_capabilities"] = stage.RequiredCapabilities
+	taskInput["required_permission_level"] = stage.RequiredPermissionLevel
+	taskInput["risk_level"] = stage.RiskLevel
+	taskInput["preferred_actor_types"] = stage.PreferredActorTypes
+	if stage.EvaluationPolicy != nil {
+		taskInput["evaluation_policy"] = stage.EvaluationPolicy
+	}
+	if stage.MatchingPolicy != nil {
+		taskInput["matching_policy"] = stage.MatchingPolicy
+	}
+	return taskInput
+}
+
 func (r *Repository) GetInstance(ctx context.Context, id uuid.UUID) (*WorkflowInstance, error) {
 	inst := &WorkflowInstance{}
 	var contextJSON []byte
 	err := r.db.QueryRow(ctx,
-		`SELECT id, template_id, status, current_stage, context, trace_id, created_at, updated_at
+		`SELECT id, template_id, organization_id, department_id, project_id, status, current_stage, context, trace_id, created_at, updated_at
 		 FROM workflow_instances WHERE id = $1`, id,
-	).Scan(&inst.ID, &inst.TemplateID, &inst.Status, &inst.CurrentStage, &contextJSON, &inst.TraceID, &inst.CreatedAt, &inst.UpdatedAt)
+	).Scan(&inst.ID, &inst.TemplateID, &inst.OrganizationID, &inst.DepartmentID, &inst.ProjectID, &inst.Status, &inst.CurrentStage, &contextJSON, &inst.TraceID, &inst.CreatedAt, &inst.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get instance: %w", err)
 	}
@@ -257,9 +294,9 @@ func (r *Repository) CompleteTaskWithWorkflowProgress(ctx context.Context, taskI
 	inst := &WorkflowInstance{}
 	var contextJSON []byte
 	err = tx.QueryRow(ctx,
-		`SELECT id, template_id, status, current_stage, context, trace_id, created_at, updated_at
+		`SELECT id, template_id, organization_id, department_id, project_id, status, current_stage, context, trace_id, created_at, updated_at
 		 FROM workflow_instances WHERE id = $1 FOR UPDATE`, task.WorkflowID,
-	).Scan(&inst.ID, &inst.TemplateID, &inst.Status, &inst.CurrentStage, &contextJSON, &inst.TraceID, &inst.CreatedAt, &inst.UpdatedAt)
+	).Scan(&inst.ID, &inst.TemplateID, &inst.OrganizationID, &inst.DepartmentID, &inst.ProjectID, &inst.Status, &inst.CurrentStage, &contextJSON, &inst.TraceID, &inst.CreatedAt, &inst.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("get workflow instance: %w", err)
 	}

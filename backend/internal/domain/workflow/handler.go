@@ -114,8 +114,12 @@ func (h *Handler) updateStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	status := WorkflowStatus(req.Status)
-	if err := h.service.repo.UpdateInstanceStatus(r.Context(), id, status); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	if err := h.service.UpdateWorkflowStatus(r.Context(), id, status); err != nil {
+		statusCode := http.StatusInternalServerError
+		if errors.Is(err, ErrValidation) {
+			statusCode = http.StatusBadRequest
+		}
+		writeJSON(w, statusCode, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "updated"})
