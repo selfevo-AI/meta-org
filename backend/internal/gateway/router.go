@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/aigateway"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/capability"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/costing"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/dashboard"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/finance"
@@ -14,6 +15,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/identity"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/layer"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/metaorg"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/metaresource"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
@@ -29,8 +31,10 @@ type Dependencies struct {
 	OrganizationHandler  *organization.Handler
 	LayerHandler         *layer.Handler
 	CapabilityHandler    *capability.Handler
+	CostingHandler       *costing.Handler
 	DashboardHandler     *dashboard.Handler
 	MetaOrgHandler       *metaorg.Handler
+	MetaResourceHandler  *metaresource.Handler
 	AIGatewayHandler     *aigateway.Handler
 	WorkflowHandler      *workflow.Handler
 	ProjectHandler       *project.Handler
@@ -68,11 +72,17 @@ func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
 			if deps.CapabilityHandler != nil {
 				deps.CapabilityHandler.RegisterRoutes(r)
 			}
+			if deps.CostingHandler != nil {
+				deps.CostingHandler.RegisterRoutes(r)
+			}
 			if deps.DashboardHandler != nil {
 				deps.DashboardHandler.RegisterRoutes(r)
 			}
 			if deps.MetaOrgHandler != nil {
 				deps.MetaOrgHandler.RegisterRoutes(r)
+			}
+			if deps.MetaResourceHandler != nil {
+				deps.MetaResourceHandler.RegisterRoutes(r)
 			}
 			if deps.AIGatewayHandler != nil {
 				deps.AIGatewayHandler.RegisterRoutes(r)

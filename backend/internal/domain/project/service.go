@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/costing"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
@@ -30,9 +31,14 @@ type Service struct {
 	evolution    *evolution.Service
 	organization *organization.Service
 	workflow     *workflow.Service
+	costRecorder CostRecorder
 }
 
 type ServiceOption func(*Service)
+
+type CostRecorder interface {
+	RecordActual(ctx context.Context, input costing.CreateLedgerEntryInput) (*costing.CostLedgerEntry, error)
+}
 
 func WithGovernanceService(gov *governance.Service) ServiceOption {
 	return func(s *Service) {
@@ -55,6 +61,12 @@ func WithOrganizationService(org *organization.Service) ServiceOption {
 func WithWorkflowService(wf *workflow.Service) ServiceOption {
 	return func(s *Service) {
 		s.workflow = wf
+	}
+}
+
+func WithCostRecorder(recorder CostRecorder) ServiceOption {
+	return func(s *Service) {
+		s.costRecorder = recorder
 	}
 }
 
@@ -379,6 +391,14 @@ func (s *Service) ConvertRequirementToProject(ctx context.Context, id uuid.UUID,
 		metadata = map[string]any{}
 	}
 	metadata["converted_from_requirement"] = req.ID.String()
+	budgetAmount := input.BudgetAmount
+	if budgetAmount == 0 {
+		budgetAmount = req.BudgetAmount
+	}
+	budgetCurrency := input.BudgetCurrency
+	if budgetCurrency == "" {
+		budgetCurrency = req.BudgetCurrency
+	}
 	proj, err := s.repo.CreateProject(ctx, CreateProjectInput{
 		RequirementID:  &req.ID,
 		OrganizationID: req.OrganizationID,
@@ -389,7 +409,8 @@ func (s *Service) ConvertRequirementToProject(ctx context.Context, id uuid.UUID,
 		Priority:       req.Priority,
 		RiskLevel:      req.RiskLevel,
 		RequiredLevel:  req.RequiredLevel,
-		BudgetAmount:   input.BudgetAmount,
+		BudgetAmount:   budgetAmount,
+		BudgetCurrency: budgetCurrency,
 		Metadata:       metadata,
 	})
 	if err != nil {
@@ -418,6 +439,12 @@ func (s *Service) CreateProject(ctx context.Context, input CreateProjectInput) (
 			}
 			if input.Description == "" {
 				input.Description = req.Description
+			}
+			if input.BudgetAmount == 0 {
+				input.BudgetAmount = req.BudgetAmount
+			}
+			if input.BudgetCurrency == "" {
+				input.BudgetCurrency = req.BudgetCurrency
 			}
 		}
 	}
@@ -705,7 +732,12 @@ func (s *Service) CreateCostEntry(ctx context.Context, projectID uuid.UUID, inpu
 	if err := s.requireAccess(ctx, actorID, actorType, "cost.write", "project", &projectID, proj.OrganizationID, proj.DepartmentID, nil, proj.RequiredLevel, proj.RiskLevel, nil); err != nil {
 		return nil, err
 	}
-	return s.repo.CreateCostEntry(ctx, projectID, input)
+	entry, err := s.repo.CreateCostEntry(ctx, projectID, input)
+	if err != nil {
+		return nil, err
+	}
+	s.recordCostEntry(ctx, proj, entry)
+	return entry, nil
 }
 
 func (s *Service) CreateCostEntryFromAIUsage(ctx context.Context, projectID uuid.UUID, input CreateCostEntryInput) (*CostEntry, error) {
@@ -782,9 +814,49 @@ func (s *Service) RefreshCost(ctx context.Context, projectID uuid.UUID, actorInp
 		if err != nil {
 			return nil, err
 		}
+		s.recordCostEntry(ctx, proj, entry)
 		entries = append(entries, *entry)
 	}
 	return entries, nil
+}
+
+func (s *Service) recordCostEntry(ctx context.Context, project *Project, entry *CostEntry) {
+	if s.costRecorder == nil || project == nil || entry == nil || entry.Amount == 0 {
+		return
+	}
+	category := "manual"
+	switch entry.SourceType {
+	case "member_allocation":
+		category = "human"
+	case "ai_usage":
+		category = "model_token"
+	case "resource":
+		category = "resource"
+	case "capability":
+		category = "capability"
+	}
+	metadata := map[string]any{
+		"project_cost_entry_id": entry.ID.String(),
+		"source_type":           entry.SourceType,
+	}
+	for key, value := range entry.Metadata {
+		metadata[key] = value
+	}
+	_, _ = s.costRecorder.RecordActual(ctx, costing.CreateLedgerEntryInput{
+		CostCategory:   category,
+		SourceType:     "project_cost_entry",
+		SourceID:       &entry.ID,
+		OrganizationID: project.OrganizationID,
+		DepartmentID:   project.DepartmentID,
+		ProjectID:      &project.ID,
+		ActorID:        entry.ActorID,
+		ActorType:      entry.ActorType,
+		Amount:         entry.Amount,
+		Currency:       entry.Currency,
+		OccurredAt:     &entry.OccurredAt,
+		Description:    entry.Description,
+		Metadata:       metadata,
+	})
 }
 
 func (s *Service) CreateProjectEvaluation(ctx context.Context, projectID uuid.UUID, input CreateProjectEvaluationInput) (*ProjectEvaluation, error) {
@@ -992,6 +1064,9 @@ func normalizeRequirementInput(input *CreateRequirementInput) {
 	input.Priority = normalizePriority(input.Priority)
 	input.RiskLevel = normalizeRisk(input.RiskLevel)
 	input.RequiredLevel = normalizeLevel(input.RequiredLevel)
+	if input.BudgetCurrency == "" {
+		input.BudgetCurrency = "CNY"
+	}
 	if input.Analysis == nil {
 		input.Analysis = map[string]any{}
 	}
@@ -1010,6 +1085,9 @@ func normalizeRequirementUpdate(input *UpdateRequirementInput) {
 	if input.RequiredLevel != "" {
 		input.RequiredLevel = normalizeLevel(input.RequiredLevel)
 	}
+	if input.BudgetCurrency != nil && *input.BudgetCurrency == "" {
+		input.BudgetCurrency = nil
+	}
 }
 
 func normalizeProjectInput(input *CreateProjectInput) {
@@ -1022,6 +1100,9 @@ func normalizeProjectInput(input *CreateProjectInput) {
 	input.Priority = normalizePriority(input.Priority)
 	input.RiskLevel = normalizeRisk(input.RiskLevel)
 	input.RequiredLevel = normalizeLevel(input.RequiredLevel)
+	if input.BudgetCurrency == "" {
+		input.BudgetCurrency = "CNY"
+	}
 	if input.Metadata == nil {
 		input.Metadata = map[string]any{}
 	}

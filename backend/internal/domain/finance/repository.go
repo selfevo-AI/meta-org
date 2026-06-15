@@ -165,36 +165,47 @@ func (r *PostgresRepository) CreateExportBatch(ctx context.Context, input Create
 		return nil, fmt.Errorf("create finance export batch: %w", err)
 	}
 
-	usageRows, err := r.exportableUsageRows(ctx, tx, input.periodStartTime, input.periodEndTime, input.Currency)
+	costRows, err := r.exportableCostRows(ctx, tx, input.periodStartTime, input.periodEndTime, input.Currency)
 	if err != nil {
 		return nil, err
 	}
 	total := 0.0
-	lines := make([]ExportLine, 0, len(usageRows))
-	for _, usage := range usageRows {
+	lines := make([]ExportLine, 0, len(costRows))
+	for _, cost := range costRows {
 		line := &ExportLine{}
 		err := scanLine(tx.QueryRow(ctx, `
 			INSERT INTO finance_export_lines (
-				batch_id, usage_ledger_id, project_cost_entry_id, organization_id,
-				department_id, project_id, provider_id, model_id, amount, currency, metadata
+				batch_id, usage_ledger_id, cost_ledger_entry_id, project_cost_entry_id,
+				organization_id, department_id, project_id, provider_id, model_id, amount,
+				currency, metadata
 			)
-			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-			RETURNING id, batch_id, usage_ledger_id, project_cost_entry_id, organization_id,
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			RETURNING id, batch_id, usage_ledger_id, cost_ledger_entry_id, project_cost_entry_id, organization_id,
 				department_id, project_id, provider_id, model_id, amount::float8, currency,
 				external_line_id, status, metadata, created_at
-		`, batch.ID, usage.UsageLedgerID, usage.ProjectCostEntryID, usage.OrganizationID, usage.DepartmentID,
-			usage.ProjectID, usage.ProviderID, usage.ModelID, usage.Amount, usage.Currency, mustJSON(map[string]any{
-				"usage_created_at": usage.UsageCreatedAt.Format(time.RFC3339),
+		`, batch.ID, cost.UsageLedgerID, cost.CostLedgerEntryID, cost.ProjectCostEntryID, cost.OrganizationID, cost.DepartmentID,
+			cost.ProjectID, cost.ProviderID, cost.ModelID, cost.Amount, cost.Currency, mustJSON(map[string]any{
+				"cost_ledger_created_at": cost.CostCreatedAt.Format(time.RFC3339),
+				"cost_source_type":       cost.SourceType,
 			})), line)
 		if err != nil {
 			return nil, fmt.Errorf("create finance export line: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `
-			UPDATE ai_usage_ledger
+			UPDATE cost_ledger_entries
 			SET finance_export_line_id = $1
 			WHERE id = $2
-		`, line.ID, usage.UsageLedgerID); err != nil {
-			return nil, fmt.Errorf("link usage ledger to finance export line: %w", err)
+		`, line.ID, cost.CostLedgerEntryID); err != nil {
+			return nil, fmt.Errorf("link cost ledger to finance export line: %w", err)
+		}
+		if cost.UsageLedgerID != nil {
+			if _, err := tx.Exec(ctx, `
+				UPDATE ai_usage_ledger
+				SET finance_export_line_id = $1
+				WHERE id = $2
+			`, line.ID, *cost.UsageLedgerID); err != nil {
+				return nil, fmt.Errorf("link usage ledger to finance export line: %w", err)
+			}
 		}
 		lines = append(lines, *line)
 		total += line.Amount
@@ -303,7 +314,7 @@ func (r *PostgresRepository) UpdateExportLineStatus(ctx context.Context, id uuid
 			external_line_id = COALESCE(NULLIF($3, ''), external_line_id),
 			metadata = metadata || COALESCE($4::jsonb, '{}'::jsonb)
 		WHERE id = $1
-		RETURNING id, batch_id, usage_ledger_id, project_cost_entry_id, organization_id,
+		RETURNING id, batch_id, usage_ledger_id, cost_ledger_entry_id, project_cost_entry_id, organization_id,
 			department_id, project_id, provider_id, model_id, amount::float8, currency,
 			external_line_id, status, metadata, created_at
 	`, id, input.Status, input.ExternalLineID, nullableJSON(input.Metadata)), line)
@@ -314,15 +325,27 @@ func (r *PostgresRepository) UpdateExportLineStatus(ctx context.Context, id uuid
 }
 
 func (r *PostgresRepository) LinkProjectCostEntry(ctx context.Context, lineID uuid.UUID, entryID uuid.UUID) error {
-	var usageID pgtype.UUID
+	var usageID, costLedgerEntryID pgtype.UUID
 	if err := r.db.QueryRow(ctx, `
 		UPDATE finance_export_lines
 		SET project_cost_entry_id = $2,
 			metadata = metadata || '{"project_cost_posted": true}'::jsonb
 		WHERE id = $1
-		RETURNING usage_ledger_id
-	`, lineID, entryID).Scan(&usageID); err != nil {
+		RETURNING usage_ledger_id, cost_ledger_entry_id
+	`, lineID, entryID).Scan(&usageID, &costLedgerEntryID); err != nil {
 		return fmt.Errorf("link finance line to project cost entry: %w", err)
+	}
+	if costLedgerEntryID.Valid {
+		costLedgerUUID := uuidPtr(costLedgerEntryID)
+		if costLedgerUUID != nil {
+			if _, err := r.db.Exec(ctx, `
+				UPDATE cost_ledger_entries
+				SET metadata = metadata || jsonb_build_object('project_cost_entry_id', $2::text)
+				WHERE id = $1
+			`, *costLedgerUUID, entryID.String()); err != nil {
+				return fmt.Errorf("link cost ledger to project cost entry: %w", err)
+			}
+		}
 	}
 	if usageID.Valid {
 		usageUUID := uuidPtr(usageID)
@@ -405,7 +428,7 @@ func (r *PostgresRepository) getExportBatch(ctx context.Context, store batchStor
 
 func (r *PostgresRepository) listBatchLines(ctx context.Context, store batchStore, batchID uuid.UUID) ([]ExportLine, error) {
 	rows, err := store.Query(ctx, `
-		SELECT id, batch_id, usage_ledger_id, project_cost_entry_id, organization_id,
+		SELECT id, batch_id, usage_ledger_id, cost_ledger_entry_id, project_cost_entry_id, organization_id,
 			department_id, project_id, provider_id, model_id, amount::float8, currency,
 			external_line_id, status, metadata, created_at
 		FROM finance_export_lines
@@ -439,8 +462,9 @@ func (r *PostgresRepository) findBatchByIdempotencyKey(ctx context.Context, tx p
 	return &id, nil
 }
 
-type exportableUsageRow struct {
-	UsageLedgerID      uuid.UUID
+type exportableCostRow struct {
+	UsageLedgerID      *uuid.UUID
+	CostLedgerEntryID  uuid.UUID
 	ProjectCostEntryID *uuid.UUID
 	OrganizationID     *uuid.UUID
 	DepartmentID       *uuid.UUID
@@ -449,35 +473,49 @@ type exportableUsageRow struct {
 	ModelID            *uuid.UUID
 	Amount             float64
 	Currency           string
-	UsageCreatedAt     time.Time
+	SourceType         string
+	CostCreatedAt      time.Time
 }
 
-func (r *PostgresRepository) exportableUsageRows(ctx context.Context, tx pgx.Tx, start time.Time, end time.Time, currency string) ([]exportableUsageRow, error) {
+func (r *PostgresRepository) exportableCostRows(ctx context.Context, tx pgx.Tx, start time.Time, end time.Time, currency string) ([]exportableCostRow, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT l.id, l.project_cost_entry_id, i.organization_id, i.department_id,
-			i.project_id, i.provider_id, i.model_id, l.amount::float8, l.currency, l.created_at
-		FROM ai_usage_ledger l
-		JOIN ai_invocations i ON i.id = l.invocation_id
-		WHERE l.finance_export_line_id IS NULL
-			AND l.amount <> 0
-			AND l.currency = $3
-			AND l.created_at >= $1
-			AND l.created_at < ($2::date + INTERVAL '1 day')
-		ORDER BY l.created_at ASC
-		FOR UPDATE OF l SKIP LOCKED
+		SELECT c.id,
+			u.id,
+			CASE WHEN c.source_type = 'project_cost_entry' THEN c.source_id ELSE NULL END AS project_cost_entry_id,
+			c.organization_id, c.department_id, c.project_id,
+			i.provider_id, i.model_id, c.amount::float8, c.currency, c.source_type, c.created_at
+		FROM cost_ledger_entries c
+		LEFT JOIN ai_invocations i ON c.source_type = 'ai_invocation' AND i.id = c.source_id
+		LEFT JOIN LATERAL (
+			SELECT id
+			FROM ai_usage_ledger
+			WHERE invocation_id = i.id
+			ORDER BY created_at ASC
+			LIMIT 1
+		) u ON TRUE
+		WHERE c.finance_export_line_id IS NULL
+			AND c.status = 'posted'
+			AND c.ledger_type IN ('actual', 'adjustment')
+			AND c.amount <> 0
+			AND c.currency = $3
+			AND c.occurred_at >= $1
+			AND c.occurred_at < ($2::date + INTERVAL '1 day')
+		ORDER BY c.occurred_at ASC, c.created_at ASC
+		FOR UPDATE OF c SKIP LOCKED
 	`, start, end, currency)
 	if err != nil {
-		return nil, fmt.Errorf("query exportable AI usage ledger: %w", err)
+		return nil, fmt.Errorf("query exportable cost ledger: %w", err)
 	}
 	defer rows.Close()
-	items := []exportableUsageRow{}
+	items := []exportableCostRow{}
 	for rows.Next() {
-		var item exportableUsageRow
-		var projectCostEntryID, organizationID, departmentID, projectID, providerID, modelID pgtype.UUID
-		if err := rows.Scan(&item.UsageLedgerID, &projectCostEntryID, &organizationID, &departmentID,
-			&projectID, &providerID, &modelID, &item.Amount, &item.Currency, &item.UsageCreatedAt); err != nil {
-			return nil, fmt.Errorf("scan exportable AI usage ledger: %w", err)
+		var item exportableCostRow
+		var usageLedgerID, projectCostEntryID, organizationID, departmentID, projectID, providerID, modelID pgtype.UUID
+		if err := rows.Scan(&item.CostLedgerEntryID, &usageLedgerID, &projectCostEntryID, &organizationID, &departmentID,
+			&projectID, &providerID, &modelID, &item.Amount, &item.Currency, &item.SourceType, &item.CostCreatedAt); err != nil {
+			return nil, fmt.Errorf("scan exportable cost ledger: %w", err)
 		}
+		item.UsageLedgerID = uuidPtr(usageLedgerID)
 		item.ProjectCostEntryID = uuidPtr(projectCostEntryID)
 		item.OrganizationID = uuidPtr(organizationID)
 		item.DepartmentID = uuidPtr(departmentID)
@@ -516,13 +554,14 @@ func scanBatch(row scanner, batch *ExportBatch) error {
 
 func scanLine(row scanner, line *ExportLine) error {
 	var metadataJSON []byte
-	var usageLedgerID, projectCostEntryID, organizationID, departmentID, projectID, providerID, modelID pgtype.UUID
-	if err := row.Scan(&line.ID, &line.BatchID, &usageLedgerID, &projectCostEntryID, &organizationID,
+	var usageLedgerID, costLedgerEntryID, projectCostEntryID, organizationID, departmentID, projectID, providerID, modelID pgtype.UUID
+	if err := row.Scan(&line.ID, &line.BatchID, &usageLedgerID, &costLedgerEntryID, &projectCostEntryID, &organizationID,
 		&departmentID, &projectID, &providerID, &modelID, &line.Amount, &line.Currency,
 		&line.ExternalLineID, &line.Status, &metadataJSON, &line.CreatedAt); err != nil {
 		return err
 	}
 	line.UsageLedgerID = uuidPtr(usageLedgerID)
+	line.CostLedgerEntryID = uuidPtr(costLedgerEntryID)
 	line.ProjectCostEntryID = uuidPtr(projectCostEntryID)
 	line.OrganizationID = uuidPtr(organizationID)
 	line.DepartmentID = uuidPtr(departmentID)
@@ -548,11 +587,22 @@ func uuidPtr(value pgtype.UUID) *uuid.UUID {
 	if !value.Valid {
 		return nil
 	}
-	id, err := uuid.FromBytes(value.Bytes[:])
-	if err != nil {
+	id := uuidPtrValue(value)
+	if id == uuid.Nil {
 		return nil
 	}
 	return &id
+}
+
+func uuidPtrValue(value pgtype.UUID) uuid.UUID {
+	if !value.Valid {
+		return uuid.Nil
+	}
+	id, err := uuid.FromBytes(value.Bytes[:])
+	if err != nil {
+		return uuid.Nil
+	}
+	return id
 }
 
 func mustJSON(value map[string]any) []byte {

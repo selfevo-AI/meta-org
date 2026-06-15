@@ -29,14 +29,17 @@ func (r *Repository) CreateRequirement(ctx context.Context, input CreateRequirem
 	err := scanRequirement(r.db.QueryRow(ctx,
 		`INSERT INTO requirements (
 		    title, description, source, status, priority, risk_level, required_level,
-		    organization_id, department_id, created_by_id, created_by_type, analysis, metadata
+		    organization_id, department_id, created_by_id, created_by_type, budget_amount,
+		    budget_currency, analysis, metadata
 		 )
-		 VALUES ($1, $2, $3, 'draft', $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		 VALUES ($1, $2, $3, 'draft', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
 		 RETURNING id, title, description, source, status, priority, risk_level, required_level,
-		           organization_id, department_id, created_by_id, created_by_type, analysis, metadata,
+		           organization_id, department_id, created_by_id, created_by_type, budget_amount,
+		           budget_currency, analysis, metadata,
 		           created_at, updated_at`,
 		input.Title, input.Description, input.Source, input.Priority, input.RiskLevel, input.RequiredLevel,
-		input.OrganizationID, input.DepartmentID, input.CreatedByID, input.CreatedByType, analysisJSON, metadataJSON,
+		input.OrganizationID, input.DepartmentID, input.CreatedByID, input.CreatedByType, input.BudgetAmount,
+		input.BudgetCurrency, analysisJSON, metadataJSON,
 	), req)
 	if err != nil {
 		return nil, fmt.Errorf("create requirement: %w", err)
@@ -48,7 +51,8 @@ func (r *Repository) ListRequirements(ctx context.Context, limit int) ([]Require
 	limit = normalizeLimit(limit)
 	rows, err := r.db.Query(ctx,
 		`SELECT id, title, description, source, status, priority, risk_level, required_level,
-		        organization_id, department_id, created_by_id, created_by_type, analysis, metadata,
+		        organization_id, department_id, created_by_id, created_by_type, budget_amount,
+		        budget_currency, analysis, metadata,
 		        created_at, updated_at
 		 FROM requirements ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
@@ -74,7 +78,8 @@ func (r *Repository) GetRequirement(ctx context.Context, id uuid.UUID) (*Require
 	req := &Requirement{}
 	err := scanRequirement(r.db.QueryRow(ctx,
 		`SELECT id, title, description, source, status, priority, risk_level, required_level,
-		        organization_id, department_id, created_by_id, created_by_type, analysis, metadata,
+		        organization_id, department_id, created_by_id, created_by_type, budget_amount,
+		        budget_currency, analysis, metadata,
 		        created_at, updated_at
 		 FROM requirements WHERE id = $1`, id), req)
 	if err != nil {
@@ -229,15 +234,19 @@ func (r *Repository) UpdateRequirement(ctx context.Context, id uuid.UUID, input 
 		    priority = COALESCE(NULLIF($6, ''), priority),
 		    risk_level = COALESCE(NULLIF($7, ''), risk_level),
 		    required_level = COALESCE(NULLIF($8, ''), required_level),
-		    analysis = COALESCE($9::jsonb, analysis),
-		    metadata = COALESCE($10::jsonb, metadata),
+		    budget_amount = COALESCE($9, budget_amount),
+		    budget_currency = COALESCE(NULLIF($10, ''), budget_currency),
+		    analysis = COALESCE($11::jsonb, analysis),
+		    metadata = COALESCE($12::jsonb, metadata),
 		    updated_at = NOW()
 		 WHERE id = $1
 		 RETURNING id, title, description, source, status, priority, risk_level, required_level,
-		           organization_id, department_id, created_by_id, created_by_type, analysis, metadata,
+		           organization_id, department_id, created_by_id, created_by_type, budget_amount,
+		           budget_currency, analysis, metadata,
 		           created_at, updated_at`,
 		id, input.Title, input.Description, input.Source, input.Status, input.Priority, input.RiskLevel,
-		input.RequiredLevel, marshalMapOrNil(input.Analysis), marshalMapOrNil(input.Metadata),
+		input.RequiredLevel, input.BudgetAmount, input.BudgetCurrency, marshalMapOrNil(input.Analysis),
+		marshalMapOrNil(input.Metadata),
 	), req)
 	if err != nil {
 		return nil, fmt.Errorf("update requirement: %w", err)
@@ -251,13 +260,13 @@ func (r *Repository) CreateProject(ctx context.Context, input CreateProjectInput
 	err := scanProject(r.db.QueryRow(ctx,
 		`INSERT INTO projects (
 		    requirement_id, organization_id, department_id, name, description, status,
-		    priority, risk_level, required_level, budget_amount, metadata
+		    priority, risk_level, required_level, budget_amount, budget_currency, metadata
 		 )
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		 RETURNING id, requirement_id, organization_id, department_id, name, description, status,
-		           priority, risk_level, required_level, budget_amount, metadata, created_at, updated_at`,
+		           priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at`,
 		input.RequirementID, input.OrganizationID, input.DepartmentID, input.Name, input.Description, input.Status,
-		input.Priority, input.RiskLevel, input.RequiredLevel, input.BudgetAmount, metadataJSON,
+		input.Priority, input.RiskLevel, input.RequiredLevel, input.BudgetAmount, input.BudgetCurrency, metadataJSON,
 	), proj)
 	if err != nil {
 		return nil, fmt.Errorf("create project: %w", err)
@@ -269,7 +278,7 @@ func (r *Repository) ListProjects(ctx context.Context, limit int) ([]Project, er
 	limit = normalizeLimit(limit)
 	rows, err := r.db.Query(ctx,
 		`SELECT id, requirement_id, organization_id, department_id, name, description, status,
-		        priority, risk_level, required_level, budget_amount, metadata, created_at, updated_at
+		        priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at
 		 FROM projects ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list projects: %w", err)
@@ -294,7 +303,7 @@ func (r *Repository) GetProject(ctx context.Context, id uuid.UUID) (*Project, er
 	proj := &Project{}
 	err := scanProject(r.db.QueryRow(ctx,
 		`SELECT id, requirement_id, organization_id, department_id, name, description, status,
-		        priority, risk_level, required_level, budget_amount, metadata, created_at, updated_at
+		        priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at
 		 FROM projects WHERE id = $1`, id), proj)
 	if err != nil {
 		return nil, fmt.Errorf("get project: %w", err)
@@ -313,13 +322,14 @@ func (r *Repository) UpdateProject(ctx context.Context, id uuid.UUID, input Upda
 		    risk_level = COALESCE(NULLIF($6, ''), risk_level),
 		    required_level = COALESCE(NULLIF($7, ''), required_level),
 		    budget_amount = COALESCE($8, budget_amount),
-		    metadata = COALESCE($9::jsonb, metadata),
+		    budget_currency = COALESCE(NULLIF($9, ''), budget_currency),
+		    metadata = COALESCE($10::jsonb, metadata),
 		    updated_at = NOW()
 		 WHERE id = $1
 		 RETURNING id, requirement_id, organization_id, department_id, name, description, status,
-		           priority, risk_level, required_level, budget_amount, metadata, created_at, updated_at`,
+		           priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at`,
 		id, input.Name, input.Description, input.Status, input.Priority, input.RiskLevel, input.RequiredLevel,
-		input.BudgetAmount, marshalMapOrNil(input.Metadata),
+		input.BudgetAmount, input.BudgetCurrency, marshalMapOrNil(input.Metadata),
 	), proj)
 	if err != nil {
 		return nil, fmt.Errorf("update project: %w", err)
@@ -679,7 +689,8 @@ func scanRequirement(row scanner, req *Requirement) error {
 	var analysisJSON, metadataJSON []byte
 	if err := row.Scan(&req.ID, &req.Title, &req.Description, &req.Source, &req.Status, &req.Priority,
 		&req.RiskLevel, &req.RequiredLevel, &req.OrganizationID, &req.DepartmentID, &req.CreatedByID,
-		&req.CreatedByType, &analysisJSON, &metadataJSON, &req.CreatedAt, &req.UpdatedAt); err != nil {
+		&req.CreatedByType, &req.BudgetAmount, &req.BudgetCurrency, &analysisJSON, &metadataJSON,
+		&req.CreatedAt, &req.UpdatedAt); err != nil {
 		return err
 	}
 	req.Analysis = unmarshalMap(analysisJSON)
@@ -712,7 +723,7 @@ func scanProject(row scanner, proj *Project) error {
 	var metadataJSON []byte
 	if err := row.Scan(&proj.ID, &proj.RequirementID, &proj.OrganizationID, &proj.DepartmentID, &proj.Name,
 		&proj.Description, &proj.Status, &proj.Priority, &proj.RiskLevel, &proj.RequiredLevel,
-		&proj.BudgetAmount, &metadataJSON, &proj.CreatedAt, &proj.UpdatedAt); err != nil {
+		&proj.BudgetAmount, &proj.BudgetCurrency, &metadataJSON, &proj.CreatedAt, &proj.UpdatedAt); err != nil {
 		return err
 	}
 	proj.Metadata = unmarshalMap(metadataJSON)

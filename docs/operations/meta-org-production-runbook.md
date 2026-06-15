@@ -47,10 +47,11 @@ Keep both values in the deployment secret manager. Do not commit them.
 
 1. Create an empty PostgreSQL database named `meta_org`.
 2. Set backend environment variables, including `DATABASE_URL`, `JWT_SECRET`, `MODEL_SECRET_KEY`, and `MIGRATIONS_PATH`.
-3. Start the backend. It applies SQL migrations automatically.
+3. Start the backend. It applies SQL migrations automatically through `021_meta_resource_pdca.sql`.
 4. Start the frontend with `NEXT_PUBLIC_API_URL` pointing at `/api/v1`.
 5. Create the first human user through the frontend registration flow.
 6. Open Meta-Org Home and confirm overview and inbox data load.
+7. Open Meta Resource and run Sync Existing Resources once so humans, agents, external members, model channels, tools, and capabilities are indexed into the meta resource layer.
 
 ## Migrating From `harness_org`
 
@@ -84,10 +85,12 @@ go build ./cmd/server
 1. Open Developer Tools.
 2. Create providers for OpenAI, Anthropic, and Gemini.
 3. Store only real provider keys in the provider form; keys are encrypted at rest and returned as masked values.
-4. Create or confirm model catalog entries with pricing and currency.
-5. Run provider connection tests.
-6. Use the AI Assistant to run a streaming call per provider.
-7. Confirm invocation logs and AI cost summary update.
+4. Create provider channels for production keys, agent-owned keys, or fallback keys. Configure priority, concurrency, quota, rate multiplier, supported model patterns, and model mapping.
+5. Create or confirm model catalog entries with input, output, cache, image, priority, long-context pricing, and currency.
+6. Create routing rules when a source surface, user, agent, project, or model pattern must prefer a provider/channel.
+7. Run provider and channel connection tests.
+8. Use the AI Assistant to run a streaming call per provider or channel.
+9. Confirm invocation logs, usage analysis, channel cost breakdown, and cost ledger entries update.
 
 Provider key rotation:
 
@@ -96,6 +99,46 @@ Provider key rotation:
 3. Enter the new key in Key Rotation.
 4. Run Test Provider.
 5. Confirm only the masked key is visible.
+
+Channel key rotation:
+
+1. Open Developer Tools, Channels / Keys.
+2. Select the channel.
+3. Enter the new key in Rotate Channel Key.
+4. Run Test Channel.
+5. Confirm the channel health and masked key update.
+
+## Startup and Migration Troubleshooting
+
+The AI Gateway internal-ops and Meta Resource refactors depend on migrations `019_costing_framework.sql`, `020_ai_gateway_internal_ops.sql`, and `021_meta_resource_pdca.sql`. These migrations add `model_provider_channels`, `ai_routing_rules`, multidimensional model price fields, invocation attribution fields, ledger cost breakdown fields, `meta_resources`, `demand_profiles`, `pdca_cycles`, and `pdca_events`.
+
+If startup, Developer Tools, Meta Resource, or AI Assistant calls fail with errors such as `relation model_provider_channels does not exist`, `relation ai_routing_rules does not exist`, `column cost_breakdown does not exist`, `relation meta_resources does not exist`, or `relation demand_profiles does not exist`:
+
+1. Confirm `DATABASE_URL` points to the intended `meta_org` database.
+2. Confirm `MIGRATIONS_PATH` points to the root `migrations/` directory. When running from `backend/`, use `../migrations`.
+3. Restart the backend so the migration runner applies SQL through `021`.
+4. Re-run `cd backend && go test ./...` and `cd frontend && npm run build`.
+5. Open Developer Tools and verify Providers, Channels / Keys, Routing, Invocations, and Usage Analysis all load.
+6. Open Meta Resource, run Sync Existing Resources, and verify the summary includes at least the existing human, agent, tool, and capability counts.
+
+Meta Resource sync intentionally reads existing source tables without owning them. If sync fails after a schema change, check these source assumptions first:
+
+- `ai_agents` uses `is_active`, `service_class`, `risk_level`, `capabilities`, and `metadata`; the governance fields come from migration `012`.
+- `tool_definitions` uses `is_active` for status; it does not have a `status` column.
+- `model_provider_channels` comes from migration `020` and requires `model_providers` rows for joined provider type metadata.
+- `capabilities.cost_estimate` is used as the initial cost profile.
+
+PDCA and operations smoke-test notes:
+
+- Backend health check is `GET /api/v1/health`; `GET /health` is not registered.
+- Demand Profile JSONB list fields accept arrays such as `["accepted"]` or object arrays such as `[{"name":"accepted"}]`; use arrays for `acceptance_criteria`, `required_capabilities`, and `resource_fit_candidates`.
+- `POST /ai-gateway/estimate-cost` uses a nested `usage` object and reads the model price catalog directly. It does not require an active provider channel, so disabled draft providers can still be priced.
+- Exchange-rate `source` must be `manual` or `external`.
+- Cost rate cards require `cost_category`, `subject_type`, `rate_type`, `amount`, and `currency`.
+- Finance adapters support `hmac` and `bearer`; both require a secret because outgoing calls are signed or authenticated.
+- A compact accept-stage smoke test should register and log in a temporary user, read the main workbench endpoints, create Demand Profile -> PDCA Cycle -> PDCA Event, create a draft model catalog entry, and call `POST /ai-gateway/estimate-cost`. Expected estimate for 1000 input tokens and 500 output tokens at 0.01/0.03 CNY per 1K is `0.025 CNY`.
+
+When running services in Windows PowerShell with `Start-Process`, set nested environment variables with `Set-Item Env:NAME value`; avoid `$env:NAME="value"` inside `-ArgumentList` because the outer shell can expand it before the child process starts.
 
 ## Finance Adapter Setup
 

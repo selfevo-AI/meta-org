@@ -651,6 +651,7 @@ func exportPayload(batch *ExportBatch) map[string]any {
 		lines = append(lines, map[string]any{
 			"line_id":               line.ID.String(),
 			"usage_ledger_id":       uuidString(line.UsageLedgerID),
+			"cost_ledger_entry_id":  uuidString(line.CostLedgerEntryID),
 			"project_cost_entry_id": uuidString(line.ProjectCostEntryID),
 			"organization_id":       uuidString(line.OrganizationID),
 			"department_id":         uuidString(line.DepartmentID),

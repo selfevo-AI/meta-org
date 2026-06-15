@@ -4,7 +4,7 @@
 
 Meta-Org 是一个面向混合人力组织的 AI 原生组织操作平台。它把人类员工、AI Agent、外部协作者、组织结构、项目交付、治理规则和持续学习机制放进同一套运行系统中，用于支持从需求进入、项目组建、工作流执行、交付验收、成本归集到反馈沉淀的完整业务闭环。
 
-项目基于 **ETCLOVG** 框架构建：Execution、Tooling、Context、Lifecycle、Observability、Verification、Governance。当前仓库已经包含 Go 后端、Next.js 前端、PostgreSQL 迁移、Docker Compose 编排、JWT 鉴权、Meta-Org 首页、组织/项目工作台、Developer Tools、AI Gateway、工具运行闭环、成本核算和通用财务导出。
+项目基于 **ETCLOVG** 框架构建：Execution、Tooling、Context、Lifecycle、Observability、Verification、Governance。当前仓库已经包含 Go 后端、Next.js 前端、PostgreSQL 迁移、Docker Compose 编排、JWT 鉴权、Meta-Org 首页、Meta Resource / PDCA 工作台、组织/项目工作台、Developer Tools、AI Gateway、工具运行闭环、成本核算和通用财务导出。
 
 ## 项目目标
 
@@ -24,6 +24,9 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | AI Agent 一等公民 | Agent 有独立身份、权限等级、能力、来源、服务商、风险等级和元数据，可以参与项目与工作流。 |
 | MVRU | Minimal Viable Reconfigurable Unit，最小可重组组织单元，用于承载可调整的组织结构、成员和关系。当前 API 路径沿用 `/muvrs`。 |
 | P-E-R 工作流 | Planner、Executor、Reviewer 三类阶段组成的工作流模板与实例，支持任务、决策和上下文记录。 |
+| Meta Resource | 从 meta 角度统一索引人类、外部人类、Agent、模型通道、工具、物料、时间、能力和预算等资源，记录能力、成本、容量和风险画像。 |
+| Demand Profile | 需求的目标、验收标准、能力要求、预算/时间/风险约束和候选资源适配结果。 |
+| PDCA 循环 | 围绕需求画像按 Plan、Do、Change、Accept 记录计划、行动、调整和接受/验收事件。 |
 | 决策权重 | 结合能力、历史结果、风险、组织上下文等因素，为人类或 Agent 计算可信度和决策权重。 |
 | 治理访问决策 | 基于权限、治理原则、控制规则、风险等级、所需权限级别和权重快照生成访问判断。 |
 | 能力匹配 | 按能力、风险、上下文和候选对象，匹配合适的人类成员、Agent 或能力资源。 |
@@ -67,6 +70,8 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 - Meta-Org 首页聚合组织健康、项目状态、Agent 状态、AI 成本、风险、近期事件和待办收件箱。
 - AI Gateway 支持 OpenAI、Anthropic、Gemini 三类模型供应商配置、加密密钥、模型目录、流式调用、调用日志和成本汇总。
 - Tool Runtime 支持工具注册、治理决策、审批策略、执行审计和内部工具调用。
+- Meta Resource 支持同步现有人类、外部成员、Agent、模型通道、工具和能力资源，统一沉淀能力、成本、容量和风险画像。
+- Demand Profile 和 PDCA Cycle 支持把需求约束、资源适配、计划、执行、改变和接受事件显式记录为可查询对象。
 - Developer Tools 提供模型供应商、模型目录、工具注册表、接口文件、调用日志和成本汇总视图。
 - 财务导出支持通用财务适配器、HMAC/Bearer 鉴权、导出批次、Webhook 回调和对账差异。
 
@@ -78,6 +83,7 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 - 中英文语言切换，使用 `LanguageProvider` 和 `useI18n`。
 - 系统总览 Dashboard，展示身份、组织、工作流、能力、观测、验证、治理、演化统计和近期事件。
 - Meta-Org Home，展示组织健康、AI 成本、风险、收件箱和上下文 AI 助手。
+- Meta Resource Workspace：资源总览、现有资源同步、需求画像、PDCA 循环和事件记录。
 - 可拖拽的侧边菜单分组：业务闭环、组织能力、治理演进、系统工具。
 - 组织工作台：组织、部门、岗位、成员、外部成员、岗位任命、MVRU 关联和匹配。
 - 控制工作台：治理、权重、能力评估、工作流设计、工作流匹配。
@@ -127,6 +133,7 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | `capability` | 能力目录、能力绑定、能力匹配、能力评估。 |
 | `dashboard` | 聚合各域统计和近期事件，提供系统总览。 |
 | `metaorg` | 聚合 Meta-Org 首页、组织健康、风险、活动和收件箱。 |
+| `metaresource` | 统一资源画像、需求画像、PDCA 循环和事件记录。 |
 | `aigateway` | 模型供应商、模型目录、流式调用、调用日志和 AI 使用成本。 |
 | `toolruntime` | 工具注册、治理策略、审批、执行审计和内部工具适配。 |
 | `finance` | 通用财务适配器、导出批次、Webhook 回调和对账。 |
@@ -145,6 +152,7 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | `frontend/src/app/organization-workspace.tsx` | 组织、部门、岗位、成员、外部成员和 MVRU 相关操作。 |
 | `frontend/src/app/control-workspaces.tsx` | 治理、权重、能力评估、工作流设计和工作流匹配工作区。 |
 | `frontend/src/app/project-lifecycle-workspace.tsx` | 需求、项目、交付、成本和反馈工作区。 |
+| `frontend/src/app/meta-resource-workspace.tsx` | Meta Resource、Demand Profile 和 PDCA 循环工作区。 |
 | `frontend/src/app/api-workbench.tsx` | 通用 API 调用面板。 |
 | `frontend/src/app/ai-assistant.tsx` | 上下文 AI 助手和 SSE 流式响应面板。 |
 | `frontend/src/app/developer-tools-workspace.tsx` | 模型、工具、接口文件、调用日志和成本视图。 |
@@ -156,7 +164,7 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 
 ## 数据库迁移
 
-后端启动时会执行根目录 `migrations/` 中的 SQL 文件。当前迁移已到 `018`：
+后端启动时会执行根目录 `migrations/` 中的 SQL 文件。当前迁移已到 `021`：
 
 | 迁移 | 主题 |
 |---|---|
@@ -178,6 +186,9 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | `016_ai_gateway.sql` | 模型供应商、模型目录、价格版本、AI 调用和 AI 使用流水。 |
 | `017_tool_runtime.sql` | 工具定义、接口文件、工具执行、工具审批和首批内部工具。 |
 | `018_finance_exports.sql` | 财务适配器、导出批次、导出行、Webhook 事件和 AI 成本入账约束。 |
+| `019_costing_framework.sql` | 统一成本币种、汇率、费率卡、预算和成本账本。 |
+| `020_ai_gateway_internal_ops.sql` | AI Gateway 通道/key 池、多维模型计费、模型路由、调用归因和成本分析字段。 |
+| `021_meta_resource_pdca.sql` | Meta Resource、Demand Profile、PDCA Cycle 和 PDCA Event，用于需求驱动的统一资源画像和持续进化记录。 |
 
 ## API 概览
 
@@ -197,8 +208,9 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 |---|---|
 | Dashboard | `GET /dashboard/overview` |
 | Meta-Org | `GET /meta-org/overview`, `GET /meta-org/inbox` |
+| Meta Resource | `GET/POST /meta-resources`, `POST /meta-resources/sync-existing`, `GET /meta-resources/summary`, `GET/POST /demand-profiles`, `GET/POST /pdca-cycles`, `GET/POST /pdca-events` |
 | Identity | `POST /agents/register`, `GET /agents` |
-| AI Gateway | 模型供应商、模型目录、`POST /ai-gateway/invoke`、`GET /ai-gateway/stream`、调用日志和成本汇总接口 |
+| AI Gateway | 模型供应商、通道/key 池、模型目录、多维计费、路由规则、`POST /ai-gateway/invoke`、`GET/POST /ai-gateway/stream`、调用日志、用量分析和成本汇总接口 |
 | Tool Runtime | 工具定义、工具测试、工具执行日志和工具审批接口 |
 | Finance | 财务适配器、导出批次、提交导出、Webhook 回调和对账接口 |
 | Organization | `GET/POST/PATCH /organizations`, `GET /organization/current`, 部门、部门树、岗位、岗位任命、组织成员、外部成员、MVRU、关系、成员匹配和能力匹配接口 |
@@ -211,7 +223,7 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | Observability | Trace、Span、Trace 完成、Metric 写入和查询接口 |
 | Verification | 验证报告、报告查询、评审分配和评审完成接口 |
 
-前端的 API Workbench 元数据位于 `frontend/src/lib/operations.ts`，它按 MetaOrg、DeveloperTools、Finance、Dashboard、Identity、Organization、Layer、Capability、Workflow、Observability、Verification、Governance、Evolution、Requirement、Project、Delivery、Cost、Feedback 等操作域组织。
+前端的 API Workbench 元数据位于 `frontend/src/lib/operations.ts`，它按 MetaOrg、MetaResource、DeveloperTools、Finance、Dashboard、Identity、Organization、Layer、Capability、Workflow、Observability、Verification、Governance、Evolution、Requirement、Project、Delivery、Cost、Feedback 等操作域组织。
 
 ## 快速开始
 
@@ -275,6 +287,54 @@ npm run build
 NEXT_PUBLIC_API_URL=http://127.0.0.1:8080/api/v1
 ```
 
+### Windows 本机重启注意事项
+
+如果 `docker compose up --build` 提示 `docker` 命令不可用，可以使用本机 PostgreSQL、Go 和 Node 启动开发服务。先确认 PostgreSQL 可连接，再分别启动后端和前端。
+
+本项目在 Windows PowerShell 中通过 `Start-Process -ArgumentList` 后台启动时，不要在嵌套命令里写 `$env:NAME="value"`。外层 PowerShell 可能提前解析 `$env:`，导致子进程实际收到 `=value` 或未加引号的 URL/路径，常见报错包括：
+
+- `migrations failed: read migrations dir: open migrations: The system cannot find the file specified.`
+- `../migrations` 或 `http://localhost:8080/api/v1` 被当作命令执行。
+
+推荐使用 `Set-Item Env:` 设置环境变量：
+
+```powershell
+Start-Process -FilePath "powershell" -ArgumentList @(
+  '-NoProfile',
+  '-Command',
+  'Set-Item Env:MIGRATIONS_PATH ../migrations; Set-Item Env:SERVER_PORT 8080; Set-Item Env:DATABASE_URL postgres://postgres:postgres@localhost:5432/meta_org?sslmode=disable; go run ./cmd/server'
+) -WorkingDirectory "D:\project\meta-org\backend" -WindowStyle Hidden -RedirectStandardOutput "D:\project\meta-org\backend-dev.log" -RedirectStandardError "D:\project\meta-org\backend-dev-err.log"
+
+Start-Process -FilePath "powershell" -ArgumentList @(
+  '-NoProfile',
+  '-Command',
+  'Set-Item Env:NEXT_PUBLIC_API_URL http://localhost:8080/api/v1; npm run dev'
+) -WorkingDirectory "D:\project\meta-org\frontend" -WindowStyle Hidden -RedirectStandardOutput "D:\project\meta-org\frontend-dev.log" -RedirectStandardError "D:\project\meta-org\frontend-dev-err.log"
+```
+
+验证方式：
+
+```powershell
+Get-NetTCPConnection -LocalPort 3000,8080 -ErrorAction SilentlyContinue |
+  Select-Object LocalAddress,LocalPort,State,OwningProcess
+
+Invoke-WebRequest -Uri http://127.0.0.1:3000 -UseBasicParsing -TimeoutSec 8 |
+  Select-Object StatusCode
+
+Invoke-WebRequest -Uri http://127.0.0.1:8080/api/v1/health -UseBasicParsing -TimeoutSec 8 |
+  Select-Object StatusCode,Content
+```
+
+成功状态应为前端 `3000` 和后端 `8080` 都处于 `Listen`，前端返回 HTTP `200`，后端 health 返回 `{"status":"ok"}`。如果需要停止旧进程，先用上面的端口查询确认 `OwningProcess`，再对单个 PID 执行 `Stop-Process -Id <PID> -Force`。
+
+AI Gateway 和 Meta Resource 重构后启动必须确认 `019_costing_framework.sql`、`020_ai_gateway_internal_ops.sql` 和 `021_meta_resource_pdca.sql` 已执行。若后端启动、Developer Tools 或 Meta Resource 页面出现 `column ... does not exist`、`relation model_provider_channels does not exist`、`relation ai_routing_rules does not exist`、`relation meta_resources does not exist`、`relation demand_profiles does not exist`，通常是 `MIGRATIONS_PATH` 指向错误、连接到了旧数据库，或迁移尚未执行。处理顺序：
+
+1. 确认 `DATABASE_URL` 指向当前 `meta_org` 数据库。
+2. 确认从 `backend/` 本地运行时使用 `MIGRATIONS_PATH=../migrations`。
+3. 重启后端，让迁移器执行到 `021`。
+4. 再打开 Developer Tools，检查 Channels / Keys、Routing、Usage Analysis 页面是否能加载。
+5. 打开 Meta Resource 工作区，先执行一次“同步现有资源”，确认 human、agent、external_human、model_channel、tool、capability 资源能进入统一资源视图。
+
 ## 配置
 
 后端配置在 `backend/internal/pkg/config/config.go` 中读取：
@@ -305,7 +365,7 @@ backend/
 frontend/
   src/app/                    Next.js App Router 页面和工作台
   src/lib/                    API、认证、i18n、API Workbench 元数据
-migrations/                   PostgreSQL SQL 迁移 001-018
+migrations/                   PostgreSQL SQL 迁移 001-021
 docs/operations/              生产运维、财务适配器协议和排障文档
 .github/workflows/            GitHub Actions CI
 docker-compose.yml            本地完整环境编排
@@ -313,7 +373,7 @@ docker-compose.yml            本地完整环境编排
 
 ## 当前状态与边界
 
-当前代码已经具备单企业 Meta-Org 入口、组织管理、项目生命周期、AI Gateway、工具运行闭环、成本核算、财务导出、治理、演化、观测和验证骨架，适合作为 10-50 人团队与 50-250+ Agent 的生产 v1 基础。
+当前代码已经具备单企业 Meta-Org 入口、Meta Resource / PDCA 资源框架、组织管理、项目生命周期、AI Gateway、工具运行闭环、成本核算、财务导出、治理、演化、观测和验证骨架，适合作为 10-50 人团队与 50-250+ Agent 的生产 v1 基础。
 
 从旧 `harness_org` 数据库升级到 `meta_org` 时，必须先显式备份并迁移数据；系统不会自动删除或覆盖旧库。
 

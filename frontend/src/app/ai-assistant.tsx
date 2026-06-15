@@ -1,8 +1,8 @@
 'use client'
 
 import { Bot, CircleStop, Send, Sparkles, Wrench } from 'lucide-react'
-import { useRef, useState } from 'react'
-import { API_BASE, getAIInvocation } from '@/lib/api'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { API_BASE, getAIInvocation, listProviderChannels, type CostBreakdown, type ProviderChannel } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { streamSSE } from '@/lib/stream'
 
@@ -30,6 +30,11 @@ interface GatewayStreamData {
   usage?: {
     input_tokens?: number
     output_tokens?: number
+    cache_creation_tokens?: number
+    cache_read_tokens?: number
+    cache_creation_5m_tokens?: number
+    cache_creation_1h_tokens?: number
+    image_output_tokens?: number
   }
 }
 
@@ -42,18 +47,25 @@ interface AssistantEvent {
 interface AssistantUsage {
   input_tokens?: number
   output_tokens?: number
+  cache_creation_tokens?: number
+  cache_read_tokens?: number
+  cache_creation_5m_tokens?: number
+  cache_creation_1h_tokens?: number
+  image_output_tokens?: number
 }
 
 interface AssistantCost {
   estimated?: number
   final?: number
   currency: string
+  breakdown?: CostBreakdown
 }
 
 interface AIAssistantProps {
   token: string
   contextType: 'meta_org' | 'requirement' | 'project' | 'organization' | 'governance' | 'developer_tools'
   contextID?: string
+  className?: string
 }
 
 const contextActions: Record<AIAssistantProps['contextType'], string[]> = {
@@ -74,10 +86,14 @@ function money(value: number | undefined, currency: string, empty: string): stri
   return typeof value === 'number' ? `${currency} ${value.toFixed(4)}` : empty
 }
 
-export function AIAssistant({ token, contextType, contextID }: AIAssistantProps) {
+export function AIAssistant({ token, contextType, contextID, className = '' }: AIAssistantProps) {
   const { t } = useI18n()
   const [providerType, setProviderType] = useState<'openai' | 'anthropic' | 'gemini'>('openai')
   const [model, setModel] = useState('gpt-4o-mini')
+  const [preferredChannelID, setPreferredChannelID] = useState('')
+  const [serviceTier, setServiceTier] = useState('')
+  const [reasoningEffort, setReasoningEffort] = useState('')
+  const [channels, setChannels] = useState<ProviderChannel[]>([])
   const [prompt, setPrompt] = useState('')
   const [state, setState] = useState<AssistantState>('idle')
   const [output, setOutput] = useState('')
@@ -85,7 +101,23 @@ export function AIAssistant({ token, contextType, contextID }: AIAssistantProps)
   const [invocationID, setInvocationID] = useState('')
   const [usage, setUsage] = useState<AssistantUsage>({})
   const [cost, setCost] = useState<AssistantCost>({ currency: 'CNY' })
+  const [channelName, setChannelName] = useState('')
   const abortRef = useRef<AbortController | null>(null)
+  const channelLabels = useMemo(() => Object.fromEntries(channels.map((channel) => [channel.id, channel.name])), [channels])
+
+  useEffect(() => {
+    let cancelled = false
+    listProviderChannels(token)
+      .then((items) => {
+        if (!cancelled) setChannels(items)
+      })
+      .catch(() => {
+        if (!cancelled) setChannels([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token])
 
   async function send(nextPrompt = prompt) {
     const trimmed = nextPrompt.trim()
@@ -98,6 +130,7 @@ export function AIAssistant({ token, contextType, contextID }: AIAssistantProps)
     setInvocationID('')
     setUsage({})
     setCost({ currency: 'CNY' })
+    setChannelName('')
     let currentInvocationID = ''
 
     const message = [
@@ -115,6 +148,9 @@ export function AIAssistant({ token, contextType, contextID }: AIAssistantProps)
       message,
       source_surface: contextType,
     })
+    if (preferredChannelID) params.set('preferred_channel_id', preferredChannelID)
+    if (serviceTier) params.set('service_tier', serviceTier)
+    if (reasoningEffort) params.set('reasoning_effort', reasoningEffort)
 
     try {
       await streamSSE<GatewayStreamData>(
@@ -132,6 +168,11 @@ export function AIAssistant({ token, contextType, contextID }: AIAssistantProps)
             setUsage({
               input_tokens: data.usage.input_tokens,
               output_tokens: data.usage.output_tokens,
+              cache_creation_tokens: data.usage.cache_creation_tokens,
+              cache_read_tokens: data.usage.cache_read_tokens,
+              cache_creation_5m_tokens: data.usage.cache_creation_5m_tokens,
+              cache_creation_1h_tokens: data.usage.cache_creation_1h_tokens,
+              image_output_tokens: data.usage.image_output_tokens,
             })
           }
           if (typeof data.estimated_cost_amount === 'number' || typeof data.cost_amount === 'number' || data.currency) {
@@ -172,8 +213,14 @@ export function AIAssistant({ token, contextType, contextID }: AIAssistantProps)
           setUsage({
             input_tokens: invocation.input_tokens,
             output_tokens: invocation.output_tokens,
+            cache_creation_tokens: invocation.cache_creation_tokens,
+            cache_read_tokens: invocation.cache_read_tokens,
+            cache_creation_5m_tokens: invocation.cache_creation_5m_tokens,
+            cache_creation_1h_tokens: invocation.cache_creation_1h_tokens,
+            image_output_tokens: invocation.image_output_tokens,
           })
-          setCost({ final: invocation.cost_amount, currency: invocation.currency })
+          setCost({ final: invocation.cost_amount, currency: invocation.currency, breakdown: invocation.cost_breakdown })
+          setChannelName(invocation.channel_id ? channelLabels[invocation.channel_id] || invocation.channel_id : t('assistant.providerDefaultChannel'))
         } catch (err) {
           setEvents((current) => [
             ...current,
@@ -213,7 +260,7 @@ export function AIAssistant({ token, contextType, contextID }: AIAssistantProps)
   }
 
   return (
-    <aside className="h-fit rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+    <aside className={`h-fit rounded-lg border border-slate-200 bg-white p-4 shadow-sm ${className}`}>
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <Bot className="h-5 w-5 shrink-0 text-slate-500" />
@@ -242,6 +289,46 @@ export function AIAssistant({ token, contextType, contextID }: AIAssistantProps)
             onChange={(event) => setModel(event.target.value)}
             className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
           />
+        </label>
+        <label className="block">
+          <span className="text-xs font-semibold text-slate-500">{t('assistant.channel')}</span>
+          <select
+            value={preferredChannelID}
+            onChange={(event) => setPreferredChannelID(event.target.value)}
+            className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+          >
+            <option value="">{t('assistant.autoChannel')}</option>
+            {channels.map((channel) => (
+              <option key={channel.id} value={channel.id}>
+                {channel.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-xs font-semibold text-slate-500">{t('assistant.serviceTier')}</span>
+          <select
+            value={serviceTier}
+            onChange={(event) => setServiceTier(event.target.value)}
+            className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+          >
+            <option value="">{t('assistant.tier.standard')}</option>
+            <option value="flex">{t('assistant.tier.flex')}</option>
+            <option value="priority">{t('assistant.tier.priority')}</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="text-xs font-semibold text-slate-500">{t('assistant.reasoningEffort')}</span>
+          <select
+            value={reasoningEffort}
+            onChange={(event) => setReasoningEffort(event.target.value)}
+            className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+          >
+            <option value="">{t('assistant.reasoning.auto')}</option>
+            <option value="low">{t('assistant.reasoning.low')}</option>
+            <option value="medium">{t('assistant.reasoning.medium')}</option>
+            <option value="high">{t('assistant.reasoning.high')}</option>
+          </select>
         </label>
       </div>
 
@@ -297,6 +384,7 @@ export function AIAssistant({ token, contextType, contextID }: AIAssistantProps)
 
       <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
         <AssistantFact label="assistant.invocation" value={invocationID || t('common.none')} />
+        <AssistantFact label="assistant.channel" value={channelName || (preferredChannelID ? channelLabels[preferredChannelID] || preferredChannelID : t('assistant.autoChannel'))} />
         <AssistantFact
           label="assistant.tokens"
           value={
@@ -305,8 +393,29 @@ export function AIAssistant({ token, contextType, contextID }: AIAssistantProps)
               : t('common.none')
           }
         />
+        <AssistantFact
+          label="assistant.cacheTokens"
+          value={
+            typeof usage.cache_creation_tokens === 'number' || typeof usage.cache_read_tokens === 'number'
+              ? `${usage.cache_creation_tokens ?? 0} / ${usage.cache_read_tokens ?? 0}`
+              : t('common.none')
+          }
+        />
+        <AssistantFact label="assistant.imageTokens" value={typeof usage.image_output_tokens === 'number' ? String(usage.image_output_tokens) : t('common.none')} />
         <AssistantFact label="assistant.estimatedCost" value={money(cost.estimated, cost.currency, t('common.none'))} />
         <AssistantFact label="assistant.finalCost" value={money(cost.final, cost.currency, t('common.none'))} />
+        <AssistantFact
+          label="assistant.costBreakdown"
+          value={
+            cost.breakdown
+              ? `${money(cost.breakdown.input_cost + cost.breakdown.cache_read_cost + cost.breakdown.cache_creation_cost, cost.currency, t('common.none'))} / ${money(
+                  cost.breakdown.output_cost + cost.breakdown.image_output_cost,
+                  cost.currency,
+                  t('common.none'),
+                )}`
+              : t('common.none')
+          }
+        />
       </div>
 
       {events.length > 0 && (

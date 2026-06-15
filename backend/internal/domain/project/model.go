@@ -15,6 +15,8 @@ type Requirement struct {
 	Priority       string         `json:"priority"`
 	RiskLevel      string         `json:"risk_level"`
 	RequiredLevel  string         `json:"required_level"`
+	BudgetAmount   float64        `json:"budget_amount"`
+	BudgetCurrency string         `json:"budget_currency"`
 	OrganizationID *uuid.UUID     `json:"organization_id,omitempty"`
 	DepartmentID   *uuid.UUID     `json:"department_id,omitempty"`
 	CreatedByID    *uuid.UUID     `json:"created_by_id,omitempty"`
@@ -66,6 +68,7 @@ type Project struct {
 	RiskLevel      string         `json:"risk_level"`
 	RequiredLevel  string         `json:"required_level"`
 	BudgetAmount   float64        `json:"budget_amount"`
+	BudgetCurrency string         `json:"budget_currency"`
 	Metadata       map[string]any `json:"metadata"`
 	CreatedAt      time.Time      `json:"created_at"`
 	UpdatedAt      time.Time      `json:"updated_at"`
@@ -155,14 +158,16 @@ type ProjectEvaluation struct {
 }
 
 type CostSummary struct {
-	ProjectID      uuid.UUID          `json:"project_id"`
-	Currency       string             `json:"currency"`
-	EntryCount     int                `json:"entry_count"`
-	TotalAmount    float64            `json:"total_amount"`
-	BudgetAmount   float64            `json:"budget_amount"`
-	BudgetVariance float64            `json:"budget_variance"`
-	BySource       []CostSummaryItem  `json:"by_source"`
-	Metadata       map[string]float64 `json:"metadata,omitempty"`
+	ProjectID       uuid.UUID          `json:"project_id"`
+	Currency        string             `json:"currency"`
+	BaseCurrency    string             `json:"base_currency,omitempty"`
+	EntryCount      int                `json:"entry_count"`
+	TotalAmount     float64            `json:"total_amount"`
+	BaseTotalAmount float64            `json:"base_total_amount,omitempty"`
+	BudgetAmount    float64            `json:"budget_amount"`
+	BudgetVariance  float64            `json:"budget_variance"`
+	BySource        []CostSummaryItem  `json:"by_source"`
+	Metadata        map[string]float64 `json:"metadata,omitempty"`
 }
 
 type CostSummaryItem struct {
@@ -197,6 +202,8 @@ type CreateRequirementInput struct {
 	DepartmentID   *uuid.UUID     `json:"department_id,omitempty"`
 	CreatedByID    *uuid.UUID     `json:"created_by_id,omitempty"`
 	CreatedByType  string         `json:"created_by_type,omitempty"`
+	BudgetAmount   float64        `json:"budget_amount,omitempty"`
+	BudgetCurrency string         `json:"budget_currency,omitempty"`
 	Analysis       map[string]any `json:"analysis,omitempty"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
 }
@@ -224,15 +231,17 @@ type SyncRequirementAnalysisWorkflowInput struct {
 }
 
 type UpdateRequirementInput struct {
-	Title         string         `json:"title,omitempty"`
-	Description   string         `json:"description,omitempty"`
-	Source        string         `json:"source,omitempty"`
-	Status        string         `json:"status,omitempty"`
-	Priority      string         `json:"priority,omitempty"`
-	RiskLevel     string         `json:"risk_level,omitempty"`
-	RequiredLevel string         `json:"required_level,omitempty"`
-	Analysis      map[string]any `json:"analysis,omitempty"`
-	Metadata      map[string]any `json:"metadata,omitempty"`
+	Title          string         `json:"title,omitempty"`
+	Description    string         `json:"description,omitempty"`
+	Source         string         `json:"source,omitempty"`
+	Status         string         `json:"status,omitempty"`
+	Priority       string         `json:"priority,omitempty"`
+	RiskLevel      string         `json:"risk_level,omitempty"`
+	RequiredLevel  string         `json:"required_level,omitempty"`
+	BudgetAmount   *float64       `json:"budget_amount,omitempty"`
+	BudgetCurrency *string        `json:"budget_currency,omitempty"`
+	Analysis       map[string]any `json:"analysis,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
 }
 
 type AnalyzeRequirementInput struct {
@@ -242,10 +251,11 @@ type AnalyzeRequirementInput struct {
 
 type ConvertRequirementInput struct {
 	ActorInput
-	Name         string         `json:"name,omitempty"`
-	Description  string         `json:"description,omitempty"`
-	BudgetAmount float64        `json:"budget_amount,omitempty"`
-	Metadata     map[string]any `json:"metadata,omitempty"`
+	Name           string         `json:"name,omitempty"`
+	Description    string         `json:"description,omitempty"`
+	BudgetAmount   float64        `json:"budget_amount,omitempty"`
+	BudgetCurrency string         `json:"budget_currency,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
 }
 
 type CreateProjectInput struct {
@@ -260,18 +270,20 @@ type CreateProjectInput struct {
 	RiskLevel      string         `json:"risk_level,omitempty"`
 	RequiredLevel  string         `json:"required_level,omitempty"`
 	BudgetAmount   float64        `json:"budget_amount,omitempty"`
+	BudgetCurrency string         `json:"budget_currency,omitempty"`
 	Metadata       map[string]any `json:"metadata,omitempty"`
 }
 
 type UpdateProjectInput struct {
-	Name          string         `json:"name,omitempty"`
-	Description   string         `json:"description,omitempty"`
-	Status        string         `json:"status,omitempty"`
-	Priority      string         `json:"priority,omitempty"`
-	RiskLevel     string         `json:"risk_level,omitempty"`
-	RequiredLevel string         `json:"required_level,omitempty"`
-	BudgetAmount  *float64       `json:"budget_amount,omitempty"`
-	Metadata      map[string]any `json:"metadata,omitempty"`
+	Name           string         `json:"name,omitempty"`
+	Description    string         `json:"description,omitempty"`
+	Status         string         `json:"status,omitempty"`
+	Priority       string         `json:"priority,omitempty"`
+	RiskLevel      string         `json:"risk_level,omitempty"`
+	RequiredLevel  string         `json:"required_level,omitempty"`
+	BudgetAmount   *float64       `json:"budget_amount,omitempty"`
+	BudgetCurrency *string        `json:"budget_currency,omitempty"`
+	Metadata       map[string]any `json:"metadata,omitempty"`
 }
 
 type AddProjectMemberInput struct {

@@ -27,11 +27,22 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Patch("/model-providers/{id}", h.updateProvider)
 	r.Post("/model-providers/{id}/rotate-key", h.rotateProviderKey)
 	r.Post("/model-providers/{id}/test", h.testProvider)
+	r.Post("/model-providers/{id}/channels", h.createChannel)
+	r.Get("/model-providers/{id}/channels", h.listProviderChannels)
+	r.Get("/model-provider-channels", h.listChannels)
+	r.Patch("/model-provider-channels/{id}", h.updateChannel)
+	r.Post("/model-provider-channels/{id}/rotate-key", h.rotateChannelKey)
+	r.Post("/model-provider-channels/{id}/test", h.testChannel)
 	r.Post("/models", h.createModel)
 	r.Get("/models", h.listModels)
 	r.Patch("/models/{id}", h.updateModel)
 	r.Post("/ai-gateway/invoke", h.invoke)
 	r.Get("/ai-gateway/stream", h.stream)
+	r.Post("/ai-gateway/stream", h.streamPost)
+	r.Get("/ai-gateway/routing-rules", h.listRoutingRules)
+	r.Post("/ai-gateway/routing-rules", h.createRoutingRule)
+	r.Get("/ai-gateway/usage-analysis", h.usageAnalysis)
+	r.Post("/ai-gateway/estimate-cost", h.estimateCost)
 	r.Get("/ai-gateway/invocations", h.listInvocations)
 	r.Get("/ai-gateway/invocations/{id}", h.getInvocation)
 	r.Get("/ai-gateway/cost-summary", h.costSummary)
@@ -90,6 +101,82 @@ func (h *Handler) testProvider(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, http.StatusOK, map[string]string{"status": "ok"}, err)
 }
 
+func (h *Handler) createChannel(w http.ResponseWriter, r *http.Request) {
+	providerID, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input CreateChannelInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	input.ProviderID = providerID
+	result, err := h.service.CreateChannel(r.Context(), input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) listProviderChannels(w http.ResponseWriter, r *http.Request) {
+	providerID, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.ListChannels(r.Context(), &providerID, queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) listChannels(w http.ResponseWriter, r *http.Request) {
+	var providerID *uuid.UUID
+	if raw := r.URL.Query().Get("provider_id"); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid provider_id"})
+			return
+		}
+		providerID = &parsed
+	}
+	result, err := h.service.ListChannels(r.Context(), providerID, queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) updateChannel(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input UpdateChannelInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.UpdateChannel(r.Context(), id, input)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) rotateChannelKey(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input RotateChannelKeyInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.RotateChannelKey(r.Context(), id, input)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) testChannel(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input TestChannelInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	err := h.service.TestChannel(r.Context(), id, input)
+	writeResult(w, http.StatusOK, map[string]string{"status": "ok"}, err)
+}
+
 func (h *Handler) createModel(w http.ResponseWriter, r *http.Request) {
 	var input CreateModelInput
 	if !decodeJSON(w, r, &input) {
@@ -140,6 +227,18 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	h.writeStream(w, r, input)
+}
+
+func (h *Handler) streamPost(w http.ResponseWriter, r *http.Request) {
+	var input InvokeInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	h.writeStream(w, r, input)
+}
+
+func (h *Handler) writeStream(w http.ResponseWriter, r *http.Request, input InvokeInput) {
 	result, err := h.service.Stream(r.Context(), input)
 	if err != nil {
 		writeJSON(w, statusFromError(err), map[string]string{"error": err.Error()})
@@ -172,6 +271,34 @@ func (h *Handler) stream(w http.ResponseWriter, r *http.Request) {
 		})
 		flusher.Flush()
 	}
+}
+
+func (h *Handler) listRoutingRules(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ListRoutingRules(r.Context(), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) createRoutingRule(w http.ResponseWriter, r *http.Request) {
+	var input CreateRoutingRuleInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.CreateRoutingRule(r.Context(), input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) usageAnalysis(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.UsageAnalysis(r.Context(), UsageAnalysisFilter{Limit: queryLimit(r)})
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) estimateCost(w http.ResponseWriter, r *http.Request) {
+	var input EstimateCostInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.EstimateCost(r.Context(), input)
+	writeResult(w, http.StatusOK, result, err)
 }
 
 func (h *Handler) listInvocations(w http.ResponseWriter, r *http.Request) {
@@ -222,6 +349,16 @@ func streamInputFromQuery(w http.ResponseWriter, r *http.Request) (InvokeInput, 
 		}
 		input.ModelID = &parsed
 	}
+	if raw := r.URL.Query().Get("preferred_channel_id"); raw != "" {
+		parsed, err := uuid.Parse(raw)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid preferred_channel_id"})
+			return input, false
+		}
+		input.PreferredChannelID = &parsed
+	}
+	input.ServiceTier = r.URL.Query().Get("service_tier")
+	input.ReasoningEffort = r.URL.Query().Get("reasoning_effort")
 	if raw := r.URL.Query().Get("max_tokens"); raw != "" {
 		parsed, err := strconv.Atoi(raw)
 		if err != nil {

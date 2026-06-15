@@ -21,7 +21,7 @@ import {
   Workflow,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import type { DragEvent, FormEvent, ReactNode } from 'react'
+import type { DragEvent, FormEvent } from 'react'
 import { getMetaOrgInbox, getMetaOrgOverview, listRoles, login, registerUser } from '@/lib/api'
 import type { InboxItem, MetaOrgOverview, Role } from '@/lib/api'
 import { clearSession, getSessionUser, getToken, setSession } from '@/lib/auth'
@@ -36,8 +36,10 @@ import {
   WorkflowDesignerWorkspace,
   WorkflowMatchingWorkspace,
 } from './control-workspaces'
+import { CostingWorkspace } from './costing-workspace'
 import { DeveloperToolsWorkspace } from './developer-tools-workspace'
 import { FinanceWorkspace } from './finance-workspace'
+import { MetaResourceWorkspace } from './meta-resource-workspace'
 import { OrganizationWorkspace } from './organization-workspace'
 import { ProjectLifecycleWorkspace } from './project-lifecycle-workspace'
 
@@ -63,6 +65,9 @@ const domainLabels: Record<string, string> = {
   Feedback: '反馈评估',
   DeveloperTools: '开发者工具',
   Finance: '财务导出',
+  Costing: '成本框架',
+  MetaResource: 'Meta 资源',
+  AIAssistant: 'AI 助手',
 }
 
 type MenuGroup = {
@@ -72,7 +77,9 @@ type MenuGroup = {
 }
 
 const lifecycleDomains = ['Requirement', 'Project', 'Delivery', 'Cost', 'Feedback']
+const virtualDomains = ['AIAssistant', 'Costing', 'MetaResource']
 const dedicatedDomains = new Set([
+  'MetaResource',
   'Organization',
   'Governance',
   'Evolution',
@@ -80,6 +87,8 @@ const dedicatedDomains = new Set([
   'Workflow',
   'DeveloperTools',
   'Finance',
+  'Costing',
+  'AIAssistant',
   ...lifecycleDomains,
 ])
 const menuStorageKey = 'meta_org.menu.groups.v1'
@@ -91,7 +100,7 @@ const defaultMenuGroups: MenuGroup[] = [
   {
     id: 'business',
     label: '业务闭环',
-    domains: ['Requirement', 'Project', 'Delivery', 'Cost', 'Feedback'],
+    domains: ['MetaResource', 'Requirement', 'Project', 'Delivery', 'Cost', 'Feedback'],
   },
   {
     id: 'organization',
@@ -106,7 +115,7 @@ const defaultMenuGroups: MenuGroup[] = [
   {
     id: 'system',
     label: '系统工具',
-    domains: ['MetaOrg', 'Dashboard', 'DeveloperTools', 'Finance', 'Identity', 'Layer', 'Observability'],
+    domains: ['MetaOrg', 'AIAssistant', 'Dashboard', 'DeveloperTools', 'Costing', 'Finance', 'Identity', 'Layer', 'Observability'],
   },
 ]
 
@@ -143,7 +152,8 @@ function formatDate(value: string): string {
 }
 
 function normalizeMenuGroups(input?: MenuGroup[]): MenuGroup[] {
-  const knownDomains = new Set(operationDomains)
+  const allMenuDomains = [...operationDomains, ...virtualDomains]
+  const knownDomains = new Set(allMenuDomains)
   const defaultByID = new Map(defaultMenuGroups.map((group) => [group.id, group]))
   const defaultTargetByDomain = new Map(
     defaultMenuGroups.flatMap((group) => group.domains.map((domain) => [domain, group.id] as const)),
@@ -167,7 +177,7 @@ function normalizeMenuGroups(input?: MenuGroup[]): MenuGroup[] {
     })
   })
 
-  operationDomains.forEach((domain) => {
+  allMenuDomains.forEach((domain) => {
     if (assigned.has(domain)) return
     const targetID = defaultTargetByDomain.get(domain) ?? 'system'
     const target = groupByID.get(targetID) ?? nextGroups[nextGroups.length - 1]
@@ -216,6 +226,7 @@ function loadExpandedGroups(): Record<string, boolean> {
 
 export default function Home() {
   const { locale, setLocale, t } = useI18n()
+  const [ready, setReady] = useState(false)
   const [mode, setMode] = useState<AuthMode>('login')
   const [email, setEmail] = useState('')
   const [name, setName] = useState('')
@@ -249,6 +260,7 @@ export default function Home() {
       setMenuGroups(loadMenuGroups())
       setExpandedGroups(loadExpandedGroups())
       setMenuReady(true)
+      setReady(true)
     })
 
     listRoles()
@@ -300,6 +312,16 @@ export default function Home() {
     const total = Math.max(overview.health.active_projects + overview.health.open_requirements, 1)
     return active / total
   }, [overview])
+
+  if (!ready) {
+    return (
+      <main className="min-h-screen bg-slate-50">
+        <div className="flex min-h-screen items-center justify-center">
+          <RefreshCw className="h-8 w-8 animate-spin text-slate-400" />
+        </div>
+      </main>
+    )
+  }
 
   async function loadOverview(activeToken = token) {
     if (!activeToken) return
@@ -372,7 +394,7 @@ export default function Home() {
   function handleDomainDrop(event: DragEvent<HTMLElement>, groupID: string) {
     event.preventDefault()
     const domain = event.dataTransfer.getData('text/plain') || draggedDomain
-    if (!domain || !operationDomains.includes(domain)) return
+    if (!domain || ![...operationDomains, ...virtualDomains].includes(domain)) return
     setMenuGroups((current) =>
       current.map((group) => {
         const domains = group.domains.filter((item) => item !== domain)
@@ -570,20 +592,18 @@ export default function Home() {
               )}
               {workspaceView === 'overview' ? (
                 overview ? (
-                  <Dashboard overview={overview} inbox={inbox} healthRatio={healthRatio} token={token} />
+                  <Dashboard overview={overview} inbox={inbox} healthRatio={healthRatio} />
                 ) : (
                   <div className="flex min-h-[420px] items-center justify-center rounded-lg border border-slate-200 bg-white">
                     <RefreshCw className="h-5 w-5 animate-spin text-slate-500" />
                   </div>
                 )
               ) : workspaceView === 'domain:Organization' ? (
-                <WorkspaceWithAssistant token={token} contextType="organization">
-                  <OrganizationWorkspace token={token} currentUserId={userId} />
-                </WorkspaceWithAssistant>
+                <OrganizationWorkspace token={token} currentUserId={userId} />
+              ) : workspaceView === 'domain:MetaResource' ? (
+                <MetaResourceWorkspace token={token} />
               ) : workspaceView === 'domain:Governance' ? (
-                <WorkspaceWithAssistant token={token} contextType="governance">
-                  <GovernanceWorkspace token={token} currentUserId={userId} />
-                </WorkspaceWithAssistant>
+                <GovernanceWorkspace token={token} currentUserId={userId} />
               ) : workspaceView === 'domain:Evolution' ? (
                 <WeightWorkspace token={token} currentUserId={userId} />
               ) : workspaceView === 'domain:Capability' ? (
@@ -596,20 +616,17 @@ export default function Home() {
               ) : ['domain:Requirement', 'domain:Project', 'domain:Delivery', 'domain:Cost', 'domain:Feedback'].includes(
                   workspaceView,
                 ) ? (
-                <WorkspaceWithAssistant
+                <ProjectLifecycleWorkspace
                   token={token}
-                  contextType={workspaceView === 'domain:Requirement' ? 'requirement' : 'project'}
-                >
-                  <ProjectLifecycleWorkspace
-                    token={token}
-                    currentUserId={userId}
-                    mode={workspaceView.replace('domain:', '') as 'Requirement' | 'Project' | 'Delivery' | 'Cost' | 'Feedback'}
-                  />
-                </WorkspaceWithAssistant>
+                  currentUserId={userId}
+                  mode={workspaceView.replace('domain:', '') as 'Requirement' | 'Project' | 'Delivery' | 'Cost' | 'Feedback'}
+                />
+              ) : workspaceView === 'domain:AIAssistant' ? (
+                <AIAssistantWorkspace token={token} />
               ) : workspaceView === 'domain:DeveloperTools' ? (
-                <WorkspaceWithAssistant token={token} contextType="developer_tools">
-                  <DeveloperToolsWorkspace token={token} />
-                </WorkspaceWithAssistant>
+                <DeveloperToolsWorkspace token={token} />
+              ) : workspaceView === 'domain:Costing' ? (
+                <CostingWorkspace token={token} />
               ) : workspaceView === 'domain:Finance' ? (
                 <FinanceWorkspace token={token} />
               ) : (
@@ -774,9 +791,11 @@ function WorkspaceHeader({
           <span className="inline-flex h-8 items-center rounded-md border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-600">
             {domain}
           </span>
-          <span className="inline-flex h-8 items-center rounded-md border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-600">
-            {operationCount} API
-          </span>
+          {operationCount > 0 && (
+            <span className="inline-flex h-8 items-center rounded-md border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-600">
+              {operationCount} API
+            </span>
+          )}
           <span
             className={`inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-semibold ${
               dedicated ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-blue-200 bg-blue-50 text-blue-700'
@@ -790,19 +809,38 @@ function WorkspaceHeader({
   )
 }
 
-function WorkspaceWithAssistant({
-  token,
-  contextType,
-  children,
-}: {
-  token: string
-  contextType: 'requirement' | 'project' | 'organization' | 'governance' | 'developer_tools'
-  children: ReactNode
-}) {
+type AssistantContextType = 'meta_org' | 'requirement' | 'project' | 'organization' | 'governance' | 'developer_tools'
+
+const assistantContexts: Array<{ type: AssistantContextType; label: string }> = [
+  { type: 'meta_org', label: 'Meta-Org' },
+  { type: 'requirement', label: '需求' },
+  { type: 'project', label: '项目' },
+  { type: 'organization', label: '组织' },
+  { type: 'governance', label: '治理' },
+  { type: 'developer_tools', label: '开发者工具' },
+]
+
+function AIAssistantWorkspace({ token }: { token: string }) {
+  const { t } = useI18n()
+  const [contextType, setContextType] = useState<AssistantContextType>('meta_org')
+
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="min-w-0">{children}</div>
-      <AIAssistant token={token} contextType={contextType} />
+    <div className="space-y-4">
+      <div className="flex flex-wrap gap-2 rounded-lg border border-slate-200 bg-white p-2 shadow-sm">
+        {assistantContexts.map((context) => (
+          <button
+            key={context.type}
+            type="button"
+            onClick={() => setContextType(context.type)}
+            className={`h-9 rounded-md px-3 text-sm font-semibold transition ${
+              contextType === context.type ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100'
+            }`}
+          >
+            {t(context.label)}
+          </button>
+        ))}
+      </div>
+      <AIAssistant key={contextType} token={token} contextType={contextType} className="max-w-5xl" />
     </div>
   )
 }
@@ -811,19 +849,16 @@ function Dashboard({
   overview,
   inbox,
   healthRatio,
-  token,
 }: {
   overview: MetaOrgOverview
   inbox: InboxItem[]
   healthRatio: number
-  token: string
 }) {
   const { t } = useI18n()
   const agentCoverage = overview.agents.total > 0 ? overview.agents.active / overview.agents.total : 0
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-      <div className="min-w-0 space-y-5">
+    <div className="space-y-5">
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <MetricCard
             icon={Users}
@@ -979,9 +1014,6 @@ function Dashboard({
         </section>
 
         <RecentEvents events={overview.activity} />
-      </div>
-
-      <AIAssistant token={token} contextType="meta_org" />
     </div>
   )
 }

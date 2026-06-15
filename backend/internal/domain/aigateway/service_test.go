@@ -9,23 +9,25 @@ import (
 )
 
 type fakeGatewayRepo struct {
-	target       ResolvedModel
-	recorded     bool
-	completed    bool
-	failed       bool
-	ledgerCount  int
-	lastLedger   CreateUsageLedgerInput
-	lastComplete CompleteInvocationInput
+	target          ResolvedModel
+	recorded        bool
+	completed       bool
+	failed          bool
+	pricingResolved bool
+	ledgerCount     int
+	lastLedger      CreateUsageLedgerInput
+	lastComplete    CompleteInvocationInput
 }
 
 func newFakeGatewayRepo() *fakeGatewayRepo {
 	return &fakeGatewayRepo{target: ResolvedModel{
-		ProviderID:   uuid.New(),
-		ModelID:      uuid.New(),
-		ProviderType: ProviderOpenAI,
-		Model:        "gpt-test",
-		Price:        Price{InputPer1K: 0.01, OutputPer1K: 0.03},
-		Currency:     "CNY",
+		ProviderID:     uuid.New(),
+		ModelID:        uuid.New(),
+		ProviderType:   ProviderOpenAI,
+		Model:          "gpt-test",
+		Price:          Price{InputPer1K: 0.01, OutputPer1K: 0.03},
+		Currency:       "CNY",
+		RateMultiplier: 1,
 	}}
 }
 
@@ -86,7 +88,43 @@ func TestServiceInvokeRecordsFailedUsage(t *testing.T) {
 	}
 }
 
+func TestServiceEstimateCostUsesPricingTarget(t *testing.T) {
+	repo := newFakeGatewayRepo()
+	repo.target.RateMultiplier = 1.25
+	svc := NewService(repo, nil)
+	rate := 2.0
+
+	result, err := svc.EstimateCost(context.Background(), EstimateCostInput{
+		Model:          "gpt-test",
+		Usage:          TokenUsage{InputTokens: 1000, OutputTokens: 500},
+		RateMultiplier: &rate,
+	})
+	if err != nil {
+		t.Fatalf("EstimateCost returned error: %v", err)
+	}
+	if !repo.pricingResolved {
+		t.Fatalf("pricing target was not resolved")
+	}
+	if result.Model != "gpt-test" {
+		t.Fatalf("model = %q, want gpt-test", result.Model)
+	}
+	if result.CostBreakdown.TotalCost != 0.025 {
+		t.Fatalf("total cost = %.8f, want 0.025", result.CostBreakdown.TotalCost)
+	}
+	if result.CostBreakdown.ActualCost != 0.05 {
+		t.Fatalf("actual cost = %.8f, want 0.05", result.CostBreakdown.ActualCost)
+	}
+	if result.Currency != "CNY" {
+		t.Fatalf("currency = %q, want CNY", result.Currency)
+	}
+}
+
 func (f *fakeGatewayRepo) ResolveInvocationTarget(context.Context, InvokeInput) (ResolvedModel, error) {
+	return f.target, nil
+}
+
+func (f *fakeGatewayRepo) ResolvePricingTarget(context.Context, EstimateCostInput) (ResolvedModel, error) {
+	f.pricingResolved = true
 	return f.target, nil
 }
 
@@ -110,6 +148,94 @@ func (f *fakeGatewayRepo) CreateUsageLedger(_ context.Context, input CreateUsage
 	f.ledgerCount++
 	f.lastLedger = input
 	return nil
+}
+
+func (f *fakeGatewayRepo) ReleaseChannel(context.Context, *uuid.UUID, float64) error {
+	return nil
+}
+
+func (f *fakeGatewayRepo) CreateProvider(context.Context, CreateProviderInput) (*ModelProvider, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) ListProviders(context.Context, int) ([]ModelProvider, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) UpdateProvider(context.Context, uuid.UUID, UpdateProviderInput) (*ModelProvider, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) RotateProviderKey(context.Context, uuid.UUID, string) (*ModelProvider, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) UpdateProviderTestResult(context.Context, uuid.UUID, string, string) error {
+	return errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) GetProviderSecret(context.Context, uuid.UUID) (ProviderSecret, error) {
+	return ProviderSecret{}, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) CreateModel(context.Context, CreateModelInput) (*Model, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) ListModels(context.Context, *uuid.UUID, int) ([]Model, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) UpdateModel(context.Context, uuid.UUID, UpdateModelInput) (*Model, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) ListInvocations(context.Context, int) ([]Invocation, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) GetInvocation(context.Context, uuid.UUID) (*Invocation, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) CostSummary(context.Context) (*GatewayCostSummary, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) CreateChannel(context.Context, CreateChannelInput) (*ProviderChannel, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) ListChannels(context.Context, *uuid.UUID, int) ([]ProviderChannel, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) UpdateChannel(context.Context, uuid.UUID, UpdateChannelInput) (*ProviderChannel, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) RotateChannelKey(context.Context, uuid.UUID, string) (*ProviderChannel, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) GetChannelSecret(context.Context, uuid.UUID) (ChannelSecret, error) {
+	return ChannelSecret{}, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) UpdateChannelTestResult(context.Context, uuid.UUID, string, string) error {
+	return errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) ListRoutingRules(context.Context, int) ([]RoutingRule, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) CreateRoutingRule(context.Context, CreateRoutingRuleInput) (*RoutingRule, error) {
+	return nil, errors.New("unexpected catalog call")
+}
+
+func (f *fakeGatewayRepo) UsageAnalysis(context.Context, UsageAnalysisFilter) (*UsageAnalysis, error) {
+	return nil, errors.New("unexpected catalog call")
 }
 
 type fakeAdapter struct {

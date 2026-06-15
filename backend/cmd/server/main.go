@@ -11,6 +11,7 @@ import (
 
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/aigateway"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/capability"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/costing"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/dashboard"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/finance"
@@ -18,6 +19,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/identity"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/layer"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/metaorg"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/metaresource"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
@@ -80,6 +82,10 @@ func main() {
 	capRouter := capability.NewRouter(capRepo)
 	capHandler := capability.NewHandler(capRepo, capRouter, evoSvc)
 
+	costRepo := costing.NewRepository(db)
+	costSvc := costing.NewService(costRepo)
+	costHandler := costing.NewHandler(costSvc)
+
 	dashRepo := dashboard.NewRepository(db)
 	dashSvc := dashboard.NewService(dashRepo)
 	dashHandler := dashboard.NewHandler(dashSvc)
@@ -88,12 +94,16 @@ func main() {
 	metaSvc := metaorg.NewService(metaRepo)
 	metaHandler := metaorg.NewHandler(metaSvc)
 
+	metaResourceRepo := metaresource.NewRepository(db)
+	metaResourceSvc := metaresource.NewService(metaResourceRepo)
+	metaResourceHandler := metaresource.NewHandler(metaResourceSvc)
+
 	obsRepo := observability.NewRepository(db)
 	obsSvc := observability.NewService(obsRepo)
 	obsHandler := observability.NewHandler(obsSvc)
 
 	aiRepo := aigateway.NewRepository(db, modelSecretBox)
-	aiSvc := aigateway.NewService(aiRepo, nil, aigateway.WithObservability(obsSvc))
+	aiSvc := aigateway.NewService(aiRepo, nil, aigateway.WithObservability(obsSvc), aigateway.WithCostRecorder(costSvc))
 	aiHandler := aigateway.NewHandler(aiSvc)
 
 	wfRepo := workflow.NewRepository(db)
@@ -107,6 +117,7 @@ func main() {
 		project.WithEvolutionService(evoSvc),
 		project.WithOrganizationService(orgSvc),
 		project.WithWorkflowService(wfSvc),
+		project.WithCostRecorder(costSvc),
 	)
 	projectHandler := project.NewHandler(projectSvc)
 
@@ -129,8 +140,10 @@ func main() {
 		OrganizationHandler:  orgHandler,
 		LayerHandler:         layerHandler,
 		CapabilityHandler:    capHandler,
+		CostingHandler:       costHandler,
 		DashboardHandler:     dashHandler,
 		MetaOrgHandler:       metaHandler,
+		MetaResourceHandler:  metaResourceHandler,
 		AIGatewayHandler:     aiHandler,
 		WorkflowHandler:      wfHandler,
 		ProjectHandler:       projectHandler,

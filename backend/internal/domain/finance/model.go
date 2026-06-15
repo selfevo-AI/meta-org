@@ -72,6 +72,7 @@ type ExportLine struct {
 	ID                 uuid.UUID      `json:"id"`
 	BatchID            uuid.UUID      `json:"batch_id"`
 	UsageLedgerID      *uuid.UUID     `json:"usage_ledger_id,omitempty"`
+	CostLedgerEntryID  *uuid.UUID     `json:"cost_ledger_entry_id,omitempty"`
 	ProjectCostEntryID *uuid.UUID     `json:"project_cost_entry_id,omitempty"`
 	OrganizationID     *uuid.UUID     `json:"organization_id,omitempty"`
 	DepartmentID       *uuid.UUID     `json:"department_id,omitempty"`
