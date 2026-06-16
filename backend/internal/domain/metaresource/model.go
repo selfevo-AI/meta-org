@@ -7,15 +7,18 @@ import (
 )
 
 const (
-	ResourceHuman        = "human"
-	ResourceExternal     = "external_human"
-	ResourceAgent        = "agent"
-	ResourceModelChannel = "model_channel"
-	ResourceTool         = "tool"
-	ResourceMaterial     = "material"
-	ResourceTime         = "time"
-	ResourceCapability   = "capability"
-	ResourceBudget       = "budget"
+	ResourceHuman         = "human"
+	ResourceInternalHuman = "internal_human"
+	ResourceExternal      = "external_human"
+	ResourceAgent         = "agent"
+	ResourceInternalAgent = "internal_agent"
+	ResourceExternalAgent = "external_agent"
+	ResourceModelChannel  = "model_channel"
+	ResourceTool          = "tool"
+	ResourceMaterial      = "material"
+	ResourceTime          = "time"
+	ResourceCapability    = "capability"
+	ResourceBudget        = "budget"
 
 	StagePlan   = "plan"
 	StageDo     = "do"

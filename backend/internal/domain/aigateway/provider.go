@@ -38,6 +38,13 @@ type ToolCall struct {
 	Arguments map[string]any `json:"arguments"`
 }
 
+func (c ToolCall) normalizedID(index int) string {
+	if c.ID != "" {
+		return c.ID
+	}
+	return fmt.Sprintf("tool_call_%d", index+1)
+}
+
 type StreamEvent struct {
 	Type     string     `json:"type"`
 	Delta    string     `json:"delta,omitempty"`

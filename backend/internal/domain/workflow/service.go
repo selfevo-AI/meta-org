@@ -90,6 +90,51 @@ func (s *Service) CompleteTask(ctx context.Context, taskID uuid.UUID, output map
 	return s.repo.CompleteTaskWithWorkflowProgress(ctx, taskID, output)
 }
 
+func (s *Service) CreateTaskMatrixAssignment(ctx context.Context, taskID uuid.UUID, input CreateTaskMatrixAssignmentInput) (*TaskMatrixAssignment, error) {
+	input.TaskID = taskID
+	if input.PositionID == uuid.Nil || input.PositionAssignmentID == nil || *input.PositionAssignmentID == uuid.Nil || input.MetaResourceID == uuid.Nil {
+		return nil, fmt.Errorf("%w: position_id, position_assignment_id, and meta_resource_id are required", ErrValidation)
+	}
+	if input.RoleInTask == "" {
+		input.RoleInTask = "owner"
+	}
+	if !validTaskMatrixRole(input.RoleInTask) {
+		return nil, fmt.Errorf("%w: invalid role_in_task", ErrValidation)
+	}
+	if input.AllocationPercent <= 0 {
+		input.AllocationPercent = 100
+	}
+	if input.Status == "" {
+		input.Status = "active"
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+	return s.repo.CreateTaskMatrixAssignment(ctx, input)
+}
+
+func (s *Service) ListTaskMatrixAssignments(ctx context.Context, taskID uuid.UUID) ([]TaskMatrixAssignment, error) {
+	items, err := s.repo.ListTaskMatrixAssignments(ctx, taskID)
+	if items == nil {
+		items = []TaskMatrixAssignment{}
+	}
+	return items, err
+}
+
+func (s *Service) UpdateTaskMatrixAssignment(ctx context.Context, id uuid.UUID, input UpdateTaskMatrixAssignmentInput) (*TaskMatrixAssignment, error) {
+	if input.RoleInTask != "" && !validTaskMatrixRole(input.RoleInTask) {
+		return nil, fmt.Errorf("%w: invalid role_in_task", ErrValidation)
+	}
+	if input.Status != "" && !validTaskMatrixStatus(input.Status) {
+		return nil, fmt.Errorf("%w: invalid status", ErrValidation)
+	}
+	return s.repo.UpdateTaskMatrixAssignment(ctx, id, input)
+}
+
+func (s *Service) RemoveTaskMatrixAssignment(ctx context.Context, id uuid.UUID) error {
+	return s.repo.RemoveTaskMatrixAssignment(ctx, id)
+}
+
 func (s *Service) RecordDecision(ctx context.Context, taskID uuid.UUID, decisionMakerID uuid.UUID, makerType string, reasoning string, outcome string, input, output map[string]any) (*Decision, error) {
 	d := &Decision{
 		TaskID:          taskID,
@@ -147,6 +192,24 @@ func normalizeStage(stage *Stage) {
 func isValidWorkflowStatus(status WorkflowStatus) bool {
 	switch status {
 	case WorkflowActive, WorkflowPaused, WorkflowCompleted, WorkflowFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func validTaskMatrixRole(value string) bool {
+	switch value {
+	case "owner", "reviewer", "support", "observer":
+		return true
+	default:
+		return false
+	}
+}
+
+func validTaskMatrixStatus(value string) bool {
+	switch value {
+	case "active", "inactive", "archived":
 		return true
 	default:
 		return false

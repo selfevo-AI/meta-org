@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -365,7 +366,209 @@ func (r *Repository) GetTasksByWorkflow(ctx context.Context, workflowID uuid.UUI
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("get tasks iteration: %w", err)
 	}
+	assignments, err := r.ListTaskMatrixAssignmentsByWorkflow(ctx, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	byTask := make(map[uuid.UUID][]TaskMatrixAssignment)
+	for _, assignment := range assignments {
+		byTask[assignment.TaskID] = append(byTask[assignment.TaskID], assignment)
+	}
+	for i := range tasks {
+		tasks[i].MatrixAssignments = byTask[tasks[i].ID]
+	}
 	return tasks, nil
+}
+
+func (r *Repository) CreateTaskMatrixAssignment(ctx context.Context, input CreateTaskMatrixAssignmentInput) (*TaskMatrixAssignment, error) {
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+	metadataJSON, err := json.Marshal(input.Metadata)
+	if err != nil {
+		return nil, fmt.Errorf("marshal task matrix metadata: %w", err)
+	}
+	item := &TaskMatrixAssignment{}
+	err = scanTaskMatrixAssignment(r.db.QueryRow(ctx, `
+		WITH task_scope AS (
+			SELECT t.id AS task_id, t.workflow_id, wi.project_id, wi.organization_id, wi.department_id
+			FROM tasks t
+			JOIN workflow_instances wi ON wi.id = t.workflow_id
+			WHERE t.id = $1
+		), assignment_scope AS (
+			SELECT pa.id, pa.position_id, pa.meta_resource_id, pa.actor_id, pa.actor_type
+			FROM position_assignments pa
+			WHERE pa.id = $2 AND pa.position_id = $3 AND pa.meta_resource_id = $4 AND pa.status <> 'archived'
+		), upserted AS (
+			INSERT INTO task_matrix_assignments (
+				task_id, workflow_id, project_id, organization_id, department_id, position_id,
+				position_assignment_id, meta_resource_id, actor_id, actor_type, role_in_task,
+				allocation_percent, status, metadata
+			)
+			SELECT ts.task_id, ts.workflow_id, ts.project_id, ts.organization_id, ts.department_id,
+				$3, asg.id, asg.meta_resource_id, asg.actor_id, asg.actor_type,
+				COALESCE(NULLIF($5, ''), 'owner'), COALESCE(NULLIF($6, 0), 100),
+				COALESCE(NULLIF($7, ''), 'active'), $8
+			FROM task_scope ts
+			JOIN assignment_scope asg ON TRUE
+			ON CONFLICT (task_id, position_id, meta_resource_id, role_in_task) WHERE status <> 'archived'
+			DO UPDATE SET position_assignment_id = EXCLUDED.position_assignment_id,
+				actor_id = EXCLUDED.actor_id,
+				actor_type = EXCLUDED.actor_type,
+				allocation_percent = EXCLUDED.allocation_percent,
+				status = EXCLUDED.status,
+				metadata = EXCLUDED.metadata,
+				updated_at = NOW()
+			RETURNING id
+		)
+		`+taskMatrixSelectSQL()+` WHERE tma.id = (SELECT id FROM upserted)
+	`, input.TaskID, input.PositionAssignmentID, input.PositionID, input.MetaResourceID, input.RoleInTask,
+		input.AllocationPercent, input.Status, metadataJSON), item)
+	if err != nil {
+		return nil, fmt.Errorf("create task matrix assignment: %w", err)
+	}
+	if item.RoleInTask == "owner" && item.Status == "active" {
+		if _, err := r.db.Exec(ctx, `UPDATE tasks SET assignee_id = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1`, item.TaskID, item.ActorID, item.ActorType); err != nil {
+			return nil, fmt.Errorf("sync task owner: %w", err)
+		}
+	}
+	return item, nil
+}
+
+func (r *Repository) ListTaskMatrixAssignments(ctx context.Context, taskID uuid.UUID) ([]TaskMatrixAssignment, error) {
+	rows, err := r.db.Query(ctx, taskMatrixSelectSQL()+` WHERE tma.task_id = $1 AND tma.status <> 'archived' ORDER BY tma.role_in_task, p.name`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("list task matrix assignments: %w", err)
+	}
+	defer rows.Close()
+	return scanTaskMatrixAssignments(rows)
+}
+
+func (r *Repository) ListTaskMatrixAssignmentsByWorkflow(ctx context.Context, workflowID uuid.UUID) ([]TaskMatrixAssignment, error) {
+	rows, err := r.db.Query(ctx, taskMatrixSelectSQL()+` WHERE tma.workflow_id = $1 AND tma.status <> 'archived' ORDER BY tma.task_id, tma.role_in_task`, workflowID)
+	if err != nil {
+		return nil, fmt.Errorf("list workflow task matrix assignments: %w", err)
+	}
+	defer rows.Close()
+	return scanTaskMatrixAssignments(rows)
+}
+
+func (r *Repository) UpdateTaskMatrixAssignment(ctx context.Context, id uuid.UUID, input UpdateTaskMatrixAssignmentInput) (*TaskMatrixAssignment, error) {
+	metadataJSON, err := json.Marshal(input.Metadata)
+	if input.Metadata == nil {
+		metadataJSON = nil
+		err = nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("marshal task matrix metadata: %w", err)
+	}
+	_, err = r.db.Exec(ctx, `
+		UPDATE task_matrix_assignments
+		SET role_in_task = COALESCE(NULLIF($2, ''), role_in_task),
+			allocation_percent = COALESCE($3, allocation_percent),
+			status = COALESCE(NULLIF($4, ''), status),
+			metadata = COALESCE($5::jsonb, metadata),
+			updated_at = NOW()
+		WHERE id = $1
+	`, id, input.RoleInTask, input.AllocationPercent, input.Status, metadataJSON)
+	if err != nil {
+		return nil, fmt.Errorf("update task matrix assignment: %w", err)
+	}
+	item := &TaskMatrixAssignment{}
+	if err := scanTaskMatrixAssignment(r.db.QueryRow(ctx, taskMatrixSelectSQL()+` WHERE tma.id = $1`, id), item); err != nil {
+		return nil, fmt.Errorf("get task matrix assignment: %w", err)
+	}
+	if item.RoleInTask == "owner" && item.Status == "active" {
+		if _, err := r.db.Exec(ctx, `UPDATE tasks SET assignee_id = $2, assignee_type = $3, updated_at = NOW() WHERE id = $1`, item.TaskID, item.ActorID, item.ActorType); err != nil {
+			return nil, fmt.Errorf("sync task owner: %w", err)
+		}
+	}
+	return item, nil
+}
+
+func (r *Repository) RemoveTaskMatrixAssignment(ctx context.Context, id uuid.UUID) error {
+	_, err := r.db.Exec(ctx, `UPDATE task_matrix_assignments SET status = 'archived', updated_at = NOW() WHERE id = $1`, id)
+	if err != nil {
+		return fmt.Errorf("remove task matrix assignment: %w", err)
+	}
+	return nil
+}
+
+func taskMatrixSelectSQL() string {
+	return `SELECT
+		tma.id,
+		tma.task_id,
+		tma.workflow_id,
+		tma.project_id,
+		tma.organization_id,
+		tma.department_id,
+		tma.position_id,
+		COALESCE(p.name, '') AS position_name,
+		tma.position_assignment_id,
+		tma.meta_resource_id,
+		COALESCE(mr.name, '') AS meta_resource_name,
+		COALESCE(mr.resource_type, '') AS meta_resource_type,
+		tma.actor_id,
+		tma.actor_type,
+		tma.role_in_task,
+		tma.allocation_percent,
+		tma.status,
+		tma.metadata,
+		tma.created_at,
+		tma.updated_at
+	FROM task_matrix_assignments tma
+	JOIN positions p ON p.id = tma.position_id
+	JOIN meta_resources mr ON mr.id = tma.meta_resource_id`
+}
+
+func scanTaskMatrixAssignments(rows pgx.Rows) ([]TaskMatrixAssignment, error) {
+	items := []TaskMatrixAssignment{}
+	for rows.Next() {
+		var item TaskMatrixAssignment
+		if err := scanTaskMatrixAssignment(rows, &item); err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func scanTaskMatrixAssignment(row interface{ Scan(dest ...any) error }, item *TaskMatrixAssignment) error {
+	var projectID, organizationID, departmentID, assignmentID *uuid.UUID
+	var metadataJSON []byte
+	if err := row.Scan(
+		&item.ID,
+		&item.TaskID,
+		&item.WorkflowID,
+		&projectID,
+		&organizationID,
+		&departmentID,
+		&item.PositionID,
+		&item.PositionName,
+		&assignmentID,
+		&item.MetaResourceID,
+		&item.MetaResourceName,
+		&item.MetaResourceType,
+		&item.ActorID,
+		&item.ActorType,
+		&item.RoleInTask,
+		&item.AllocationPercent,
+		&item.Status,
+		&metadataJSON,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	); err != nil {
+		return fmt.Errorf("scan task matrix assignment: %w", err)
+	}
+	item.ProjectID = projectID
+	item.OrganizationID = organizationID
+	item.DepartmentID = departmentID
+	item.PositionAssignmentID = assignmentID
+	item.Metadata = map[string]any{}
+	if len(metadataJSON) > 0 {
+		_ = json.Unmarshal(metadataJSON, &item.Metadata)
+	}
+	return nil
 }
 
 func (r *Repository) RecordDecision(ctx context.Context, d *Decision) (*Decision, error) {

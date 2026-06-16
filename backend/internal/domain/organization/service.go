@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/metaresource"
 )
 
 var (
@@ -41,6 +42,7 @@ type Repository interface {
 	UpdatePosition(ctx context.Context, id uuid.UUID, input UpdatePositionInput) (*Position, error)
 	CreatePositionAssignment(ctx context.Context, input CreatePositionAssignmentInput) (*PositionAssignment, error)
 	ListPositionAssignments(ctx context.Context, positionID uuid.UUID) ([]PositionAssignment, error)
+	GetPositionAssignmentByID(ctx context.Context, id uuid.UUID) (*PositionAssignment, error)
 	UpdatePositionAssignment(ctx context.Context, id uuid.UUID, input UpdatePositionAssignmentInput) (*PositionAssignment, error)
 	RemovePositionAssignment(ctx context.Context, id uuid.UUID) error
 	CreateExternalMember(ctx context.Context, input CreateExternalMemberInput) (*ExternalMember, error)
@@ -59,9 +61,14 @@ type Service struct {
 	repo       Repository
 	governance *governance.Service
 	evolution  *evolution.Service
+	meta       MetaResourceService
 }
 
 type ServiceOption func(*Service)
+
+type MetaResourceService interface {
+	GetResource(ctx context.Context, id uuid.UUID) (*metaresource.MetaResource, error)
+}
 
 func WithGovernanceService(gov *governance.Service) ServiceOption {
 	return func(s *Service) {
@@ -72,6 +79,12 @@ func WithGovernanceService(gov *governance.Service) ServiceOption {
 func WithEvolutionService(evo *evolution.Service) ServiceOption {
 	return func(s *Service) {
 		s.evolution = evo
+	}
+}
+
+func WithMetaResourceService(meta MetaResourceService) ServiceOption {
+	return func(s *Service) {
+		s.meta = meta
 	}
 }
 
@@ -266,6 +279,9 @@ func (s *Service) CreatePositionAssignment(ctx context.Context, positionID uuid.
 	if !isValidPositionActorType(input.ActorType) {
 		return nil, fmt.Errorf("%w: invalid actor_type", ErrValidation)
 	}
+	if err := s.validateMetaAssignment(ctx, input.MetaResourceID, input.ActorID, input.ActorType); err != nil {
+		return nil, err
+	}
 	input.Metadata = mergeMetadata(input.Metadata, map[string]any{
 		"organization_id": position.OrganizationID.String(),
 		"department_id":   position.DepartmentID.String(),
@@ -282,6 +298,15 @@ func (s *Service) ListPositionAssignments(ctx context.Context, positionID uuid.U
 }
 
 func (s *Service) UpdatePositionAssignment(ctx context.Context, id uuid.UUID, input UpdatePositionAssignmentInput) (*PositionAssignment, error) {
+	if input.MetaResourceID != nil {
+		current, err := s.repo.GetPositionAssignmentByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.validateMetaAssignment(ctx, input.MetaResourceID, current.ActorID, current.ActorType); err != nil {
+			return nil, err
+		}
+	}
 	return s.repo.UpdatePositionAssignment(ctx, id, input)
 }
 
@@ -693,6 +718,44 @@ func isValidPositionActorType(actorType string) bool {
 	switch actorType {
 	case "internal_human", "external_human", "internal_agent", "external_agent":
 		return true
+	default:
+		return false
+	}
+}
+
+func (s *Service) validateMetaAssignment(ctx context.Context, metaResourceID *uuid.UUID, actorID uuid.UUID, actorType string) error {
+	if metaResourceID == nil || *metaResourceID == uuid.Nil {
+		return fmt.Errorf("%w: meta_resource_id is required", ErrValidation)
+	}
+	if s.meta == nil {
+		return nil
+	}
+	resource, err := s.meta.GetResource(ctx, *metaResourceID)
+	if err != nil {
+		return err
+	}
+	if !metaResourceTypeMatchesActor(resource.ResourceType, actorType) {
+		return fmt.Errorf("%w: meta_resource type %q does not match actor_type %q", ErrValidation, resource.ResourceType, actorType)
+	}
+	if resource.OwnerActorID != nil && *resource.OwnerActorID != actorID {
+		return fmt.Errorf("%w: meta_resource owner does not match actor_id", ErrValidation)
+	}
+	if resource.SourceID != nil && *resource.SourceID != actorID {
+		return fmt.Errorf("%w: meta_resource source does not match actor_id", ErrValidation)
+	}
+	return nil
+}
+
+func metaResourceTypeMatchesActor(resourceType string, actorType string) bool {
+	switch actorType {
+	case "internal_human":
+		return resourceType == "internal_human" || resourceType == "human"
+	case "external_human":
+		return resourceType == "external_human"
+	case "internal_agent":
+		return resourceType == "internal_agent" || resourceType == "agent"
+	case "external_agent":
+		return resourceType == "external_agent"
 	default:
 		return false
 	}

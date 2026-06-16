@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/finance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
@@ -22,11 +23,13 @@ type FinanceService interface {
 	CreateExportBatch(context.Context, finance.CreateExportBatchInput) (*finance.ExportBatch, error)
 }
 
-func InternalTools(projectSvc ProjectService, financeServices ...FinanceService) map[string]ToolAdapter {
-	var financeSvc FinanceService
-	if len(financeServices) > 0 {
-		financeSvc = financeServices[0]
-	}
+type EvolutionService interface {
+	CreateKnowledge(context.Context, evolution.CreateKnowledgeInput) (*evolution.KnowledgeEntry, error)
+	CreateSignal(context.Context, evolution.CreateSignalInput) (*evolution.Signal, error)
+	CreateExperiment(context.Context, evolution.CreateExperimentInput) (*evolution.Experiment, error)
+}
+
+func InternalTools(projectSvc ProjectService, financeSvc FinanceService, evolutionSvc EvolutionService) map[string]ToolAdapter {
 	tools := map[string]ToolAdapter{
 		"governance.explain_decision": explainGovernanceDecision,
 	}
@@ -34,6 +37,15 @@ func InternalTools(projectSvc ProjectService, financeServices ...FinanceService)
 		tools["finance.prepare_export_batch"] = notConfiguredTool("finance module is not available until finance integration is enabled")
 	} else {
 		tools["finance.prepare_export_batch"] = prepareFinanceExportBatchTool(financeSvc)
+	}
+	if evolutionSvc == nil {
+		tools["evolution.create_knowledge"] = notConfiguredTool("evolution module is not configured")
+		tools["evolution.create_signal"] = notConfiguredTool("evolution module is not configured")
+		tools["evolution.propose_experiment"] = notConfiguredTool("evolution module is not configured")
+	} else {
+		tools["evolution.create_knowledge"] = createKnowledgeTool(evolutionSvc)
+		tools["evolution.create_signal"] = createSignalTool(evolutionSvc)
+		tools["evolution.propose_experiment"] = proposeExperimentTool(evolutionSvc)
 	}
 	if projectSvc == nil {
 		tools["requirement.analyze"] = notConfiguredTool("project service is not configured")
@@ -60,6 +72,9 @@ func DefaultToolDefinitions() []CreateToolInput {
 		{Name: "project.create_cost_entry", Description: "Create project cost entry", SourceType: SourceInternalAPI, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3"},
 		{Name: "governance.explain_decision", Description: "Explain governance decision", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "low", RequiredLevel: "L1"},
 		{Name: "finance.prepare_export_batch", Description: "Prepare finance export batch", SourceType: SourceManualApproval, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3"},
+		{Name: "evolution.create_knowledge", Description: "Create evolution knowledge entry", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2"},
+		{Name: "evolution.create_signal", Description: "Create evolution signal", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2"},
+		{Name: "evolution.propose_experiment", Description: "Propose evolution experiment", SourceType: SourceInternalAPI, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3"},
 	}
 }
 
@@ -185,6 +200,60 @@ func prepareFinanceExportBatchTool(financeSvc FinanceService) ToolAdapter {
 	}
 }
 
+func createKnowledgeTool(evolutionSvc EvolutionService) ToolAdapter {
+	return func(ctx context.Context, input ExecuteToolInput) (ToolResult, error) {
+		workflowID, err := optionalUUIDArg(input.Arguments, "workflow_id")
+		if err != nil {
+			return ToolResult{}, err
+		}
+		entry, err := evolutionSvc.CreateKnowledge(ctx, evolution.CreateKnowledgeInput{
+			WorkflowID: workflowID,
+			Title:      stringArg(input.Arguments, "title"),
+			Content:    stringArg(input.Arguments, "content"),
+			Tags:       stringSliceArg(input.Arguments, "tags"),
+			Source:     "assistant",
+		})
+		if err != nil {
+			return ToolResult{}, err
+		}
+		return ToolResult{Summary: "Evolution knowledge created", Data: map[string]any{"knowledge": entry}}, nil
+	}
+}
+
+func createSignalTool(evolutionSvc EvolutionService) ToolAdapter {
+	return func(ctx context.Context, input ExecuteToolInput) (ToolResult, error) {
+		signalType := stringArg(input.Arguments, "signal_type")
+		if signalType == "" {
+			return ToolResult{}, fmt.Errorf("%w: signal_type is required", ErrValidation)
+		}
+		priority := intArg(input.Arguments, "priority")
+		signal, err := evolutionSvc.CreateSignal(ctx, evolution.CreateSignalInput{
+			SignalType: signalType,
+			Source:     firstNonEmptyString(stringArg(input.Arguments, "source"), "assistant"),
+			Priority:   priority,
+			Data:       mapArg(input.Arguments, "data"),
+		})
+		if err != nil {
+			return ToolResult{}, err
+		}
+		return ToolResult{Summary: "Evolution signal created", Data: map[string]any{"signal": signal}}, nil
+	}
+}
+
+func proposeExperimentTool(evolutionSvc EvolutionService) ToolAdapter {
+	return func(ctx context.Context, input ExecuteToolInput) (ToolResult, error) {
+		experiment, err := evolutionSvc.CreateExperiment(ctx, evolution.CreateExperimentInput{
+			Name:            stringArg(input.Arguments, "name"),
+			Hypothesis:      stringArg(input.Arguments, "hypothesis"),
+			SuccessCriteria: mapArg(input.Arguments, "success_criteria"),
+		})
+		if err != nil {
+			return ToolResult{}, err
+		}
+		return ToolResult{Summary: "Evolution experiment proposed", Data: map[string]any{"experiment": experiment}}, nil
+	}
+}
+
 func explainGovernanceDecision(ctx context.Context, input ExecuteToolInput) (ToolResult, error) {
 	return ToolResult{
 		Summary: "Governance decision context prepared",
@@ -258,6 +327,26 @@ func floatArg(args map[string]any, key string) float64 {
 	default:
 		return 0
 	}
+}
+
+func intArg(args map[string]any, key string) int {
+	switch value := args[key].(type) {
+	case float64:
+		return int(value)
+	case int:
+		return value
+	default:
+		return 0
+	}
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func mapArg(args map[string]any, key string) map[string]any {

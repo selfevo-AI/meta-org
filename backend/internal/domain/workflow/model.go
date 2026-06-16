@@ -82,18 +82,42 @@ type WorkflowInstance struct {
 }
 
 type Task struct {
-	ID             uuid.UUID      `json:"id"`
-	WorkflowID     uuid.UUID      `json:"workflow_id"`
-	Stage          int            `json:"stage"`
-	StageType      StageType      `json:"stage_type"`
-	AssigneeID     *uuid.UUID     `json:"assignee_id,omitempty"`
-	AssigneeType   string         `json:"assignee_type,omitempty"`
-	Input          map[string]any `json:"input"`
-	Output         map[string]any `json:"output"`
-	WeightSnapshot float64        `json:"weight_snapshot"`
-	Status         TaskStatus     `json:"status"`
-	CreatedAt      time.Time      `json:"created_at"`
-	UpdatedAt      time.Time      `json:"updated_at"`
+	ID                uuid.UUID              `json:"id"`
+	WorkflowID        uuid.UUID              `json:"workflow_id"`
+	Stage             int                    `json:"stage"`
+	StageType         StageType              `json:"stage_type"`
+	AssigneeID        *uuid.UUID             `json:"assignee_id,omitempty"`
+	AssigneeType      string                 `json:"assignee_type,omitempty"`
+	Input             map[string]any         `json:"input"`
+	Output            map[string]any         `json:"output"`
+	WeightSnapshot    float64                `json:"weight_snapshot"`
+	Status            TaskStatus             `json:"status"`
+	MatrixAssignments []TaskMatrixAssignment `json:"matrix_assignments,omitempty"`
+	CreatedAt         time.Time              `json:"created_at"`
+	UpdatedAt         time.Time              `json:"updated_at"`
+}
+
+type TaskMatrixAssignment struct {
+	ID                   uuid.UUID      `json:"id"`
+	TaskID               uuid.UUID      `json:"task_id"`
+	WorkflowID           uuid.UUID      `json:"workflow_id"`
+	ProjectID            *uuid.UUID     `json:"project_id,omitempty"`
+	OrganizationID       *uuid.UUID     `json:"organization_id,omitempty"`
+	DepartmentID         *uuid.UUID     `json:"department_id,omitempty"`
+	PositionID           uuid.UUID      `json:"position_id"`
+	PositionName         string         `json:"position_name,omitempty"`
+	PositionAssignmentID *uuid.UUID     `json:"position_assignment_id,omitempty"`
+	MetaResourceID       uuid.UUID      `json:"meta_resource_id"`
+	MetaResourceName     string         `json:"meta_resource_name,omitempty"`
+	MetaResourceType     string         `json:"meta_resource_type,omitempty"`
+	ActorID              uuid.UUID      `json:"actor_id"`
+	ActorType            string         `json:"actor_type"`
+	RoleInTask           string         `json:"role_in_task"`
+	AllocationPercent    float64        `json:"allocation_percent"`
+	Status               string         `json:"status"`
+	Metadata             map[string]any `json:"metadata"`
+	CreatedAt            time.Time      `json:"created_at"`
+	UpdatedAt            time.Time      `json:"updated_at"`
 }
 
 type Decision struct {
@@ -137,4 +161,22 @@ type StartWorkflowInput struct {
 	DepartmentID   *uuid.UUID     `json:"department_id,omitempty"`
 	ProjectID      *uuid.UUID     `json:"project_id,omitempty"`
 	Context        map[string]any `json:"context,omitempty"`
+}
+
+type CreateTaskMatrixAssignmentInput struct {
+	TaskID               uuid.UUID      `json:"task_id"`
+	PositionID           uuid.UUID      `json:"position_id"`
+	PositionAssignmentID *uuid.UUID     `json:"position_assignment_id,omitempty"`
+	MetaResourceID       uuid.UUID      `json:"meta_resource_id"`
+	RoleInTask           string         `json:"role_in_task,omitempty"`
+	AllocationPercent    float64        `json:"allocation_percent,omitempty"`
+	Status               string         `json:"status,omitempty"`
+	Metadata             map[string]any `json:"metadata,omitempty"`
+}
+
+type UpdateTaskMatrixAssignmentInput struct {
+	RoleInTask        string         `json:"role_in_task,omitempty"`
+	AllocationPercent *float64       `json:"allocation_percent,omitempty"`
+	Status            string         `json:"status,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
 }

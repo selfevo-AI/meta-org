@@ -4,7 +4,7 @@ English | [简体中文](README.md)
 
 Meta-Org is an AI-native organization operating platform for hybrid human and AI-agent teams. It brings human employees, AI agents, external collaborators, organization structure, project delivery, governance rules, and continuous learning into one operating system. The current product flow covers requirement intake, project formation, workflow execution, deliverable acceptance, cost tracking, and feedback capture.
 
-The project is built around the **ETCLOVG** framework: Execution, Tooling, Context, Lifecycle, Observability, Verification, and Governance. This repository currently includes a Go backend, a Next.js frontend, PostgreSQL migrations, Docker Compose orchestration, JWT authentication, Meta-Org Home, Meta Resource / PDCA workspace, organization and project workspaces, Developer Tools, AI Gateway, tool runtime, cost accounting, and generic finance exports.
+The project is built around the **ETCLOVG** framework: Execution, Tooling, Context, Lifecycle, Observability, Verification, and Governance. This repository currently includes a Go backend, a Next.js frontend, PostgreSQL migrations, Docker Compose orchestration, JWT authentication, Meta-Org Home, Meta Resource / PDCA workspace, organization and project workspaces, Model Settings, AI Gateway, tool runtime, cost accounting, and generic finance exports.
 
 ## Product Goal
 
@@ -72,7 +72,7 @@ The system currently supports a full project lifecycle:
 - Tool Runtime supports tool registry, governance decisions, approval policy, execution audit, and internal tool adapters.
 - Meta Resource supports syncing existing humans, external members, agents, model channels, tools, and capabilities into one capability/cost/capacity/risk profile layer.
 - Demand Profile and PDCA Cycle make demand constraints, resource fit, planning, execution, change, and acceptance events explicit queryable objects.
-- Developer Tools covers model providers, model catalog, tool registry, interface files, invocation logs, and cost summaries.
+- Model Settings covers model providers, model catalog, tool registry, interface files, invocation logs, and cost summaries.
 - Finance Exports support generic finance adapters, HMAC/Bearer auth, export batches, webhook callbacks, and reconciliation differences.
 
 ### Frontend Workspaces
@@ -88,9 +88,9 @@ The frontend is an operational single-page workspace:
 - Organization workspace for organizations, departments, positions, members, external members, position assignments, MVRU links, and matching.
 - Control workspaces for governance, weights, capability evaluations, workflow design, and workflow matching.
 - Project lifecycle workspace for requirements, projects, delivery, costs, and feedback.
-- Developer Tools for providers, models, tools, interface files, invocation logs, and cost summaries.
+- Model Settings for providers, models, tools, interface files, invocation logs, and cost summaries.
 - Finance Exports for adapters, export batches, reconciliation, and failed callbacks.
-- Context AI Assistant for Meta-Org, organization, project, governance, and developer-tool contexts with streaming and cost display.
+- Context AI Assistant for Meta-Org, organization, project, governance, and model-setting contexts with streaming and cost display.
 - API Workbench for browsing and calling backend APIs by domain, with path parameters, query parameters, request templates, and auth token support.
 
 ## Technical Architecture
@@ -223,7 +223,7 @@ All other business routes require a JWT Bearer Token.
 | Observability | Trace, span, trace completion, metric recording, and metric query routes |
 | Verification | Verification report, report query, review assignment, and review completion routes |
 
-Frontend API Workbench metadata lives in `frontend/src/lib/operations.ts`. It groups operations by MetaOrg, MetaResource, DeveloperTools, Finance, Dashboard, Identity, Organization, Layer, Capability, Workflow, Observability, Verification, Governance, Evolution, Requirement, Project, Delivery, Cost, and Feedback.
+Frontend API Workbench metadata lives in `frontend/src/lib/operations.ts`. It groups operations by MetaOrg, MetaResource, DeveloperTools (Model Settings), Finance, Dashboard, Identity, Organization, Layer, Capability, Workflow, Observability, Verification, Governance, Evolution, Requirement, Project, Delivery, Cost, and Feedback.
 
 ## Quick Start
 
@@ -327,7 +327,7 @@ Invoke-WebRequest -Uri http://127.0.0.1:8080/api/v1/health -UseBasicParsing -Tim
 
 The expected state is frontend `3000` and backend `8080` both in `Listen`, frontend HTTP `200`, and backend health returning `{"status":"ok"}`. To stop an old process, first confirm the `OwningProcess` from the port query, then run `Stop-Process -Id <PID> -Force` for one PID at a time.
 
-After the AI Gateway and Meta Resource refactors, startup must apply `019_costing_framework.sql`, `020_ai_gateway_internal_ops.sql`, and `021_meta_resource_pdca.sql`. If backend startup, Developer Tools, or Meta Resource fails with `column ... does not exist`, `relation model_provider_channels does not exist`, `relation ai_routing_rules does not exist`, `relation meta_resources does not exist`, or `relation demand_profiles does not exist`, the usual cause is a wrong `MIGRATIONS_PATH`, an old database in `DATABASE_URL`, or pending migrations. Confirm `DATABASE_URL`, use `MIGRATIONS_PATH=../migrations` when running from `backend/`, restart the backend, verify Developer Tools pages for Channels / Keys, Routing, and Usage Analysis, then run Sync Existing Resources in the Meta Resource workspace.
+After the AI Gateway and Meta Resource refactors, startup must apply `019_costing_framework.sql`, `020_ai_gateway_internal_ops.sql`, and `021_meta_resource_pdca.sql`. If backend startup, Model Settings, or Meta Resource fails with `column ... does not exist`, `relation model_provider_channels does not exist`, `relation ai_routing_rules does not exist`, `relation meta_resources does not exist`, or `relation demand_profiles does not exist`, the usual cause is a wrong `MIGRATIONS_PATH`, an old database in `DATABASE_URL`, or pending migrations. Confirm `DATABASE_URL`, use `MIGRATIONS_PATH=../migrations` when running from `backend/`, restart the backend, verify Model Settings pages for Channels / Keys, Routing, and Usage Analysis, then run Sync Existing Resources in the Meta Resource workspace.
 
 ## Configuration
 

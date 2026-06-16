@@ -476,12 +476,13 @@ func (r *PostgresRepository) CreatePositionAssignment(ctx context.Context, input
 	err = scanPositionAssignment(r.db.QueryRow(ctx,
 		`WITH upserted AS (
 		   INSERT INTO position_assignments (
-		     position_id, organization_id, department_id, actor_id, actor_type, assignment_type,
-		     allocation_percent, status, metadata
+		     position_id, organization_id, department_id, meta_resource_id, actor_id, actor_type,
+		     assignment_type, allocation_percent, status, metadata
 		   )
-		   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+		   VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 		   ON CONFLICT (position_id, actor_id, actor_type) WHERE status <> 'archived'
-		   DO UPDATE SET assignment_type = EXCLUDED.assignment_type,
+		   DO UPDATE SET meta_resource_id = EXCLUDED.meta_resource_id,
+		                 assignment_type = EXCLUDED.assignment_type,
 		                 allocation_percent = EXCLUDED.allocation_percent,
 		                 status = EXCLUDED.status,
 		                 metadata = EXCLUDED.metadata,
@@ -489,11 +490,19 @@ func (r *PostgresRepository) CreatePositionAssignment(ctx context.Context, input
 		   RETURNING id
 		 )
 		 `+assignmentSelectSQL()+` WHERE pa.id = (SELECT id FROM upserted)`,
-		input.PositionID, position.OrganizationID, position.DepartmentID, input.ActorID, input.ActorType,
+		input.PositionID, position.OrganizationID, position.DepartmentID, input.MetaResourceID, input.ActorID, input.ActorType,
 		input.AssignmentType, input.AllocationPercent, input.Status, metadataJSON,
 	).Scan, assignment)
 	if err != nil {
 		return nil, fmt.Errorf("create position assignment: %w", err)
+	}
+	return assignment, nil
+}
+
+func (r *PostgresRepository) GetPositionAssignmentByID(ctx context.Context, id uuid.UUID) (*PositionAssignment, error) {
+	assignment := &PositionAssignment{}
+	if err := scanPositionAssignment(r.db.QueryRow(ctx, assignmentSelectSQL()+` WHERE pa.id = $1`, id).Scan, assignment); err != nil {
+		return nil, fmt.Errorf("get position assignment: %w", err)
 	}
 	return assignment, nil
 }
@@ -530,13 +539,14 @@ func (r *PostgresRepository) UpdatePositionAssignment(ctx context.Context, id uu
 	}
 	_, err = r.db.Exec(ctx,
 		`UPDATE position_assignments SET
-		 assignment_type = COALESCE(NULLIF($2, ''), assignment_type),
-		 allocation_percent = COALESCE($3, allocation_percent),
-		 status = COALESCE(NULLIF($4, ''), status),
-		 metadata = COALESCE($5::jsonb, metadata),
+		 meta_resource_id = COALESCE($2, meta_resource_id),
+		 assignment_type = COALESCE(NULLIF($3, ''), assignment_type),
+		 allocation_percent = COALESCE($4, allocation_percent),
+		 status = COALESCE(NULLIF($5, ''), status),
+		 metadata = COALESCE($6::jsonb, metadata),
 		 updated_at = NOW()
 		 WHERE id = $1`,
-		id, input.AssignmentType, input.AllocationPercent, input.Status, metadataJSON,
+		id, input.MetaResourceID, input.AssignmentType, input.AllocationPercent, input.Status, metadataJSON,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update position assignment: %w", err)
@@ -880,6 +890,9 @@ func assignmentSelectSQL() string {
 		pa.position_id,
 		pa.organization_id,
 		pa.department_id,
+		pa.meta_resource_id,
+		COALESCE(mr.name, '') AS meta_resource_name,
+		COALESCE(mr.resource_type, '') AS meta_resource_type,
 		pa.actor_id,
 		pa.actor_type,
 		COALESCE(u.name, em.name, aa.name, '') AS actor_name,
@@ -891,6 +904,7 @@ func assignmentSelectSQL() string {
 		pa.created_at,
 		pa.updated_at
 	 FROM position_assignments pa
+	 LEFT JOIN meta_resources mr ON mr.id = pa.meta_resource_id
 	 LEFT JOIN users u ON pa.actor_type = 'internal_human' AND u.id = pa.actor_id
 	 LEFT JOIN external_members em ON pa.actor_type = 'external_human' AND em.id = pa.actor_id
 	 LEFT JOIN ai_agents aa ON pa.actor_type IN ('internal_agent', 'external_agent') AND aa.id = pa.actor_id`
@@ -903,6 +917,9 @@ func scanPositionAssignment(scan scanFunc, assignment *PositionAssignment) error
 		&assignment.PositionID,
 		&assignment.OrganizationID,
 		&assignment.DepartmentID,
+		&assignment.MetaResourceID,
+		&assignment.MetaResourceName,
+		&assignment.MetaResourceType,
 		&assignment.ActorID,
 		&assignment.ActorType,
 		&assignment.ActorName,

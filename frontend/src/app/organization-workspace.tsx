@@ -14,7 +14,7 @@ import {
 } from 'lucide-react'
 import { FormEvent, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
-import { apiRequest, type AIAgent } from '@/lib/api'
+import { apiRequest, type AIAgent, type MetaResource } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 
 interface OrganizationWorkspaceProps {
@@ -61,10 +61,29 @@ interface Position {
 interface PositionAssignment {
   id: string
   position_id: string
+  meta_resource_id?: string
+  meta_resource_name?: string
+  meta_resource_type?: string
   actor_id: string
   actor_type: 'internal_human' | 'external_human' | 'internal_agent' | 'external_agent'
   actor_name?: string
   assignment_type: string
+  allocation_percent: number
+  status: string
+}
+
+interface TaskMatrixAssignment {
+  id: string
+  task_id: string
+  position_id: string
+  position_name?: string
+  position_assignment_id?: string
+  meta_resource_id: string
+  meta_resource_name?: string
+  meta_resource_type?: string
+  actor_id: string
+  actor_type: string
+  role_in_task: string
   allocation_percent: number
   status: string
 }
@@ -150,6 +169,7 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
   const [members, setMembers] = useState<OrganizationMembership[]>([])
   const [externalMembers, setExternalMembers] = useState<ExternalMember[]>([])
   const [agents, setAgents] = useState<AIAgent[]>([])
+  const [metaResources, setMetaResources] = useState<MetaResource[]>([])
   const [orgForm, setOrgForm] = useState(emptyOrgForm)
   const [departmentForm, setDepartmentForm] = useState(emptyDepartmentForm)
   const [positionForm, setPositionForm] = useState(emptyPositionForm)
@@ -167,14 +187,23 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
   const [positionAssignmentForm, setPositionAssignmentForm] = useState<{
     actor_type: PositionAssignment['actor_type']
     actor_id: string
+    meta_resource_id: string
     assignment_type: string
     allocation_percent: string
   }>({
     actor_type: 'internal_human',
     actor_id: currentUserId ?? '',
+    meta_resource_id: '',
     assignment_type: 'candidate',
     allocation_percent: '100',
   })
+  const [taskMatrixForm, setTaskMatrixForm] = useState({
+    task_id: '',
+    position_assignment_id: '',
+    role_in_task: 'owner',
+    allocation_percent: '100',
+  })
+  const [taskMatrixAssignments, setTaskMatrixAssignments] = useState<TaskMatrixAssignment[]>([])
   const [agentPrompt, setAgentPrompt] = useState('')
   const [agentPlan, setAgentPlan] = useState<AgentPlan | null>(null)
   const [matchTask, setMatchTask] = useState('review launch readiness')
@@ -215,6 +244,22 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
     }
     return currentUserId ? [{ id: currentUserId, label: t('当前登录用户') }] : []
   }, [agents, currentUserId, externalMembers, positionAssignmentForm.actor_type, t])
+  const assignmentMetaOptions = useMemo(
+    () =>
+      asArray<MetaResource>(metaResources).filter(
+        (resource) =>
+          metaResourceMatchesActor(resource, positionAssignmentForm.actor_type) &&
+          (!positionAssignmentForm.actor_id ||
+            resource.owner_actor_id === positionAssignmentForm.actor_id ||
+            resource.source_id === positionAssignmentForm.actor_id ||
+            (!resource.owner_actor_id && !resource.source_id)),
+      ),
+    [metaResources, positionAssignmentForm.actor_id, positionAssignmentForm.actor_type],
+  )
+  const matrixAssignmentOptions = useMemo(
+    () => asArray<PositionAssignment>(positionAssignments).filter((assignment) => assignment.meta_resource_id && assignment.status !== 'archived'),
+    [positionAssignments],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -255,6 +300,14 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
       })
       .catch(() => {
         if (!cancelled) setAgents([])
+      })
+
+    apiRequest<MetaResource[]>('/meta-resources?limit=200&status=active', { token })
+      .then((data) => {
+        if (!cancelled) setMetaResources(asArray<MetaResource>(data))
+      })
+      .catch(() => {
+        if (!cancelled) setMetaResources([])
       })
 
     return () => {
@@ -306,7 +359,12 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
 
     apiRequest<PositionAssignment[]>(`/positions/${selectedPositionId}/assignments`, { token })
       .then((data) => {
-        if (!cancelled) setPositionAssignments(asArray<PositionAssignment>(data))
+        if (!cancelled) {
+          const assignments = asArray<PositionAssignment>(data)
+          setPositionAssignments(assignments)
+          const first = assignments.find((assignment) => assignment.meta_resource_id && assignment.status !== 'archived')
+          if (first) setTaskMatrixForm((current) => ({ ...current, position_assignment_id: current.position_assignment_id || first.id }))
+        }
       })
       .catch(() => {
         if (!cancelled) setPositionAssignments([])
@@ -384,7 +442,7 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
         : actorType === 'external_human'
           ? asArray<ExternalMember>(externalMembers)[0]?.id ?? ''
           : asArray<AIAgent>(agents).find((agent) => agent.agent_origin === (actorType === 'internal_agent' ? 'internal' : 'external'))?.id ?? ''
-    setPositionAssignmentForm((current) => ({ ...current, actor_type: actorType, actor_id: nextActorId }))
+    setPositionAssignmentForm((current) => ({ ...current, actor_type: actorType, actor_id: nextActorId, meta_resource_id: '' }))
   }
 
   async function loadOrganizations() {
@@ -432,7 +490,10 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
       return
     }
     const data = await apiRequest<PositionAssignment[]>(`/positions/${positionId}/assignments`, { token })
-    setPositionAssignments(asArray<PositionAssignment>(data))
+    const assignments = asArray<PositionAssignment>(data)
+    setPositionAssignments(assignments)
+    const first = assignments.find((assignment) => assignment.meta_resource_id && assignment.status !== 'archived')
+    if (first) setTaskMatrixForm((current) => ({ ...current, position_assignment_id: current.position_assignment_id || first.id }))
   }
 
   async function createOrganization(event: FormEvent<HTMLFormElement>) {
@@ -552,12 +613,13 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
 
   async function assignPosition(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (!selectedPositionId || !positionAssignmentForm.actor_id) return
+    if (!selectedPositionId || !positionAssignmentForm.actor_id || !positionAssignmentForm.meta_resource_id) return
     await runAction(async () => {
       await apiRequest<PositionAssignment>(`/positions/${selectedPositionId}/assignments`, {
         method: 'POST',
         token,
         body: {
+          meta_resource_id: positionAssignmentForm.meta_resource_id,
           actor_id: positionAssignmentForm.actor_id,
           actor_type: positionAssignmentForm.actor_type,
           assignment_type: positionAssignmentForm.assignment_type,
@@ -578,6 +640,44 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
       await apiRequest(`/position-assignments/${id}`, { method: 'DELETE', token })
       await loadPositionAssignments()
     }, '岗位适配已移除')
+  }
+
+  async function loadTaskMatrixAssignments(taskId = taskMatrixForm.task_id) {
+    if (!taskId.trim()) {
+      setTaskMatrixAssignments([])
+      return
+    }
+    const data = await apiRequest<TaskMatrixAssignment[]>(`/tasks/${taskId.trim()}/matrix-assignments`, { token })
+    setTaskMatrixAssignments(asArray<TaskMatrixAssignment>(data))
+  }
+
+  async function createTaskMatrixAssignment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const selectedAssignment = matrixAssignmentOptions.find((assignment) => assignment.id === taskMatrixForm.position_assignment_id)
+    if (!taskMatrixForm.task_id.trim() || !selectedPositionId || !selectedAssignment?.meta_resource_id) return
+    await runAction(async () => {
+      await apiRequest<TaskMatrixAssignment>(`/tasks/${taskMatrixForm.task_id.trim()}/matrix-assignments`, {
+        method: 'POST',
+        token,
+        body: {
+          position_id: selectedPositionId,
+          position_assignment_id: selectedAssignment.id,
+          meta_resource_id: selectedAssignment.meta_resource_id,
+          role_in_task: taskMatrixForm.role_in_task,
+          allocation_percent: Number(taskMatrixForm.allocation_percent) || 100,
+          status: 'active',
+          metadata: {},
+        },
+      })
+      await loadTaskMatrixAssignments(taskMatrixForm.task_id)
+    }, '任务矩阵已更新')
+  }
+
+  async function removeTaskMatrixAssignment(id: string) {
+    await runAction(async () => {
+      await apiRequest(`/task-matrix-assignments/${id}`, { method: 'DELETE', token })
+      await loadTaskMatrixAssignments(taskMatrixForm.task_id)
+    }, '任务矩阵已移除')
   }
 
   async function createExternalMember(event: FormEvent<HTMLFormElement>) {
@@ -995,12 +1095,27 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
                     onChange={(value) => setPositionAssignmentForm({ ...positionAssignmentForm, actor_id: value })}
                   />
                 )}
+                <label className="block">
+                  <span className="text-sm font-medium text-slate-700">{t('承接 Meta')}</span>
+                  <select
+                    value={positionAssignmentForm.meta_resource_id}
+                    onChange={(event) => setPositionAssignmentForm({ ...positionAssignmentForm, meta_resource_id: event.target.value })}
+                    className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                  >
+                    <option value="">{t('请选择 Meta 资源')}</option>
+                    {assignmentMetaOptions.map((resource) => (
+                      <option key={resource.id} value={resource.id}>
+                        {resource.name} · {t(resource.resource_type)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
                 <TextInput
                   label="投入比例"
                   value={positionAssignmentForm.allocation_percent}
                   onChange={(value) => setPositionAssignmentForm({ ...positionAssignmentForm, allocation_percent: value })}
                 />
-                <SubmitButton loading={loading || !selectedPositionId} label="保存岗位适配" />
+                <SubmitButton loading={loading || !selectedPositionId || !positionAssignmentForm.meta_resource_id} label="保存岗位适配" />
               </form>
 
               <div className="space-y-2 border-t border-slate-200 pt-4">
@@ -1011,6 +1126,10 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
                       <p className="truncate text-sm font-semibold text-slate-950">{assignment.actor_name || assignment.actor_id}</p>
                       <p className="mt-1 text-xs text-slate-500">
                         {t(assignment.actor_type)} · {t(assignment.assignment_type)} · {assignment.allocation_percent}%
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {t('承接 Meta')}：{assignment.meta_resource_name || assignment.meta_resource_id || t('未绑定')}
+                        {assignment.meta_resource_type ? ` · ${t(assignment.meta_resource_type)}` : ''}
                       </p>
                     </div>
                     <button
@@ -1024,6 +1143,94 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
                 ))}
                 {asArray<PositionAssignment>(positionAssignments).length === 0 && (
                   <p className="text-sm text-slate-500">{t('暂无岗位适配')}</p>
+                )}
+              </div>
+            </div>
+          </Panel>
+
+          <Panel icon={GitBranch} title="任务矩阵">
+            <div className="space-y-4">
+              <form className="space-y-3" onSubmit={createTaskMatrixAssignment}>
+                <TextInput
+                  label="任务 ID"
+                  value={taskMatrixForm.task_id}
+                  onChange={(value) => setTaskMatrixForm({ ...taskMatrixForm, task_id: value })}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void loadTaskMatrixAssignments()}
+                    disabled={!taskMatrixForm.task_id.trim() || loading}
+                    className="inline-flex h-10 items-center gap-2 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <RefreshCw className="h-4 w-4" />
+                    {t('加载任务矩阵')}
+                  </button>
+                </div>
+                <label className="block">
+                  <span className="text-sm font-medium text-slate-700">{t('岗位 Meta 任命')}</span>
+                  <select
+                    value={taskMatrixForm.position_assignment_id}
+                    onChange={(event) => setTaskMatrixForm({ ...taskMatrixForm, position_assignment_id: event.target.value })}
+                    className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                  >
+                    <option value="">{t('请选择岗位 Meta 任命')}</option>
+                    {matrixAssignmentOptions.map((assignment) => (
+                      <option key={assignment.id} value={assignment.id}>
+                        {assignment.meta_resource_name || assignment.actor_name || assignment.actor_id} · {t(assignment.assignment_type)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="text-sm font-medium text-slate-700">{t('任务角色')}</span>
+                    <select
+                      value={taskMatrixForm.role_in_task}
+                      onChange={(event) => setTaskMatrixForm({ ...taskMatrixForm, role_in_task: event.target.value })}
+                      className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                    >
+                      <option value="owner">{t('owner')}</option>
+                      <option value="reviewer">{t('reviewer')}</option>
+                      <option value="support">{t('support')}</option>
+                      <option value="observer">{t('observer')}</option>
+                    </select>
+                  </label>
+                  <TextInput
+                    label="投入比例"
+                    value={taskMatrixForm.allocation_percent}
+                    onChange={(value) => setTaskMatrixForm({ ...taskMatrixForm, allocation_percent: value })}
+                  />
+                </div>
+                <SubmitButton
+                  loading={loading || !selectedPositionId || !taskMatrixForm.task_id.trim() || !taskMatrixForm.position_assignment_id}
+                  label="写入任务矩阵"
+                />
+              </form>
+
+              <div className="space-y-2 border-t border-slate-200 pt-4">
+                <p className="text-sm font-semibold text-slate-950">{t('当前任务矩阵')}</p>
+                {asArray<TaskMatrixAssignment>(taskMatrixAssignments).map((assignment) => (
+                  <div key={assignment.id} className="grid gap-2 rounded-lg border border-slate-200 p-3 sm:grid-cols-[1fr_auto]">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-slate-950">
+                        {assignment.meta_resource_name || assignment.meta_resource_id}
+                      </p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        {t(assignment.role_in_task)} · {assignment.position_name || assignment.position_id} · {assignment.allocation_percent}%
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeTaskMatrixAssignment(assignment.id)}
+                      className="h-9 rounded-lg border border-red-200 px-3 text-sm font-medium text-red-700 hover:bg-red-50"
+                    >
+                      {t('移除')}
+                    </button>
+                  </div>
+                ))}
+                {asArray<TaskMatrixAssignment>(taskMatrixAssignments).length === 0 && (
+                  <p className="text-sm text-slate-500">{t('暂无任务矩阵')}</p>
                 )}
               </div>
             </div>
@@ -1554,6 +1761,14 @@ function splitCsv(value: string): string[] {
     .split(',')
     .map((item) => item.trim())
     .filter(Boolean)
+}
+
+function metaResourceMatchesActor(resource: MetaResource, actorType: PositionAssignment['actor_type']): boolean {
+  if (actorType === 'internal_human') return resource.resource_type === 'internal_human' || resource.resource_type === 'human'
+  if (actorType === 'external_human') return resource.resource_type === 'external_human'
+  if (actorType === 'internal_agent') return resource.resource_type === 'internal_agent' || resource.resource_type === 'agent'
+  if (actorType === 'external_agent') return resource.resource_type === 'external_agent'
+  return false
 }
 
 function asArray<T>(value: T[] | null | undefined): T[] {

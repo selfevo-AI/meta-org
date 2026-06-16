@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/aigateway"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/assistant"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/capability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/costing"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/dashboard"
@@ -66,11 +67,16 @@ func main() {
 	evoSvc := evolution.NewService(evoRepo)
 	evoHandler := evolution.NewHandler(evoSvc)
 
+	metaResourceRepo := metaresource.NewRepository(db)
+	metaResourceSvc := metaresource.NewService(metaResourceRepo)
+	metaResourceHandler := metaresource.NewHandler(metaResourceSvc)
+
 	orgRepo := organization.NewRepository(db)
 	orgSvc := organization.NewService(
 		orgRepo,
 		organization.WithGovernanceService(govSvc),
 		organization.WithEvolutionService(evoSvc),
+		organization.WithMetaResourceService(metaResourceSvc),
 	)
 	orgHandler := organization.NewHandler(orgSvc)
 
@@ -93,10 +99,6 @@ func main() {
 	metaRepo := metaorg.NewRepository(db)
 	metaSvc := metaorg.NewService(metaRepo)
 	metaHandler := metaorg.NewHandler(metaSvc)
-
-	metaResourceRepo := metaresource.NewRepository(db)
-	metaResourceSvc := metaresource.NewService(metaResourceRepo)
-	metaResourceHandler := metaresource.NewHandler(metaResourceSvc)
 
 	obsRepo := observability.NewRepository(db)
 	obsSvc := observability.NewService(obsRepo)
@@ -126,8 +128,12 @@ func main() {
 	financeHandler := finance.NewHandler(financeSvc)
 
 	toolRepo := toolruntime.NewRepository(db)
-	toolSvc := toolruntime.NewService(toolRepo, govSvc, toolruntime.InternalTools(projectSvc, financeSvc), toolruntime.WithObservability(obsSvc))
+	toolSvc := toolruntime.NewService(toolRepo, govSvc, toolruntime.InternalTools(projectSvc, financeSvc, evoSvc), toolruntime.WithObservability(obsSvc))
 	toolHandler := toolruntime.NewHandler(toolSvc)
+
+	assistantRepo := assistant.NewRepository(db)
+	assistantSvc := assistant.NewService(assistantRepo, aiSvc, toolSvc)
+	assistantHandler := assistant.NewHandler(assistantSvc)
 
 	verRepo := verification.NewRepository(db)
 	verSvc := verification.NewService(verRepo)
@@ -144,6 +150,7 @@ func main() {
 		DashboardHandler:     dashHandler,
 		MetaOrgHandler:       metaHandler,
 		MetaResourceHandler:  metaResourceHandler,
+		AssistantHandler:     assistantHandler,
 		AIGatewayHandler:     aiHandler,
 		WorkflowHandler:      wfHandler,
 		ProjectHandler:       projectHandler,

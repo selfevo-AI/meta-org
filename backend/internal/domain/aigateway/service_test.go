@@ -3,6 +3,8 @@ package aigateway
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/google/uuid"
@@ -85,6 +87,46 @@ func TestServiceInvokeRecordsFailedUsage(t *testing.T) {
 	}
 	if repo.lastLedger.Amount != 0 {
 		t.Fatalf("failed ledger amount = %.8f, want 0", repo.lastLedger.Amount)
+	}
+}
+
+func TestServiceInvokeUsesResolvedChannelKeyForProviderRequest(t *testing.T) {
+	const channelKey = "sk-channel"
+	channelID := uuid.New()
+	repo := newFakeGatewayRepo()
+	repo.target.APIKey = channelKey
+	repo.target.ChannelID = &channelID
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Fatalf("request path = %q, want /v1/chat/completions", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+channelKey {
+			t.Fatalf("authorization header = %q, want channel key", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"req-1","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":2}}`))
+	}))
+	defer server.Close()
+	repo.target.BaseURL = server.URL
+
+	svc := NewService(repo, nil)
+	resp, err := svc.Invoke(context.Background(), InvokeInput{
+		ProviderType: ProviderOpenAI,
+		Model:        "gpt-test",
+		Messages:     []Message{{Role: "user", Content: "hi"}},
+	})
+	if err != nil {
+		t.Fatalf("Invoke returned error: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("content = %q, want ok", resp.Content)
+	}
+	if resp.ChannelID == nil || *resp.ChannelID != channelID {
+		t.Fatalf("channel id = %v, want %s", resp.ChannelID, channelID)
+	}
+	if repo.lastLedger.ChannelID == nil || *repo.lastLedger.ChannelID != channelID {
+		t.Fatalf("ledger channel id = %v, want %s", repo.lastLedger.ChannelID, channelID)
 	}
 }
 

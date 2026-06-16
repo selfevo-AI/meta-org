@@ -27,6 +27,10 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Patch("/workflows/instances/{id}/status", h.updateStatus)
 	r.Patch("/tasks/{id}/status", h.completeTask)
 	r.Post("/tasks/{id}/decisions", h.recordDecision)
+	r.Get("/tasks/{id}/matrix-assignments", h.listTaskMatrixAssignments)
+	r.Post("/tasks/{id}/matrix-assignments", h.createTaskMatrixAssignment)
+	r.Patch("/task-matrix-assignments/{id}", h.updateTaskMatrixAssignment)
+	r.Delete("/task-matrix-assignments/{id}", h.removeTaskMatrixAssignment)
 	r.Get("/workflows/instances/{id}/context", h.getContext)
 	r.Put("/workflows/instances/{id}/context", h.updateContext)
 }
@@ -143,6 +147,79 @@ func (h *Handler) completeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "task completed"})
+}
+
+func (h *Handler) listTaskMatrixAssignments(w http.ResponseWriter, r *http.Request) {
+	taskID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid task id"})
+		return
+	}
+	items, err := h.service.ListTaskMatrixAssignments(r.Context(), taskID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func (h *Handler) createTaskMatrixAssignment(w http.ResponseWriter, r *http.Request) {
+	taskID, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid task id"})
+		return
+	}
+	var input CreateTaskMatrixAssignmentInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	item, err := h.service.CreateTaskMatrixAssignment(r.Context(), taskID, input)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrValidation) {
+			status = http.StatusBadRequest
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, item)
+}
+
+func (h *Handler) updateTaskMatrixAssignment(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid matrix assignment id"})
+		return
+	}
+	var input UpdateTaskMatrixAssignmentInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	item, err := h.service.UpdateTaskMatrixAssignment(r.Context(), id, input)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrValidation) {
+			status = http.StatusBadRequest
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (h *Handler) removeTaskMatrixAssignment(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid matrix assignment id"})
+		return
+	}
+	if err := h.service.RemoveTaskMatrixAssignment(r.Context(), id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "removed"})
 }
 
 func (h *Handler) recordDecision(w http.ResponseWriter, r *http.Request) {

@@ -4,7 +4,7 @@
 
 Meta-Org 是一个面向混合人力组织的 AI 原生组织操作平台。它把人类员工、AI Agent、外部协作者、组织结构、项目交付、治理规则和持续学习机制放进同一套运行系统中，用于支持从需求进入、项目组建、工作流执行、交付验收、成本归集到反馈沉淀的完整业务闭环。
 
-项目基于 **ETCLOVG** 框架构建：Execution、Tooling、Context、Lifecycle、Observability、Verification、Governance。当前仓库已经包含 Go 后端、Next.js 前端、PostgreSQL 迁移、Docker Compose 编排、JWT 鉴权、Meta-Org 首页、Meta Resource / PDCA 工作台、组织/项目工作台、Developer Tools、AI Gateway、工具运行闭环、成本核算和通用财务导出。
+项目基于 **ETCLOVG** 框架构建：Execution、Tooling、Context、Lifecycle、Observability、Verification、Governance。当前仓库已经包含 Go 后端、Next.js 前端、PostgreSQL 迁移、Docker Compose 编排、JWT 鉴权、Meta-Org 首页、Meta Resource / PDCA 工作台、组织/项目工作台、模型设置、AI Gateway、工具运行闭环、成本核算和通用财务导出。
 
 ## 项目目标
 
@@ -72,7 +72,7 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 - Tool Runtime 支持工具注册、治理决策、审批策略、执行审计和内部工具调用。
 - Meta Resource 支持同步现有人类、外部成员、Agent、模型通道、工具和能力资源，统一沉淀能力、成本、容量和风险画像。
 - Demand Profile 和 PDCA Cycle 支持把需求约束、资源适配、计划、执行、改变和接受事件显式记录为可查询对象。
-- Developer Tools 提供模型供应商、模型目录、工具注册表、接口文件、调用日志和成本汇总视图。
+- 模型设置提供模型供应商、模型目录、工具注册表、接口文件、调用日志和成本汇总视图。
 - 财务导出支持通用财务适配器、HMAC/Bearer 鉴权、导出批次、Webhook 回调和对账差异。
 
 ### 前端工作台
@@ -88,9 +88,9 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 - 组织工作台：组织、部门、岗位、成员、外部成员、岗位任命、MVRU 关联和匹配。
 - 控制工作台：治理、权重、能力评估、工作流设计、工作流匹配。
 - 项目生命周期工作台：需求、项目、交付、成本和反馈。
-- Developer Tools：模型供应商、模型目录、工具注册表、接口文件、调用日志和成本汇总。
+- 模型设置：模型供应商、模型目录、工具注册表、接口文件、调用日志和成本汇总。
 - Finance Exports：财务适配器、导出批次、对账和失败回调。
-- 上下文 AI 助手：支持 Meta-Org、组织、项目、治理和开发者工具场景的流式调用与成本展示。
+- 上下文 AI 助手：支持 Meta-Org、组织、项目、治理和模型设置场景的流式调用与成本展示。
 - API Workbench：按域浏览和调用后端 API，支持路径参数、查询参数、请求体模板和认证 Token。
 
 ## 技术架构
@@ -223,7 +223,7 @@ Meta-Org 要解决的问题不是单点任务管理，而是“组织如何在 A
 | Observability | Trace、Span、Trace 完成、Metric 写入和查询接口 |
 | Verification | 验证报告、报告查询、评审分配和评审完成接口 |
 
-前端的 API Workbench 元数据位于 `frontend/src/lib/operations.ts`，它按 MetaOrg、MetaResource、DeveloperTools、Finance、Dashboard、Identity、Organization、Layer、Capability、Workflow、Observability、Verification、Governance、Evolution、Requirement、Project、Delivery、Cost、Feedback 等操作域组织。
+前端的 API Workbench 元数据位于 `frontend/src/lib/operations.ts`，它按 MetaOrg、MetaResource、DeveloperTools（模型设置）、Finance、Dashboard、Identity、Organization、Layer、Capability、Workflow、Observability、Verification、Governance、Evolution、Requirement、Project、Delivery、Cost、Feedback 等操作域组织。
 
 ## 快速开始
 
@@ -327,12 +327,12 @@ Invoke-WebRequest -Uri http://127.0.0.1:8080/api/v1/health -UseBasicParsing -Tim
 
 成功状态应为前端 `3000` 和后端 `8080` 都处于 `Listen`，前端返回 HTTP `200`，后端 health 返回 `{"status":"ok"}`。如果需要停止旧进程，先用上面的端口查询确认 `OwningProcess`，再对单个 PID 执行 `Stop-Process -Id <PID> -Force`。
 
-AI Gateway 和 Meta Resource 重构后启动必须确认 `019_costing_framework.sql`、`020_ai_gateway_internal_ops.sql` 和 `021_meta_resource_pdca.sql` 已执行。若后端启动、Developer Tools 或 Meta Resource 页面出现 `column ... does not exist`、`relation model_provider_channels does not exist`、`relation ai_routing_rules does not exist`、`relation meta_resources does not exist`、`relation demand_profiles does not exist`，通常是 `MIGRATIONS_PATH` 指向错误、连接到了旧数据库，或迁移尚未执行。处理顺序：
+AI Gateway 和 Meta Resource 重构后启动必须确认 `019_costing_framework.sql`、`020_ai_gateway_internal_ops.sql` 和 `021_meta_resource_pdca.sql` 已执行。若后端启动、模型设置或 Meta Resource 页面出现 `column ... does not exist`、`relation model_provider_channels does not exist`、`relation ai_routing_rules does not exist`、`relation meta_resources does not exist`、`relation demand_profiles does not exist`，通常是 `MIGRATIONS_PATH` 指向错误、连接到了旧数据库，或迁移尚未执行。处理顺序：
 
 1. 确认 `DATABASE_URL` 指向当前 `meta_org` 数据库。
 2. 确认从 `backend/` 本地运行时使用 `MIGRATIONS_PATH=../migrations`。
 3. 重启后端，让迁移器执行到 `021`。
-4. 再打开 Developer Tools，检查 Channels / Keys、Routing、Usage Analysis 页面是否能加载。
+4. 再打开模型设置，检查 Channels / Keys、Routing、Usage Analysis 页面是否能加载。
 5. 打开 Meta Resource 工作区，先执行一次“同步现有资源”，确认 human、agent、external_human、model_channel、tool、capability 资源能进入统一资源视图。
 
 ## 配置

@@ -2,9 +2,17 @@
 
 import { Bot, CircleStop, Send, Sparkles, Wrench } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { API_BASE, getAIInvocation, listProviderChannels, type CostBreakdown, type ProviderChannel } from '@/lib/api'
+import {
+  API_BASE,
+  createAssistantSession,
+  getAIInvocation,
+  listProviderChannels,
+  type AssistantStep,
+  type CostBreakdown,
+  type ProviderChannel,
+} from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
-import { streamSSE } from '@/lib/stream'
+import { streamSSEPost } from '@/lib/stream'
 
 type AssistantState =
   | 'idle'
@@ -17,9 +25,12 @@ type AssistantState =
 
 interface GatewayStreamData {
   invocation_id?: string
+  type?: string
   delta?: string
   error?: string
   done?: boolean
+  step?: AssistantStep
+  data?: Record<string, unknown>
   estimated_cost_amount?: number
   cost_amount?: number
   currency?: string
@@ -63,18 +74,36 @@ interface AssistantCost {
 
 interface AIAssistantProps {
   token: string
-  contextType: 'meta_org' | 'requirement' | 'project' | 'organization' | 'governance' | 'developer_tools'
+  contextType:
+    | 'meta_org'
+    | 'business_process'
+    | 'requirement'
+    | 'project'
+    | 'organization'
+    | 'governance'
+    | 'model_settings'
+    | 'self_evolution'
   contextID?: string
   className?: string
 }
 
 const contextActions: Record<AIAssistantProps['contextType'], string[]> = {
   meta_org: ['assistant.action.summarizeHealth', 'assistant.action.reviewRisks'],
+  business_process: ['assistant.action.processNextStep', 'assistant.action.reviewRisks'],
   requirement: ['assistant.action.analyzeRequirement', 'assistant.action.acceptanceCriteria'],
   project: ['assistant.action.recommendMembers', 'assistant.action.generateWorkflow', 'assistant.action.estimateCost'],
   organization: ['assistant.action.suggestPositions', 'assistant.action.capabilityGaps'],
   governance: ['assistant.action.explainDecision', 'assistant.action.proposeRule'],
-  developer_tools: ['assistant.action.testProviders', 'assistant.action.inspectSchemas'],
+  model_settings: ['assistant.action.testProviders', 'assistant.action.inspectSchemas'],
+  self_evolution: ['assistant.action.evolutionSignal', 'assistant.action.evolutionKnowledge'],
+}
+
+function assistantModule(contextType: AIAssistantProps['contextType']): string {
+  return contextType
+}
+
+function assistantMode(contextType: AIAssistantProps['contextType']): 'business_process' | 'self_evolution' {
+  return contextType === 'self_evolution' ? 'self_evolution' : 'business_process'
 }
 
 function completedState(current: AssistantState): AssistantState {
@@ -93,12 +122,15 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
   const [preferredChannelID, setPreferredChannelID] = useState('')
   const [serviceTier, setServiceTier] = useState('')
   const [reasoningEffort, setReasoningEffort] = useState('')
+  const [positionID, setPositionID] = useState('')
+  const [positionAssignmentID, setPositionAssignmentID] = useState('')
   const [channels, setChannels] = useState<ProviderChannel[]>([])
   const [prompt, setPrompt] = useState('')
   const [state, setState] = useState<AssistantState>('idle')
   const [output, setOutput] = useState('')
   const [events, setEvents] = useState<AssistantEvent[]>([])
   const [invocationID, setInvocationID] = useState('')
+  const [sessionID, setSessionID] = useState('')
   const [usage, setUsage] = useState<AssistantUsage>({})
   const [cost, setCost] = useState<AssistantCost>({ currency: 'CNY' })
   const [channelName, setChannelName] = useState('')
@@ -128,12 +160,13 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
     setOutput('')
     setEvents([])
     setInvocationID('')
+    setSessionID('')
     setUsage({})
     setCost({ currency: 'CNY' })
     setChannelName('')
     let currentInvocationID = ''
 
-    const message = [
+    const scopedMessage = [
       t('assistant.contextLabel'),
       contextType,
       contextID ? `${t('assistant.contextId')}: ${contextID}` : '',
@@ -142,24 +175,38 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
       .filter(Boolean)
       .join('\n')
 
-    const params = new URLSearchParams({
-      provider_type: providerType,
-      model,
-      message,
-      source_surface: contextType,
-    })
-    if (preferredChannelID) params.set('preferred_channel_id', preferredChannelID)
-    if (serviceTier) params.set('service_tier', serviceTier)
-    if (reasoningEffort) params.set('reasoning_effort', reasoningEffort)
-
     try {
-      await streamSSE<GatewayStreamData>(
-        `${API_BASE}/ai-gateway/stream?${params.toString()}`,
+      const session = await createAssistantSession(token, {
+        title: trimmed.slice(0, 80),
+        mode: assistantMode(contextType),
+        module_key: assistantModule(contextType),
+        provider_type: providerType,
+        model,
+        preferred_channel_id: preferredChannelID || undefined,
+        service_tier: serviceTier || undefined,
+        reasoning_effort: reasoningEffort || undefined,
+        position_id: positionID.trim() || undefined,
+        position_assignment_id: positionAssignmentID.trim() || undefined,
+        project_id: contextType === 'project' ? contextID : undefined,
+        metadata: { source_context: contextType, context_id: contextID || '' },
+      })
+      setSessionID(session.id)
+      await streamSSEPost<GatewayStreamData>(
+        `${API_BASE}/assistant/sessions/${session.id}/runs`,
         token,
+        {
+          message: scopedMessage,
+          provider_type: providerType,
+          model,
+          preferred_channel_id: preferredChannelID || undefined,
+          service_tier: serviceTier || undefined,
+          reasoning_effort: reasoningEffort || undefined,
+        },
         ({ event, data }) => {
-          if (data.invocation_id) {
-            currentInvocationID = data.invocation_id
-            setInvocationID(data.invocation_id)
+          const nextInvocationID = data.invocation_id || data.step?.invocation_id
+          if (nextInvocationID) {
+            currentInvocationID = nextInvocationID
+            setInvocationID(nextInvocationID)
           }
           if (data.delta) {
             setOutput((current) => current + data.delta)
@@ -182,8 +229,8 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
               currency: data.currency || current.currency,
             }))
           }
-          if (data.tool_call || event.startsWith('tool_call')) {
-            const toolStatus = data.tool_call?.status ?? ''
+          if (data.tool_call || data.step || event.startsWith('tool_') || event === 'approval_required' || event === 'memory_updated') {
+            const toolStatus = data.tool_call?.status ?? data.step?.status ?? ''
             if (event.includes('approval') || toolStatus === 'approval_required') {
               setState('approval_required')
             }
@@ -192,7 +239,7 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
               {
                 id: `${event}-${current.length}`,
                 event,
-                detail: data.tool_call?.name || data.tool_call?.status || t('assistant.toolCall'),
+                detail: data.step?.summary || data.tool_call?.name || data.tool_call?.status || t('assistant.toolCall'),
               },
             ])
           }
@@ -271,6 +318,14 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
 
       <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
         <label className="block">
+          <span className="text-xs font-semibold text-slate-500">{t('assistant.module')}</span>
+          <input
+            value={assistantModule(contextType)}
+            readOnly
+            className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 outline-none"
+          />
+        </label>
+        <label className="block">
           <span className="text-xs font-semibold text-slate-500">{t('assistant.provider')}</span>
           <select
             value={providerType}
@@ -330,6 +385,24 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
             <option value="high">{t('assistant.reasoning.high')}</option>
           </select>
         </label>
+        <label className="block">
+          <span className="text-xs font-semibold text-slate-500">{t('assistant.positionId')}</span>
+          <input
+            value={positionID}
+            onChange={(event) => setPositionID(event.target.value)}
+            placeholder={t('assistant.positionPlaceholder')}
+            className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+          />
+        </label>
+        <label className="block">
+          <span className="text-xs font-semibold text-slate-500">{t('assistant.positionAssignmentId')}</span>
+          <input
+            value={positionAssignmentID}
+            onChange={(event) => setPositionAssignmentID(event.target.value)}
+            placeholder={t('assistant.positionPlaceholder')}
+            className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+          />
+        </label>
       </div>
 
       <div className="mt-4 flex flex-wrap gap-2">
@@ -384,6 +457,7 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
 
       <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
         <AssistantFact label="assistant.invocation" value={invocationID || t('common.none')} />
+        <AssistantFact label="assistant.session" value={sessionID || t('common.none')} />
         <AssistantFact label="assistant.channel" value={channelName || (preferredChannelID ? channelLabels[preferredChannelID] || preferredChannelID : t('assistant.autoChannel'))} />
         <AssistantFact
           label="assistant.tokens"

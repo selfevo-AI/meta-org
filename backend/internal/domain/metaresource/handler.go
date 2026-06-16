@@ -22,6 +22,7 @@ func NewHandler(service *Service) *Handler {
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Get("/meta-resources", h.listResources)
 	r.Post("/meta-resources", h.createResource)
+	r.Get("/meta-resources/{id}", h.getResource)
 	r.Post("/meta-resources/sync-existing", h.syncExistingResources)
 	r.Get("/meta-resources/summary", h.resourceSummary)
 	r.Get("/demand-profiles", h.listDemandProfiles)
@@ -30,6 +31,20 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Post("/pdca-cycles", h.createCycle)
 	r.Get("/pdca-events", h.listEvents)
 	r.Post("/pdca-events", h.createEvent)
+}
+
+func (h *Handler) getResource(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(chi.URLParam(r, "id"))
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	item, err := h.service.GetResource(r.Context(), id)
+	if err != nil {
+		h.writeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (h *Handler) listResources(w http.ResponseWriter, r *http.Request) {

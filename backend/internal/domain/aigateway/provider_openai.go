@@ -62,7 +62,7 @@ func (a *OpenAIAdapter) headers() map[string]string {
 func (a *OpenAIAdapter) payload(req ProviderRequest, stream bool) map[string]any {
 	payload := map[string]any{
 		"model":    req.Model,
-		"messages": req.Messages,
+		"messages": openAIMessages(req.Messages),
 		"stream":   stream,
 	}
 	if req.Temperature != nil {
@@ -75,6 +75,37 @@ func (a *OpenAIAdapter) payload(req ProviderRequest, stream bool) map[string]any
 		payload["tools"] = openAITools(req.Tools)
 	}
 	return payload
+}
+
+func openAIMessages(messages []Message) []map[string]any {
+	result := make([]map[string]any, 0, len(messages))
+	for _, msg := range messages {
+		item := map[string]any{"role": msg.Role}
+		switch msg.Role {
+		case "tool":
+			item["content"] = msg.Content
+			item["tool_call_id"] = msg.ToolCallID
+		default:
+			item["content"] = msg.Content
+			if len(msg.ToolCalls) > 0 {
+				calls := make([]map[string]any, 0, len(msg.ToolCalls))
+				for i, call := range msg.ToolCalls {
+					args, _ := json.Marshal(call.Arguments)
+					calls = append(calls, map[string]any{
+						"id":   call.normalizedID(i),
+						"type": "function",
+						"function": map[string]any{
+							"name":      call.Name,
+							"arguments": string(args),
+						},
+					})
+				}
+				item["tool_calls"] = calls
+			}
+		}
+		result = append(result, item)
+	}
+	return result
 }
 
 func openAITools(tools []ToolDefinition) []map[string]any {

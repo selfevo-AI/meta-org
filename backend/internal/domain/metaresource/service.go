@@ -13,6 +13,7 @@ var ErrValidation = errors.New("validation error")
 
 type Store interface {
 	CreateResource(ctx context.Context, input CreateMetaResourceInput) (*MetaResource, error)
+	GetResource(ctx context.Context, id uuid.UUID) (*MetaResource, error)
 	ListResources(ctx context.Context, filter ListFilter) ([]MetaResource, error)
 	ResourceSummary(ctx context.Context, limit int) (*ResourceSummary, error)
 	CreateDemandProfile(ctx context.Context, input CreateDemandProfileInput) (*DemandProfile, error)
@@ -51,6 +52,13 @@ func (s *Service) ListResources(ctx context.Context, filter ListFilter) ([]MetaR
 	filter.ResourceType = normalize(filter.ResourceType)
 	filter.Status = normalize(filter.Status)
 	return s.store.ListResources(ctx, filter)
+}
+
+func (s *Service) GetResource(ctx context.Context, id uuid.UUID) (*MetaResource, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: id is required", ErrValidation)
+	}
+	return s.store.GetResource(ctx, id)
 }
 
 func (s *Service) ResourceSummary(ctx context.Context, limit int) (*ResourceSummary, error) {
@@ -120,7 +128,7 @@ func normalize(value string) string {
 
 func validResourceType(value string) bool {
 	switch value {
-	case ResourceHuman, ResourceExternal, ResourceAgent, ResourceModelChannel, ResourceTool, ResourceMaterial, ResourceTime, ResourceCapability, ResourceBudget, "resource":
+	case ResourceHuman, ResourceInternalHuman, ResourceExternal, ResourceAgent, ResourceInternalAgent, ResourceExternalAgent, ResourceModelChannel, ResourceTool, ResourceMaterial, ResourceTime, ResourceCapability, ResourceBudget, "resource":
 		return true
 	default:
 		return false

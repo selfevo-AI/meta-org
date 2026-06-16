@@ -73,6 +73,21 @@ func (r *Repository) ListResources(ctx context.Context, filter ListFilter) ([]Me
 	return scanResources(rows)
 }
 
+func (r *Repository) GetResource(ctx context.Context, id uuid.UUID) (*MetaResource, error) {
+	item := &MetaResource{}
+	err := scanResource(r.db.QueryRow(ctx, `
+		SELECT id, resource_type, source_type, source_id, name, status, organization_id, department_id,
+			owner_actor_id, owner_actor_type, capability_profile, cost_profile, capacity_profile,
+			risk_profile, performance_profile, metadata, created_at, updated_at
+		FROM meta_resources
+		WHERE id = $1
+	`, id), item)
+	if err != nil {
+		return nil, fmt.Errorf("get meta resource: %w", err)
+	}
+	return item, nil
+}
+
 func (r *Repository) ResourceSummary(ctx context.Context, limit int) (*ResourceSummary, error) {
 	summary := &ResourceSummary{
 		ByType:   map[string]int{},
@@ -279,9 +294,9 @@ func (r *Repository) SyncExistingResources(ctx context.Context) (map[string]int,
 		key string
 		sql string
 	}{
-		{"human", `
+		{"internal_human", `
 			INSERT INTO meta_resources (resource_type, source_type, source_id, name, owner_actor_id, owner_actor_type, capability_profile, metadata)
-			SELECT 'human', 'users', id, name, id, 'internal_human',
+			SELECT 'internal_human', 'users', id, name, id, 'internal_human',
 				jsonb_build_object('roles', COALESCE((SELECT jsonb_agg(r.name) FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = users.id), '[]'::jsonb)),
 				jsonb_build_object('email', email)
 			FROM users
@@ -290,7 +305,9 @@ func (r *Repository) SyncExistingResources(ctx context.Context) (map[string]int,
 		`},
 		{"agent", `
 			INSERT INTO meta_resources (resource_type, source_type, source_id, name, status, owner_actor_id, owner_actor_type, capability_profile, risk_profile, metadata)
-			SELECT 'agent', 'ai_agents', id, name, CASE WHEN is_active THEN 'active' ELSE 'inactive' END, id, 'agent',
+			SELECT CASE WHEN agent_origin = 'external' THEN 'external_agent' ELSE 'internal_agent' END,
+				'ai_agents', id, name, CASE WHEN is_active THEN 'active' ELSE 'inactive' END, id,
+				CASE WHEN agent_origin = 'external' THEN 'external_agent' ELSE 'internal_agent' END,
 				jsonb_build_object('model_type', model_type, 'capabilities', capabilities, 'service_class', service_class),
 				jsonb_build_object('permission_level', permission_level, 'risk_level', risk_level),
 				metadata
@@ -299,11 +316,12 @@ func (r *Repository) SyncExistingResources(ctx context.Context) (map[string]int,
 			DO UPDATE SET name = EXCLUDED.name, status = EXCLUDED.status, capability_profile = EXCLUDED.capability_profile, risk_profile = EXCLUDED.risk_profile, metadata = EXCLUDED.metadata, updated_at = NOW()
 		`},
 		{"external_human", `
-			INSERT INTO meta_resources (resource_type, source_type, source_id, name, status, metadata)
-			SELECT 'external_human', 'external_members', id, name, status, jsonb_build_object('email', email, 'vendor', vendor, 'contract_type', contract_type) || metadata
+			INSERT INTO meta_resources (resource_type, source_type, source_id, name, status, owner_actor_id, owner_actor_type, metadata)
+			SELECT 'external_human', 'external_members', id, name, status, id, 'external_human',
+				jsonb_build_object('email', email, 'vendor', vendor, 'contract_type', contract_type) || metadata
 			FROM external_members
 			ON CONFLICT (resource_type, source_type, source_id) WHERE source_type <> '' AND source_id IS NOT NULL
-			DO UPDATE SET name = EXCLUDED.name, status = EXCLUDED.status, metadata = EXCLUDED.metadata, updated_at = NOW()
+			DO UPDATE SET name = EXCLUDED.name, status = EXCLUDED.status, owner_actor_id = EXCLUDED.owner_actor_id, owner_actor_type = EXCLUDED.owner_actor_type, metadata = EXCLUDED.metadata, updated_at = NOW()
 		`},
 		{"model_channel", `
 			INSERT INTO meta_resources (resource_type, source_type, source_id, name, status, owner_actor_id, owner_actor_type, capability_profile, cost_profile, capacity_profile, risk_profile, metadata)

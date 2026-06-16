@@ -105,6 +105,9 @@ type PositionAssignment struct {
 	PositionID        uuid.UUID      `json:"position_id"`
 	OrganizationID    uuid.UUID      `json:"organization_id"`
 	DepartmentID      uuid.UUID      `json:"department_id"`
+	MetaResourceID    *uuid.UUID     `json:"meta_resource_id,omitempty"`
+	MetaResourceName  string         `json:"meta_resource_name,omitempty"`
+	MetaResourceType  string         `json:"meta_resource_type,omitempty"`
 	ActorID           uuid.UUID      `json:"actor_id"`
 	ActorType         string         `json:"actor_type"`
 	ActorName         string         `json:"actor_name,omitempty"`
@@ -258,6 +261,7 @@ type UpdatePositionInput struct {
 
 type CreatePositionAssignmentInput struct {
 	PositionID        uuid.UUID      `json:"position_id"`
+	MetaResourceID    *uuid.UUID     `json:"meta_resource_id,omitempty"`
 	ActorID           uuid.UUID      `json:"actor_id"`
 	ActorType         string         `json:"actor_type"`
 	AssignmentType    string         `json:"assignment_type,omitempty"`
@@ -267,6 +271,7 @@ type CreatePositionAssignmentInput struct {
 }
 
 type UpdatePositionAssignmentInput struct {
+	MetaResourceID    *uuid.UUID     `json:"meta_resource_id,omitempty"`
 	AssignmentType    string         `json:"assignment_type,omitempty"`
 	AllocationPercent *float64       `json:"allocation_percent,omitempty"`
 	Status            string         `json:"status,omitempty"`

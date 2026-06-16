@@ -27,6 +27,26 @@ export async function streamSSE<T>(
     headers: { Authorization: `Bearer ${token}` },
     signal,
   })
+  await readSSE(response, onEvent)
+}
+
+export async function streamSSEPost<T>(
+  url: string,
+  token: string,
+  body: unknown,
+  onEvent: (event: StreamEvent<T>) => void,
+  signal?: AbortSignal,
+) {
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal,
+  })
+  await readSSE(response, onEvent)
+}
+
+async function readSSE<T>(response: Response, onEvent: (event: StreamEvent<T>) => void) {
   if (!response.ok || !response.body) {
     throw new Error(`HTTP ${response.status}`)
   }

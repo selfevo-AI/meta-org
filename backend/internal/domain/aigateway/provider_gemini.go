@@ -94,11 +94,37 @@ func geminiContents(messages []Message) []map[string]any {
 		if msg.Role == "assistant" || msg.Role == "model" {
 			role = "model"
 		}
+		parts := []map[string]any{}
+		if msg.Role == "tool" {
+			name := msg.ToolName
+			if name == "" {
+				name = msg.ToolCallID
+			}
+			parts = append(parts, map[string]any{
+				"functionResponse": map[string]any{
+					"name":     name,
+					"response": map[string]any{"result": msg.Content},
+				},
+			})
+		} else {
+			if msg.Content != "" {
+				parts = append(parts, map[string]any{"text": msg.Content})
+			}
+			for _, call := range msg.ToolCalls {
+				parts = append(parts, map[string]any{
+					"functionCall": map[string]any{
+						"name": call.Name,
+						"args": copyMap(call.Arguments),
+					},
+				})
+			}
+		}
+		if len(parts) == 0 {
+			parts = append(parts, map[string]any{"text": ""})
+		}
 		result = append(result, map[string]any{
-			"role": role,
-			"parts": []map[string]any{
-				{"text": msg.Content},
-			},
+			"role":  role,
+			"parts": parts,
 		})
 	}
 	return result

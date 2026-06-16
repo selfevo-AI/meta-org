@@ -6,6 +6,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/aigateway"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/assistant"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/capability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/costing"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/dashboard"
@@ -35,6 +36,7 @@ type Dependencies struct {
 	DashboardHandler     *dashboard.Handler
 	MetaOrgHandler       *metaorg.Handler
 	MetaResourceHandler  *metaresource.Handler
+	AssistantHandler     *assistant.Handler
 	AIGatewayHandler     *aigateway.Handler
 	WorkflowHandler      *workflow.Handler
 	ProjectHandler       *project.Handler
@@ -83,6 +85,9 @@ func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
 			}
 			if deps.MetaResourceHandler != nil {
 				deps.MetaResourceHandler.RegisterRoutes(r)
+			}
+			if deps.AssistantHandler != nil {
+				deps.AssistantHandler.RegisterRoutes(r)
 			}
 			if deps.AIGatewayHandler != nil {
 				deps.AIGatewayHandler.RegisterRoutes(r)

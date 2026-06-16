@@ -184,6 +184,19 @@ export async function getAIInvocation(token: string, id: string): Promise<AIInvo
   return apiRequest<AIInvocation>(`/ai-gateway/invocations/${id}`, { token })
 }
 
+export async function createAssistantSession(token: string, input: CreateAssistantSessionInput): Promise<AssistantSession> {
+  return apiRequest<AssistantSession>('/assistant/sessions', { method: 'POST', token, body: input })
+}
+
+export async function listAssistantSessions(token: string, moduleKey?: string): Promise<AssistantSession[]> {
+  const query = moduleKey ? `?module_key=${encodeURIComponent(moduleKey)}` : ''
+  return apiRequest<AssistantSession[]>(`/assistant/sessions${query}`, { token })
+}
+
+export async function listAssistantSteps(token: string, sessionID: string): Promise<AssistantStep[]> {
+  return apiRequest<AssistantStep[]>(`/assistant/sessions/${sessionID}/steps`, { token })
+}
+
 export async function getAICostSummary(token: string): Promise<AICostSummary> {
   return apiRequest<AICostSummary>('/ai-gateway/cost-summary', { token })
 }
@@ -770,6 +783,69 @@ export interface AIInvocation {
   metadata?: Record<string, unknown>
   created_at: string
   completed_at?: string
+}
+
+export interface AssistantSession {
+  id: string
+  title: string
+  mode: 'business_process' | 'self_evolution'
+  module_key: string
+  status: string
+  provider_type?: string
+  model?: string
+  service_tier?: string
+  reasoning_effort?: string
+  organization_id?: string
+  department_id?: string
+  position_id?: string
+  position_assignment_id?: string
+  project_id?: string
+  workflow_id?: string
+  task_id?: string
+  working_memory: Record<string, unknown>
+  metadata: Record<string, unknown>
+  last_error?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateAssistantSessionInput {
+  title?: string
+  mode?: 'business_process' | 'self_evolution'
+  module_key: string
+  provider_id?: string
+  preferred_channel_id?: string
+  provider_type?: 'openai' | 'anthropic' | 'gemini'
+  model?: string
+  service_tier?: string
+  reasoning_effort?: string
+  organization_id?: string
+  department_id?: string
+  position_id?: string
+  position_assignment_id?: string
+  project_id?: string
+  workflow_id?: string
+  task_id?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface AssistantStep {
+  id: string
+  session_id: string
+  module_key: string
+  organization_id?: string
+  department_id?: string
+  position_id?: string
+  position_assignment_id?: string
+  invocation_id?: string
+  tool_execution_id?: string
+  tool_approval_id?: string
+  step_type: string
+  status: string
+  summary: string
+  data: Record<string, unknown>
+  turn: number
+  created_at: string
 }
 
 export interface AICostSummary {

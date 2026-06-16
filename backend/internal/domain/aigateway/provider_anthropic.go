@@ -86,13 +86,40 @@ func anthropicMessages(messages []Message) []map[string]any {
 		if msg.Role == "system" {
 			continue
 		}
+		if msg.Role == "tool" {
+			result = append(result, map[string]any{
+				"role": "user",
+				"content": []map[string]any{{
+					"type":        "tool_result",
+					"tool_use_id": msg.ToolCallID,
+					"content":     msg.Content,
+				}},
+			})
+			continue
+		}
 		role := msg.Role
 		if role == "assistant" {
 			role = "assistant"
 		}
+		content := any(msg.Content)
+		if len(msg.ToolCalls) > 0 {
+			blocks := make([]map[string]any, 0, len(msg.ToolCalls)+1)
+			if msg.Content != "" {
+				blocks = append(blocks, map[string]any{"type": "text", "text": msg.Content})
+			}
+			for i, call := range msg.ToolCalls {
+				blocks = append(blocks, map[string]any{
+					"type":  "tool_use",
+					"id":    call.normalizedID(i),
+					"name":  call.Name,
+					"input": copyMap(call.Arguments),
+				})
+			}
+			content = blocks
+		}
 		result = append(result, map[string]any{
 			"role":    role,
-			"content": msg.Content,
+			"content": content,
 		})
 	}
 	return result

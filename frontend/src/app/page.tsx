@@ -63,7 +63,7 @@ const domainLabels: Record<string, string> = {
   Delivery: '交付',
   Cost: '成本',
   Feedback: '反馈评估',
-  DeveloperTools: '开发者工具',
+  DeveloperTools: '模型设置',
   Finance: '财务导出',
   Costing: '成本框架',
   MetaResource: 'Meta 资源',
@@ -809,15 +809,25 @@ function WorkspaceHeader({
   )
 }
 
-type AssistantContextType = 'meta_org' | 'requirement' | 'project' | 'organization' | 'governance' | 'developer_tools'
+type AssistantContextType =
+  | 'meta_org'
+  | 'business_process'
+  | 'requirement'
+  | 'project'
+  | 'organization'
+  | 'governance'
+  | 'model_settings'
+  | 'self_evolution'
 
 const assistantContexts: Array<{ type: AssistantContextType; label: string }> = [
   { type: 'meta_org', label: 'Meta-Org' },
+  { type: 'business_process', label: 'assistant.context.businessProcess' },
   { type: 'requirement', label: '需求' },
   { type: 'project', label: '项目' },
   { type: 'organization', label: '组织' },
   { type: 'governance', label: '治理' },
-  { type: 'developer_tools', label: '开发者工具' },
+  { type: 'model_settings', label: '模型设置' },
+  { type: 'self_evolution', label: 'assistant.context.selfEvolution' },
 ]
 
 function AIAssistantWorkspace({ token }: { token: string }) {
