@@ -22,12 +22,14 @@ import {
   Upload,
   Users,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
-import { API_BASE, apiRequest } from '@/lib/api'
+import { API_BASE, apiRequest, getUserFieldPreference, saveUserFieldPreference } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 
 type LifecycleMode = 'Requirement' | 'Project' | 'Delivery' | 'Cost' | 'Feedback'
+
+const FieldPreferenceTokenContext = createContext('')
 
 interface WorkspaceProps {
   token: string
@@ -936,7 +938,8 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
   const Icon = meta.icon
 
   return (
-    <div className="space-y-5">
+    <FieldPreferenceTokenContext.Provider value={token}>
+      <div className="space-y-5">
       <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2">
@@ -1063,7 +1066,8 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
           onClose={closeFeedback}
         />
       )}
-    </div>
+      </div>
+    </FieldPreferenceTokenContext.Provider>
   )
 }
 
@@ -1183,18 +1187,20 @@ function RequirementView({
           <SubmitButton loading={loading || !selectedRequirementId || !selectedDocument} label="上传文档" />
         </form>
         <div className="mt-4">
-          <List>
-            {documents.map((document) => (
-              <ListRow
-                key={document.id}
-                title={document.file_name}
-                detail={`${document.content_type} · ${formatter.format(document.size_bytes / 1024)} KB · ${formatDate(document.created_at)}`}
-                badge={document.uploaded_by_type || 'human'}
-                onAction={() => onDownloadDocument(document.id, document.file_name)}
-                actionLabel="下载"
-              />
-            ))}
-          </List>
+          <ConfigurableRecordTable
+            tableName="requirement_documents"
+            rows={documents}
+            columns={[
+              { key: 'file_name', label: '文件名', render: (document) => <span className="font-semibold text-slate-900">{document.file_name}</span> },
+              { key: 'content_type', label: '类型', render: (document) => document.content_type },
+              { key: 'size_bytes', label: '大小', render: (document) => `${formatter.format(document.size_bytes / 1024)} KB` },
+              { key: 'created_at', label: '创建时间', render: (document) => formatDate(document.created_at) },
+              { key: 'uploaded_by_type', label: '上传方', render: (document) => document.uploaded_by_type || 'human' },
+            ]}
+            actions={(document) => (
+              <ActionButton icon={Download} loading={false} onClick={() => onDownloadDocument(document.id, document.file_name)} label="下载" variant="secondary" />
+            )}
+          />
         </div>
       </Panel>
 
@@ -1215,34 +1221,36 @@ function RequirementView({
           <SubmitButton loading={loading || !selectedRequirementId || !analysisWorkflowForm.workflow_template_id} label="启动分析流程" />
         </form>
         <div className="mt-4">
-          <List>
-            {analysisWorkflows.map((analysisWorkflow) => (
-              <ListRow
-                key={analysisWorkflow.id}
-                title={analysisWorkflow.workflow_id}
-                detail={`${analysisWorkflow.workflow_template_id} · ${formatDate(analysisWorkflow.updated_at)}`}
-                badge={analysisWorkflow.status}
-                onAction={() => onSyncAnalysisWorkflow(analysisWorkflow.workflow_id)}
-                actionLabel="同步结果"
-              />
-            ))}
-          </List>
+          <ConfigurableRecordTable
+            tableName="requirement_analysis_workflows"
+            rows={analysisWorkflows}
+            columns={[
+              { key: 'workflow_id', label: '工作流', render: (item) => <span className="break-all font-semibold text-slate-900">{item.workflow_id}</span> },
+              { key: 'workflow_template_id', label: '模板', render: (item) => <span className="break-all">{item.workflow_template_id}</span> },
+              { key: 'status', label: '状态', render: (item) => <StatusBadge label={item.status} tone="green" /> },
+              { key: 'updated_at', label: '更新时间', render: (item) => formatDate(item.updated_at) },
+            ]}
+            actions={(item) => (
+              <ActionButton icon={RefreshCw} loading={loading} onClick={() => onSyncAnalysisWorkflow(item.workflow_id)} label="同步结果" variant="secondary" />
+            )}
+          />
         </div>
       </Panel>
 
       <Panel icon={ClipboardList} title="需求列表">
-        <List>
-          {requirements.map((requirement) => (
-            <ListRow
-              key={requirement.id}
-              title={requirement.title}
-              detail={`${requirement.priority} · ${requirement.required_level} · ${formatDate(requirement.created_at)}`}
-              badge={requirement.status}
-              active={requirement.id === selectedRequirementId}
-              onClick={() => onSelectRequirement(requirement.id)}
-            />
-          ))}
-        </List>
+        <ConfigurableRecordTable
+          tableName="requirements"
+          rows={requirements}
+          selectedId={selectedRequirementId}
+          onSelect={onSelectRequirement}
+          columns={[
+            { key: 'title', label: '标题', render: (requirement) => <span className="font-semibold text-slate-900">{requirement.title}</span> },
+            { key: 'status', label: '状态', render: (requirement) => <StatusBadge label={requirement.status} tone="green" /> },
+            { key: 'priority', label: '优先级', render: (requirement) => requirement.priority },
+            { key: 'required_level', label: '权限级别', render: (requirement) => requirement.required_level },
+            { key: 'created_at', label: '创建时间', render: (requirement) => formatDate(requirement.created_at) },
+          ]}
+        />
       </Panel>
     </div>
   )
@@ -1371,11 +1379,19 @@ function ProjectView({
             onChange={onSelectProject}
           />
           <div className="mt-4">
-            <List>
-              {projects.map((project) => (
-                <ListRow key={project.id} title={project.name} detail={`${project.risk_level} · ${formatDate(project.created_at)}`} badge={project.status} active={project.id === selectedProjectId} onClick={() => onSelectProject(project.id)} />
-              ))}
-            </List>
+            <ConfigurableRecordTable
+              tableName="projects"
+              rows={projects}
+              selectedId={selectedProjectId}
+              onSelect={onSelectProject}
+              columns={[
+                { key: 'name', label: '项目名', render: (project) => <span className="font-semibold text-slate-900">{project.name}</span> },
+                { key: 'status', label: '状态', render: (project) => <StatusBadge label={project.status} tone="green" /> },
+                { key: 'risk_level', label: '风险', render: (project) => project.risk_level },
+                { key: 'budget_amount', label: '预算', render: (project) => money(project.budget_amount) },
+                { key: 'created_at', label: '创建时间', render: (project) => formatDate(project.created_at) },
+              ]}
+            />
           </div>
         </Panel>
 
@@ -1402,6 +1418,29 @@ function ProjectView({
               <TextInput label="用途" value={workflowForm.purpose} onChange={(value) => onWorkflowFormChange({ ...workflowForm, purpose: value })} />
               <SubmitButton loading={loading || !selectedProjectId || (!workflowForm.workflow_id && !workflowForm.workflow_template_id)} label="绑定流程" />
             </form>
+          </div>
+          <div className="mt-5 grid gap-5 xl:grid-cols-2">
+            <ConfigurableRecordTable
+              tableName="project_members"
+              rows={asArray(overview?.members)}
+              columns={[
+                { key: 'title', label: '职位', render: (member) => <span className="font-semibold text-slate-900">{member.title || member.role}</span> },
+                { key: 'actor_type', label: 'Actor 类型', render: (member) => member.actor_type },
+                { key: 'allocation_percent', label: '投入比例', render: (member) => `${member.allocation_percent}%` },
+                { key: 'permission_level', label: '权限级别', render: (member) => member.permission_level },
+                { key: 'status', label: '状态', render: (member) => <StatusBadge label={member.status} tone="green" /> },
+              ]}
+            />
+            <ConfigurableRecordTable
+              tableName="project_workflows"
+              rows={asArray(overview?.workflows)}
+              columns={[
+                { key: 'workflow_id', label: '工作流', render: (item) => <span className="break-all font-semibold text-slate-900">{item.workflow_id}</span> },
+                { key: 'workflow_template_id', label: '模板', render: (item) => item.workflow_template_id || '-' },
+                { key: 'purpose', label: '用途', render: (item) => item.purpose },
+                { key: 'status', label: '状态', render: (item) => <StatusBadge label={item.status} tone="green" /> },
+              ]}
+            />
           </div>
         </Panel>
       </div>
@@ -1467,18 +1506,24 @@ function DeliveryView({
         </form>
       </Panel>
       <Panel icon={FileCheck2} title="交付台账">
-        <List>
-          {deliverables.map((deliverable) => (
-            <div key={deliverable.id} className="grid gap-3 border-t border-slate-100 py-3 first:border-t-0 first:pt-0">
-              <ListRow title={deliverable.name} detail={`${deliverable.deliverable_type} · ${deliverable.version} · ${formatDate(deliverable.created_at)}`} badge={deliverable.status} />
-              <div className="flex flex-wrap gap-2">
-                <ActionButton icon={Send} loading={loading} disabled={deliverable.status !== 'draft' && deliverable.status !== 'rejected'} onClick={() => onAction(deliverable.id, 'submit')} label="提交" variant="secondary" />
-                <ActionButton icon={CheckCircle2} loading={loading} disabled={deliverable.status !== 'submitted'} onClick={() => onAction(deliverable.id, 'accept')} label="验收" variant="secondary" />
-                <ActionButton icon={ClipboardCheck} loading={loading} disabled={deliverable.status !== 'submitted'} onClick={() => onAction(deliverable.id, 'reject')} label="退回" variant="secondary" />
-              </div>
+        <ConfigurableRecordTable
+          tableName="deliverables"
+          rows={deliverables}
+          columns={[
+            { key: 'name', label: '名称', render: (deliverable) => <span className="font-semibold text-slate-900">{deliverable.name}</span> },
+            { key: 'deliverable_type', label: '类型', render: (deliverable) => deliverable.deliverable_type },
+            { key: 'version', label: '版本', render: (deliverable) => deliverable.version },
+            { key: 'status', label: '状态', render: (deliverable) => <StatusBadge label={deliverable.status} tone="green" /> },
+            { key: 'created_at', label: '创建时间', render: (deliverable) => formatDate(deliverable.created_at) },
+          ]}
+          actions={(deliverable) => (
+            <div className="flex flex-wrap justify-end gap-2">
+              <ActionButton icon={Send} loading={loading} disabled={deliverable.status !== 'draft' && deliverable.status !== 'rejected'} onClick={() => onAction(deliverable.id, 'submit')} label="提交" variant="secondary" />
+              <ActionButton icon={CheckCircle2} loading={loading} disabled={deliverable.status !== 'submitted'} onClick={() => onAction(deliverable.id, 'accept')} label="验收" variant="secondary" />
+              <ActionButton icon={ClipboardCheck} loading={loading} disabled={deliverable.status !== 'submitted'} onClick={() => onAction(deliverable.id, 'reject')} label="退回" variant="secondary" />
             </div>
-          ))}
-        </List>
+          )}
+        />
       </Panel>
     </div>
   )
@@ -1548,11 +1593,17 @@ function CostView({
         </Panel>
       </div>
       <Panel icon={Activity} title="成本明细">
-        <List>
-          {entries.map((entry) => (
-            <ListRow key={entry.id} title={money(entry.amount, entry.currency)} detail={`${entry.source_type} · ${entry.description} · ${formatDate(entry.occurred_at)}`} badge={entry.actor_type || 'manual'} />
-          ))}
-        </List>
+        <ConfigurableRecordTable
+          tableName="project_cost_entries"
+          rows={entries}
+          columns={[
+            { key: 'amount', label: '金额', render: (entry) => <span className="font-semibold text-slate-900">{money(entry.amount, entry.currency)}</span> },
+            { key: 'source_type', label: '来源类型', render: (entry) => entry.source_type },
+            { key: 'actor_type', label: 'Actor 类型', render: (entry) => entry.actor_type || 'manual' },
+            { key: 'description', label: '说明', render: (entry) => entry.description },
+            { key: 'occurred_at', label: '发生时间', render: (entry) => formatDate(entry.occurred_at) },
+          ]}
+        />
       </Panel>
     </div>
   )
@@ -1614,11 +1665,18 @@ function FeedbackView({
         </form>
       </Panel>
       <Panel icon={Activity} title="评估记录">
-        <List>
-          {evaluations.map((evaluation) => (
-            <ListRow key={evaluation.id} title={evaluation.actor_id || evaluation.capability_id || 'project'} detail={`${evaluation.evaluator_type} · quality ${percent(evaluation.quality_score)} · delivery ${percent(evaluation.delivery_score)}`} badge={percent(evaluation.overall_score)} />
-          ))}
-        </List>
+        <ConfigurableRecordTable
+          tableName="project_evaluations"
+          rows={evaluations}
+          columns={[
+            { key: 'actor_id', label: 'Actor ID', render: (evaluation) => evaluation.actor_id || evaluation.capability_id || 'project' },
+            { key: 'evaluator_type', label: '评估方', render: (evaluation) => evaluation.evaluator_type },
+            { key: 'quality_score', label: '质量', render: (evaluation) => percent(evaluation.quality_score) },
+            { key: 'delivery_score', label: '交付', render: (evaluation) => percent(evaluation.delivery_score) },
+            { key: 'overall_score', label: '综合', render: (evaluation) => <span className="font-semibold text-slate-900">{percent(evaluation.overall_score)}</span> },
+            { key: 'created_at', label: '创建时间', render: (evaluation) => formatDate(evaluation.created_at) },
+          ]}
+        />
       </Panel>
     </div>
   )
@@ -1634,6 +1692,148 @@ function Panel({ icon: Icon, title, children }: { icon: typeof ClipboardList; ti
       </div>
       {children}
     </section>
+  )
+}
+
+type RecordColumn<T> = {
+  key: string
+  label: string
+  render: (row: T) => ReactNode
+}
+
+function ConfigurableRecordTable<T extends { id: string }>({
+  tableName,
+  rows,
+  columns,
+  selectedId,
+  onSelect,
+  actions,
+}: {
+  tableName: string
+  rows: T[]
+  columns: Array<RecordColumn<T>>
+  selectedId?: string
+  onSelect?: (id: string) => void
+  actions?: (row: T) => ReactNode
+}) {
+  const { t } = useI18n()
+  const token = useContext(FieldPreferenceTokenContext)
+  const storageKey = `meta_org.field_preferences.${tableName}.v1`
+  const columnKeys = columns.map((column) => column.key).join('|')
+  const orderedFields = useMemo(() => columnKeys.split('|').filter(Boolean), [columnKeys])
+  const knownFields = useMemo(() => new Set(orderedFields), [orderedFields])
+  const defaultVisible = orderedFields
+  const [visibleFields, setVisibleFields] = useState<string[]>(() => {
+    if (typeof window === 'undefined') return defaultVisible
+    const raw = window.localStorage.getItem(storageKey)
+    if (!raw) return defaultVisible
+    try {
+      const parsed = JSON.parse(raw)
+      if (Array.isArray(parsed)) {
+        const known = new Set(columns.map((column) => column.key))
+        const next = parsed.filter((item) => typeof item === 'string' && known.has(item))
+        return next.length > 0 ? next : defaultVisible
+      }
+    } catch {
+      return defaultVisible
+    }
+    return defaultVisible
+  })
+
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    getUserFieldPreference(token, tableName)
+      .then((preference) => {
+        if (cancelled) return
+        const next = preference.visible_fields.filter((field) => knownFields.has(field))
+        if (next.length > 0) {
+          setVisibleFields(next)
+          if (typeof window !== 'undefined') {
+            window.localStorage.setItem(storageKey, JSON.stringify(next))
+          }
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [columnKeys, knownFields, storageKey, tableName, token])
+
+  const visibleColumns = columns.filter((column) => visibleFields.includes(column.key))
+
+  function toggleField(field: string) {
+    const next = visibleFields.includes(field)
+      ? visibleFields.filter((item) => item !== field)
+      : [...visibleFields, field]
+    const safeNext = next.length > 0 ? next : [field]
+    setVisibleFields(safeNext)
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(storageKey, JSON.stringify(safeNext))
+    }
+    if (token) {
+      saveUserFieldPreference(token, tableName, {
+        visible_fields: safeNext,
+        field_order: orderedFields,
+        field_widths: {},
+      }).catch(() => undefined)
+    }
+  }
+
+  return (
+    <div className="space-y-3">
+      <details className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-700">{t('table.customizeFields')}</summary>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {columns.map((column) => (
+            <label key={column.key} className="inline-flex items-center gap-2 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600">
+              <input type="checkbox" checked={visibleFields.includes(column.key)} onChange={() => toggleField(column.key)} />
+              {t(column.label)}
+            </label>
+          ))}
+        </div>
+      </details>
+      <div className="overflow-x-auto rounded-lg border border-slate-200">
+        <table className="min-w-full divide-y divide-slate-200 text-sm">
+          <thead className="bg-slate-50">
+            <tr>
+              {visibleColumns.map((column) => (
+                <th key={column.key} scope="col" className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-normal text-slate-500">
+                  {t(column.label)}
+                </th>
+              ))}
+              {actions && <th scope="col" className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-normal text-slate-500">{t('table.actions')}</th>}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 bg-white">
+            {rows.map((row) => {
+              const active = selectedId === row.id
+              return (
+                <tr key={row.id} className={`${active ? 'bg-orange-50' : 'bg-white'} ${onSelect ? 'cursor-pointer hover:bg-slate-50' : ''}`} onClick={() => onSelect?.(row.id)}>
+                  {visibleColumns.map((column) => (
+                    <td key={column.key} className="max-w-[18rem] px-3 py-2 align-top text-slate-700">
+                      {column.render(row)}
+                    </td>
+                  ))}
+                  {actions && (
+                    <td className="px-3 py-2 text-right align-top" onClick={(event) => event.stopPropagation()}>
+                      {actions(row)}
+                    </td>
+                  )}
+                </tr>
+              )
+            })}
+            {rows.length === 0 && (
+              <tr>
+                <td className="px-3 py-6 text-center text-sm text-slate-500" colSpan={visibleColumns.length + (actions ? 1 : 0)}>
+                  {t('table.empty')}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }
 

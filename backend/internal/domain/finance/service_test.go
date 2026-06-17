@@ -3,6 +3,7 @@ package finance
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
@@ -124,6 +125,46 @@ func (f *fakeRepository) LinkProjectCostEntry(context.Context, uuid.UUID, uuid.U
 
 func (f *fakeRepository) ListReconciliation(context.Context, int) ([]ReconciliationItem, error) {
 	return []ReconciliationItem{}, nil
+}
+
+func (f *fakeRepository) CreateImportBatch(context.Context, *uuid.UUID, string, string, int, map[string]any) (*ImportBatch, error) {
+	return &ImportBatch{}, nil
+}
+
+func (f *fakeRepository) CompleteImportBatch(context.Context, uuid.UUID, int, int) (*ImportBatch, error) {
+	return &ImportBatch{}, nil
+}
+
+func (f *fakeRepository) ListImportBatches(context.Context, int) ([]ImportBatch, error) {
+	return []ImportBatch{}, nil
+}
+
+func (f *fakeRepository) ListImportRecords(context.Context, int) ([]ImportRecord, error) {
+	return []ImportRecord{}, nil
+}
+
+func (f *fakeRepository) CreateImportedExpense(context.Context, uuid.UUID, uuid.UUID, map[string]any, FinanceExpenseInput, time.Time, financeExpenseDates) (*ImportRecord, error) {
+	return &ImportRecord{}, nil
+}
+
+func (f *fakeRepository) CreatePayable(context.Context, CreatePayableInput, financeExpenseDates) (*Payable, error) {
+	return &Payable{}, nil
+}
+
+func (f *fakeRepository) ListPayables(context.Context, int) ([]Payable, error) {
+	return []Payable{}, nil
+}
+
+func (f *fakeRepository) CreatePayment(context.Context, CreatePaymentInput, *time.Time) (*Payment, error) {
+	return &Payment{}, nil
+}
+
+func (f *fakeRepository) ListPayments(context.Context, int) ([]Payment, error) {
+	return []Payment{}, nil
+}
+
+func (f *fakeRepository) AllocatePayment(context.Context, uuid.UUID, AllocatePaymentInput) (*PaymentAllocation, error) {
+	return &PaymentAllocation{}, nil
 }
 
 type fakeCostPoster struct{}

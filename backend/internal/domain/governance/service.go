@@ -192,3 +192,111 @@ func riskLevelWeight(level string) int {
 		return 1
 	}
 }
+
+func (s *Service) ListDataTables(ctx context.Context, category string) ([]DataTable, error) {
+	return s.repo.ListDataTables(ctx, category)
+}
+
+func (s *Service) ListDataFields(ctx context.Context, tableName string) ([]DataField, error) {
+	if tableName == "" {
+		return nil, fmt.Errorf("%w: table_name is required", ErrValidation)
+	}
+	return s.repo.ListDataFields(ctx, tableName)
+}
+
+func (s *Service) GetUserFieldPreference(ctx context.Context, actorID, tableName string) (*UserFieldPreference, error) {
+	if actorID == "" || tableName == "" {
+		return nil, fmt.Errorf("%w: actor_id and table_name are required", ErrValidation)
+	}
+	pref, err := s.repo.GetUserFieldPreference(ctx, actorID, tableName)
+	if err == nil {
+		return pref, nil
+	}
+	fields, fieldErr := s.repo.ListDataFields(ctx, tableName)
+	if fieldErr != nil {
+		return nil, err
+	}
+	visible := make([]string, 0)
+	order := make([]string, 0, len(fields))
+	for _, field := range fields {
+		order = append(order, field.FieldName)
+		if field.IsVisibleDefault {
+			visible = append(visible, field.FieldName)
+		}
+	}
+	return &UserFieldPreference{
+		ActorID:       actorID,
+		TableName:     tableName,
+		VisibleFields: visible,
+		FieldOrder:    order,
+		FieldWidths:   map[string]int{},
+	}, nil
+}
+
+func (s *Service) UpsertUserFieldPreference(ctx context.Context, actorID, tableName string, input UpsertUserFieldPreferenceInput) (*UserFieldPreference, error) {
+	if actorID == "" || tableName == "" {
+		return nil, fmt.Errorf("%w: actor_id and table_name are required", ErrValidation)
+	}
+	if input.VisibleFields == nil {
+		input.VisibleFields = []string{}
+	}
+	if input.FieldOrder == nil {
+		input.FieldOrder = []string{}
+	}
+	if input.FieldWidths == nil {
+		input.FieldWidths = map[string]int{}
+	}
+	return s.repo.UpsertUserFieldPreference(ctx, actorID, tableName, input)
+}
+
+func (s *Service) CreateFieldPermissionRule(ctx context.Context, input CreateFieldPermissionRuleInput) (*FieldPermissionRule, error) {
+	if input.TableName == "" {
+		return nil, fmt.Errorf("%w: table_name is required", ErrValidation)
+	}
+	if input.FieldName == "" {
+		input.FieldName = "*"
+	}
+	if input.ActorType == "" {
+		input.ActorType = "*"
+	}
+	if input.Action == "" {
+		input.Action = "read"
+	}
+	if input.Action != "read" && input.Action != "write" && input.Action != "delete" && input.Action != "admin" {
+		return nil, fmt.Errorf("%w: invalid action", ErrValidation)
+	}
+	if input.Behavior == "" {
+		input.Behavior = "allow"
+	}
+	if input.Behavior != "allow" && input.Behavior != "notify" && input.Behavior != "approve" && input.Behavior != "deny" {
+		return nil, fmt.Errorf("%w: invalid behavior", ErrValidation)
+	}
+	if input.RequiredLevel == "" {
+		input.RequiredLevel = "L1"
+	}
+	if !isPermissionLevel(input.RequiredLevel) {
+		return nil, fmt.Errorf("%w: invalid required_level", ErrValidation)
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+	return s.repo.CreateFieldPermissionRule(ctx, input)
+}
+
+func (s *Service) ListFieldPermissionRules(ctx context.Context, tableName string) ([]FieldPermissionRule, error) {
+	return s.repo.ListFieldPermissionRules(ctx, tableName)
+}
+
+func (s *Service) CheckFieldAccess(ctx context.Context, input FieldAccessCheckInput) (*FieldAccessCheckResult, error) {
+	if input.ActorID == "" || input.ActorType == "" || input.TableName == "" {
+		return nil, fmt.Errorf("%w: actor_id, actor_type, and table_name are required", ErrValidation)
+	}
+	if input.Action == "" {
+		input.Action = "read"
+	}
+	return s.repo.CheckFieldAccess(ctx, input)
+}
+
+func isPermissionLevel(level string) bool {
+	return level == "L1" || level == "L2" || level == "L3" || level == "L4"
+}

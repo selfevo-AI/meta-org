@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 type Handler struct {
@@ -29,6 +30,13 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Post("/governance/check", h.checkPermission)
 	r.Post("/governance/access/decide", h.decideAccess)
 	r.Get("/governance/access/decisions", h.listAccessDecisions)
+	r.Get("/governance/data/tables", h.listDataTables)
+	r.Get("/governance/data/tables/{table}/fields", h.listDataFields)
+	r.Get("/governance/data/field-preferences/{table}", h.getUserFieldPreference)
+	r.Put("/governance/data/field-preferences/{table}", h.upsertUserFieldPreference)
+	r.Post("/governance/data/field-permissions", h.createFieldPermissionRule)
+	r.Get("/governance/data/field-permissions", h.listFieldPermissionRules)
+	r.Post("/governance/data/field-access/check", h.checkFieldAccess)
 }
 
 func (h *Handler) createPermission(w http.ResponseWriter, r *http.Request) {
@@ -155,6 +163,105 @@ func (h *Handler) listAccessDecisions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, results)
+}
+
+func (h *Handler) listDataTables(w http.ResponseWriter, r *http.Request) {
+	tables, err := h.service.ListDataTables(r.Context(), r.URL.Query().Get("category"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, tables)
+}
+
+func (h *Handler) listDataFields(w http.ResponseWriter, r *http.Request) {
+	fields, err := h.service.ListDataFields(r.Context(), chi.URLParam(r, "table"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, fields)
+}
+
+func (h *Handler) getUserFieldPreference(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	pref, err := h.service.GetUserFieldPreference(r.Context(), user.ID, chi.URLParam(r, "table"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, pref)
+}
+
+func (h *Handler) upsertUserFieldPreference(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var input UpsertUserFieldPreferenceInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	pref, err := h.service.UpsertUserFieldPreference(r.Context(), user.ID, chi.URLParam(r, "table"), input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, pref)
+}
+
+func (h *Handler) createFieldPermissionRule(w http.ResponseWriter, r *http.Request) {
+	var input CreateFieldPermissionRuleInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	rule, err := h.service.CreateFieldPermissionRule(r.Context(), input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, rule)
+}
+
+func (h *Handler) listFieldPermissionRules(w http.ResponseWriter, r *http.Request) {
+	rules, err := h.service.ListFieldPermissionRules(r.Context(), r.URL.Query().Get("table"))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, rules)
+}
+
+func (h *Handler) checkFieldAccess(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var input FieldAccessCheckInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	if input.ActorID == "" {
+		input.ActorID = user.ID
+	}
+	if input.ActorType == "" {
+		input.ActorType = user.Type
+	}
+	result, err := h.service.CheckFieldAccess(r.Context(), input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

@@ -1,6 +1,7 @@
 package finance
 
 import (
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"io"
@@ -24,6 +25,7 @@ func NewHandler(service *Service) *Handler {
 
 func (h *Handler) RegisterPublicRoutes(r chi.Router) {
 	r.Post("/finance/webhooks/{adapterID}", h.receiveWebhook)
+	r.Post("/finance/imports/webhooks/{adapterID}", h.receiveImportWebhook)
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
@@ -36,6 +38,16 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Get("/finance/export-batches/{id}", h.getExportBatch)
 	r.Post("/finance/export-batches/{id}/submit", h.submitExportBatch)
 	r.Get("/finance/reconciliation", h.listReconciliation)
+	r.Post("/finance/imports", h.importExpenses)
+	r.Post("/finance/imports/files", h.importExpenseFile)
+	r.Post("/finance/imports/{adapterID}/pull", h.pullExpenses)
+	r.Get("/finance/import-batches", h.listImportBatches)
+	r.Get("/finance/import-records", h.listImportRecords)
+	r.Post("/finance/payables", h.createPayable)
+	r.Get("/finance/payables", h.listPayables)
+	r.Post("/finance/payments", h.createPayment)
+	r.Get("/finance/payments", h.listPayments)
+	r.Post("/finance/payments/{id}/allocate", h.allocatePayment)
 }
 
 func (h *Handler) createAdapter(w http.ResponseWriter, r *http.Request) {
@@ -129,6 +141,150 @@ func (h *Handler) receiveWebhook(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listReconciliation(w http.ResponseWriter, r *http.Request) {
 	result, err := h.service.ListReconciliation(r.Context(), queryLimit(r))
 	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) importExpenses(w http.ResponseWriter, r *http.Request) {
+	var input ImportExpensesInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.ImportExpenses(r.Context(), input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) receiveImportWebhook(w http.ResponseWriter, r *http.Request) {
+	adapterID, ok := parseID(w, r, "adapterID")
+	if !ok {
+		return
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 4<<20))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	result, err := h.service.ReceiveExpenseWebhook(
+		r.Context(),
+		adapterID,
+		body,
+		firstHeader(r, "X-Meta-Org-Signature", "X-Hub-Signature-256"),
+		r.Header.Get("Authorization"),
+	)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) importExpenseFile(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseMultipartForm(8 << 20); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid multipart form"})
+		return
+	}
+	adapterID, err := uuid.Parse(r.FormValue("adapter_id"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid adapter_id"})
+		return
+	}
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file field is required"})
+		return
+	}
+	defer file.Close()
+	records, err := csvRecords(file)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	result, err := h.service.ImportExpenses(r.Context(), ImportExpensesInput{
+		AdapterID:  adapterID,
+		SourceType: "file",
+		FileName:   header.Filename,
+		Records:    records,
+		Metadata:   map[string]any{"content_type": header.Header.Get("Content-Type")},
+	})
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) pullExpenses(w http.ResponseWriter, r *http.Request) {
+	adapterID, ok := parseID(w, r, "adapterID")
+	if !ok {
+		return
+	}
+	result, err := h.service.PullAdapterExpenses(r.Context(), adapterID)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) listImportBatches(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ListImportBatches(r.Context(), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) listImportRecords(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ListImportRecords(r.Context(), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) createPayable(w http.ResponseWriter, r *http.Request) {
+	var input CreatePayableInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.CreatePayable(r.Context(), input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) listPayables(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ListPayables(r.Context(), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) createPayment(w http.ResponseWriter, r *http.Request) {
+	var input CreatePaymentInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.CreatePayment(r.Context(), input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) listPayments(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ListPayments(r.Context(), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) allocatePayment(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input AllocatePaymentInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.AllocatePayment(r.Context(), id, input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func csvRecords(reader io.Reader) ([]map[string]any, error) {
+	csvReader := csv.NewReader(reader)
+	csvReader.TrimLeadingSpace = true
+	rows, err := csvReader.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	if len(rows) < 2 {
+		return nil, errors.New("csv requires a header row and at least one data row")
+	}
+	headers := rows[0]
+	records := make([]map[string]any, 0, len(rows)-1)
+	for _, row := range rows[1:] {
+		record := map[string]any{}
+		for i, header := range headers {
+			if i < len(row) {
+				record[header] = row[i]
+			}
+		}
+		records = append(records, record)
+	}
+	return records, nil
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {

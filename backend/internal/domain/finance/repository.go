@@ -35,13 +35,15 @@ func (r *PostgresRepository) CreateAdapter(ctx context.Context, input CreateAdap
 	err = scanAdapter(r.db.QueryRow(ctx, `
 		INSERT INTO finance_adapters (
 			name, endpoint_url, auth_type, encrypted_secret, masked_secret,
-			status, timeout_ms, retry_count, metadata
+			status, timeout_ms, retry_count, adapter_type, direction, field_mapping,
+			pull_config, metadata
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		RETURNING id, name, endpoint_url, auth_type, masked_secret, status,
-			timeout_ms, retry_count, metadata, created_at, updated_at
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id, name, endpoint_url, auth_type, adapter_type, direction, masked_secret, status,
+			timeout_ms, retry_count, field_mapping, pull_config, last_sync_at, last_sync_status, metadata, created_at, updated_at
 	`, input.Name, input.EndpointURL, input.AuthType, encrypted, maskSecret(input.Secret), input.Status,
-		input.TimeoutMS, input.RetryCount, mustJSON(input.Metadata)), adapter)
+		input.TimeoutMS, input.RetryCount, input.AdapterType, input.Direction, mustJSON(input.FieldMapping),
+		mustJSON(input.PullConfig), mustJSON(input.Metadata)), adapter)
 	if err != nil {
 		return nil, fmt.Errorf("create finance adapter: %w", err)
 	}
@@ -50,8 +52,8 @@ func (r *PostgresRepository) CreateAdapter(ctx context.Context, input CreateAdap
 
 func (r *PostgresRepository) ListAdapters(ctx context.Context, limit int) ([]FinanceAdapter, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, name, endpoint_url, auth_type, masked_secret, status,
-			timeout_ms, retry_count, metadata, created_at, updated_at
+		SELECT id, name, endpoint_url, auth_type, adapter_type, direction, masked_secret, status,
+			timeout_ms, retry_count, field_mapping, pull_config, last_sync_at, last_sync_status, metadata, created_at, updated_at
 		FROM finance_adapters
 		ORDER BY created_at DESC
 		LIMIT $1
@@ -89,18 +91,22 @@ func (r *PostgresRepository) UpdateAdapter(ctx context.Context, id uuid.UUID, in
 		SET name = COALESCE($2, name),
 			endpoint_url = COALESCE($3, endpoint_url),
 			auth_type = COALESCE($4, auth_type),
-			encrypted_secret = COALESCE($5, encrypted_secret),
-			masked_secret = COALESCE($6, masked_secret),
-			status = COALESCE($7, status),
-			timeout_ms = COALESCE($8, timeout_ms),
-			retry_count = COALESCE($9, retry_count),
-			metadata = metadata || COALESCE($10::jsonb, '{}'::jsonb),
+			adapter_type = COALESCE($5, adapter_type),
+			direction = COALESCE($6, direction),
+			encrypted_secret = COALESCE($7, encrypted_secret),
+			masked_secret = COALESCE($8, masked_secret),
+			status = COALESCE($9, status),
+			timeout_ms = COALESCE($10, timeout_ms),
+			retry_count = COALESCE($11, retry_count),
+			field_mapping = CASE WHEN $12::jsonb IS NULL THEN field_mapping ELSE $12::jsonb END,
+			pull_config = CASE WHEN $13::jsonb IS NULL THEN pull_config ELSE $13::jsonb END,
+			metadata = metadata || COALESCE($14::jsonb, '{}'::jsonb),
 			updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, name, endpoint_url, auth_type, masked_secret, status,
-			timeout_ms, retry_count, metadata, created_at, updated_at
-	`, id, input.Name, input.EndpointURL, input.AuthType, encryptedSecret, maskedSecret, input.Status,
-		input.TimeoutMS, input.RetryCount, nullableJSON(input.Metadata)), adapter)
+		RETURNING id, name, endpoint_url, auth_type, adapter_type, direction, masked_secret, status,
+			timeout_ms, retry_count, field_mapping, pull_config, last_sync_at, last_sync_status, metadata, created_at, updated_at
+	`, id, input.Name, input.EndpointURL, input.AuthType, input.AdapterType, input.Direction, encryptedSecret, maskedSecret, input.Status,
+		input.TimeoutMS, input.RetryCount, nullableJSON(input.FieldMapping), nullableJSON(input.PullConfig), nullableJSON(input.Metadata)), adapter)
 	if err != nil {
 		return nil, fmt.Errorf("update finance adapter: %w", err)
 	}
@@ -110,12 +116,15 @@ func (r *PostgresRepository) UpdateAdapter(ctx context.Context, id uuid.UUID, in
 func (r *PostgresRepository) GetAdapterSecret(ctx context.Context, id uuid.UUID) (AdapterSecret, error) {
 	var adapter AdapterSecret
 	var encrypted string
+	var fieldMappingJSON []byte
+	var pullConfigJSON []byte
 	err := r.db.QueryRow(ctx, `
-		SELECT id, name, endpoint_url, auth_type, encrypted_secret, status, timeout_ms, retry_count
+		SELECT id, name, endpoint_url, auth_type, adapter_type, direction, encrypted_secret, status,
+		       timeout_ms, retry_count, field_mapping, pull_config
 		FROM finance_adapters
 		WHERE id = $1
-	`, id).Scan(&adapter.ID, &adapter.Name, &adapter.EndpointURL, &adapter.AuthType, &encrypted,
-		&adapter.Status, &adapter.TimeoutMS, &adapter.RetryCount)
+	`, id).Scan(&adapter.ID, &adapter.Name, &adapter.EndpointURL, &adapter.AuthType, &adapter.AdapterType, &adapter.Direction, &encrypted,
+		&adapter.Status, &adapter.TimeoutMS, &adapter.RetryCount, &fieldMappingJSON, &pullConfigJSON)
 	if err != nil {
 		return adapter, fmt.Errorf("get finance adapter secret: %w", err)
 	}
@@ -124,6 +133,8 @@ func (r *PostgresRepository) GetAdapterSecret(ctx context.Context, id uuid.UUID)
 		return adapter, fmt.Errorf("decrypt finance adapter secret: %w", err)
 	}
 	adapter.Secret = secret
+	_ = json.Unmarshal(fieldMappingJSON, &adapter.FieldMapping)
+	_ = json.Unmarshal(pullConfigJSON, &adapter.PullConfig)
 	return adapter, nil
 }
 
@@ -401,6 +412,305 @@ func (r *PostgresRepository) ListReconciliation(ctx context.Context, limit int) 
 	return items, rows.Err()
 }
 
+func (r *PostgresRepository) CreateImportBatch(ctx context.Context, adapterID *uuid.UUID, sourceType string, fileName string, total int, metadata map[string]any) (*ImportBatch, error) {
+	batch := &ImportBatch{}
+	err := scanImportBatch(r.db.QueryRow(ctx, `
+		INSERT INTO finance_import_batches(adapter_id, source_type, file_name, total_records, metadata)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, adapter_id, source_type, file_name, status, total_records, processed_records,
+		          failed_records, metadata, created_at, completed_at
+	`, adapterID, sourceType, fileName, total, mustJSON(metadata)), batch)
+	if err != nil {
+		return nil, fmt.Errorf("create finance import batch: %w", err)
+	}
+	return batch, nil
+}
+
+func (r *PostgresRepository) CompleteImportBatch(ctx context.Context, id uuid.UUID, processed int, failed int) (*ImportBatch, error) {
+	status := "completed"
+	if failed > 0 && processed > 0 {
+		status = "completed_with_errors"
+	} else if failed > 0 {
+		status = "failed"
+	}
+	batch := &ImportBatch{}
+	err := scanImportBatch(r.db.QueryRow(ctx, `
+		UPDATE finance_import_batches
+		SET status = $2, processed_records = $3, failed_records = $4, completed_at = NOW()
+		WHERE id = $1
+		RETURNING id, adapter_id, source_type, file_name, status, total_records, processed_records,
+		          failed_records, metadata, created_at, completed_at
+	`, id, status, processed, failed), batch)
+	if err != nil {
+		return nil, fmt.Errorf("complete finance import batch: %w", err)
+	}
+	return batch, nil
+}
+
+func (r *PostgresRepository) ListImportBatches(ctx context.Context, limit int) ([]ImportBatch, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, adapter_id, source_type, file_name, status, total_records, processed_records,
+		       failed_records, metadata, created_at, completed_at
+		FROM finance_import_batches
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list finance import batches: %w", err)
+	}
+	defer rows.Close()
+	items := []ImportBatch{}
+	for rows.Next() {
+		var item ImportBatch
+		if err := scanImportBatch(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan finance import batch: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) ListImportRecords(ctx context.Context, limit int) ([]ImportRecord, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, batch_id, adapter_id, external_record_id, expense_type, raw_payload,
+		       normalized_payload, cost_ledger_entry_id, payable_id, status, error_message,
+		       metadata, created_at
+		FROM finance_import_records
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list finance import records: %w", err)
+	}
+	defer rows.Close()
+	items := []ImportRecord{}
+	for rows.Next() {
+		var item ImportRecord
+		if err := scanImportRecord(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan finance import record: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) CreateImportedExpense(ctx context.Context, batchID uuid.UUID, adapterID uuid.UUID, raw map[string]any, input FinanceExpenseInput, occurredAt time.Time, dates financeExpenseDates) (*ImportRecord, error) {
+	existing, err := r.findImportRecord(ctx, adapterID, input.ExternalRecordID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		return existing, nil
+	}
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin finance import expense: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	var payableID *uuid.UUID
+	if input.InvoiceNumber != "" || input.PaymentStatus != "" {
+		payable, err := r.createPayable(ctx, tx, CreatePayableInput{
+			PayableType:       payableTypeForExpense(input.ExpenseType),
+			SourceType:        "finance_import",
+			ExternalPayableID: input.ExternalRecordID,
+			InvoiceNumber:     input.InvoiceNumber,
+			VendorID:          input.VendorID,
+			VendorName:        input.VendorName,
+			EmployeeID:        input.EmployeeID,
+			EmployeeName:      input.EmployeeName,
+			AgentID:           input.AgentID,
+			ProjectID:         input.ProjectID,
+			OrganizationID:    input.OrganizationID,
+			DepartmentID:      input.DepartmentID,
+			AccountCode:       input.AccountCode,
+			AccountName:       input.AccountName,
+			CostCenterCode:    input.CostCenterCode,
+			CostCenterName:    input.CostCenterName,
+			Amount:            input.Amount,
+			TaxAmount:         input.TaxAmount,
+			Currency:          input.Currency,
+			PeriodStart:       input.PeriodStart,
+			PeriodEnd:         input.PeriodEnd,
+			InvoiceDate:       input.InvoiceDate,
+			DueDate:           input.PaymentDueDate,
+			Status:            payableStatusFromPayment(input.PaymentStatus),
+			Metadata:          input.Metadata,
+		}, dates)
+		if err != nil {
+			return nil, err
+		}
+		payableID = &payable.ID
+	}
+
+	var ledgerID uuid.UUID
+	err = tx.QueryRow(ctx, `
+		INSERT INTO cost_ledger_entries (
+			ledger_type, cost_category, source_type, source_id, organization_id, department_id,
+			requirement_id, project_id, workflow_id, task_id, capability_id, actor_id, actor_type,
+			resource_type, amount, currency, base_amount, base_currency, occurred_at, status,
+			description, metadata, expense_type, account_code, account_name, cost_center_code,
+			cost_center_name, vendor_id, vendor_name, employee_id, employee_name, agent_id,
+			agent_name, tax_amount, tax_rate, invoice_number, invoice_date, payment_status,
+			payment_due_date, paid_at, period_start, period_end, finance_payable_id
+		)
+		VALUES (
+			'actual', $1, 'finance_import', NULL, $2, $3, $4, $5, $6, $7, $8, $9, $10,
+			$11, $12, $13, $12, $13, $14, 'posted', $15, $16, $17, $18, $19, $20,
+			$21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37
+		)
+		RETURNING id
+	`, input.CostCategory, input.OrganizationID, input.DepartmentID, input.RequirementID, input.ProjectID,
+		input.WorkflowID, input.TaskID, input.CapabilityID, actorIDForExpense(input), actorTypeForExpense(input),
+		input.ExpenseType, input.Amount, input.Currency, occurredAt, input.Description, mustJSON(input.Metadata),
+		input.ExpenseType, input.AccountCode, input.AccountName, input.CostCenterCode, input.CostCenterName,
+		input.VendorID, input.VendorName, input.EmployeeID, input.EmployeeName, input.AgentID, input.AgentName,
+		input.TaxAmount, input.TaxRate, input.InvoiceNumber, dates.InvoiceDate, input.PaymentStatus,
+		dates.PaymentDueDate, dates.PaidAt, dates.PeriodStart, dates.PeriodEnd, payableID).Scan(&ledgerID)
+	if err != nil {
+		return nil, fmt.Errorf("create imported cost ledger entry: %w", err)
+	}
+
+	record := &ImportRecord{}
+	normalized := expensePayload(input)
+	err = scanImportRecord(tx.QueryRow(ctx, `
+		INSERT INTO finance_import_records (
+			batch_id, adapter_id, external_record_id, expense_type, raw_payload,
+			normalized_payload, cost_ledger_entry_id, payable_id, status, metadata
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'posted', $9)
+		RETURNING id, batch_id, adapter_id, external_record_id, expense_type, raw_payload,
+		          normalized_payload, cost_ledger_entry_id, payable_id, status, error_message,
+		          metadata, created_at
+	`, batchID, adapterID, input.ExternalRecordID, input.ExpenseType, mustJSON(raw), mustJSON(normalized),
+		ledgerID, payableID, mustJSON(map[string]any{"auto_posted": true})), record)
+	if err != nil {
+		return nil, fmt.Errorf("create finance import record: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE cost_ledger_entries SET source_id = $2, finance_import_record_id = $2 WHERE id = $1`, ledgerID, record.ID); err != nil {
+		return nil, fmt.Errorf("link import record to cost ledger: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit finance import expense: %w", err)
+	}
+	return record, nil
+}
+
+func (r *PostgresRepository) CreatePayable(ctx context.Context, input CreatePayableInput, dates financeExpenseDates) (*Payable, error) {
+	return r.createPayable(ctx, r.db, input, dates)
+}
+
+func (r *PostgresRepository) ListPayables(ctx context.Context, limit int) ([]Payable, error) {
+	rows, err := r.db.Query(ctx, payableSelectSQL()+` ORDER BY created_at DESC LIMIT $1`, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list finance payables: %w", err)
+	}
+	defer rows.Close()
+	items := []Payable{}
+	for rows.Next() {
+		var item Payable
+		if err := scanPayable(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan finance payable: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) CreatePayment(ctx context.Context, input CreatePaymentInput, paidAt *time.Time) (*Payment, error) {
+	payment := &Payment{}
+	err := scanPayment(r.db.QueryRow(ctx, `
+		INSERT INTO finance_payments (
+			payment_number, external_payment_id, payment_method, payer_account, payee_account,
+			vendor_id, vendor_name, employee_id, employee_name, amount, currency, paid_at,
+			status, metadata
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		RETURNING id, payment_number, external_payment_id, payment_method, payer_account, payee_account,
+		          vendor_id, vendor_name, employee_id, employee_name, amount::float8, currency,
+		          paid_at, status, metadata, created_at, updated_at
+	`, input.PaymentNumber, input.ExternalPaymentID, input.PaymentMethod, input.PayerAccount, input.PayeeAccount,
+		input.VendorID, input.VendorName, input.EmployeeID, input.EmployeeName, input.Amount, input.Currency,
+		paidAt, input.Status, mustJSON(input.Metadata)), payment)
+	if err != nil {
+		return nil, fmt.Errorf("create finance payment: %w", err)
+	}
+	return payment, nil
+}
+
+func (r *PostgresRepository) ListPayments(ctx context.Context, limit int) ([]Payment, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, payment_number, external_payment_id, payment_method, payer_account, payee_account,
+		       vendor_id, vendor_name, employee_id, employee_name, amount::float8, currency,
+		       paid_at, status, metadata, created_at, updated_at
+		FROM finance_payments
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list finance payments: %w", err)
+	}
+	defer rows.Close()
+	items := []Payment{}
+	for rows.Next() {
+		var item Payment
+		if err := scanPayment(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan finance payment: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) AllocatePayment(ctx context.Context, paymentID uuid.UUID, input AllocatePaymentInput) (*PaymentAllocation, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin finance payment allocation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	allocation := &PaymentAllocation{}
+	err = scanPaymentAllocation(tx.QueryRow(ctx, `
+		INSERT INTO finance_payment_allocations(payment_id, payable_id, amount, currency, metadata)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, payment_id, payable_id, amount::float8, currency, metadata, created_at
+	`, paymentID, input.PayableID, input.Amount, input.Currency, mustJSON(input.Metadata)), allocation)
+	if err != nil {
+		return nil, fmt.Errorf("create finance payment allocation: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE finance_payables
+		SET paid_amount = paid_amount + $2,
+		    status = CASE
+		        WHEN paid_amount + $2 >= amount THEN 'paid'
+		        WHEN paid_amount + $2 > 0 THEN 'partially_paid'
+		        ELSE status
+		    END,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, input.PayableID, input.Amount); err != nil {
+		return nil, fmt.Errorf("update payable paid amount: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE cost_ledger_entries
+		SET finance_payment_id = $2,
+		    payment_status = CASE
+		        WHEN p.status = 'paid' THEN 'paid'
+		        WHEN p.status = 'partially_paid' THEN 'partially_paid'
+		        ELSE payment_status
+		    END,
+		    paid_at = CASE WHEN p.status = 'paid' THEN NOW() ELSE paid_at END
+		FROM finance_payables p
+		WHERE cost_ledger_entries.finance_payable_id = p.id
+		  AND p.id = $1
+	`, input.PayableID, paymentID); err != nil {
+		return nil, fmt.Errorf("update cost ledger payment status: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit finance payment allocation: %w", err)
+	}
+	return allocation, nil
+}
+
 type batchStore interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -460,6 +770,67 @@ func (r *PostgresRepository) findBatchByIdempotencyKey(ctx context.Context, tx p
 		return nil, fmt.Errorf("find finance export batch by idempotency key: %w", err)
 	}
 	return &id, nil
+}
+
+func (r *PostgresRepository) findImportRecord(ctx context.Context, adapterID uuid.UUID, externalRecordID string) (*ImportRecord, error) {
+	record := &ImportRecord{}
+	err := scanImportRecord(r.db.QueryRow(ctx, `
+		SELECT id, batch_id, adapter_id, external_record_id, expense_type, raw_payload,
+		       normalized_payload, cost_ledger_entry_id, payable_id, status, error_message,
+		       metadata, created_at
+		FROM finance_import_records
+		WHERE adapter_id = $1 AND external_record_id = $2
+	`, adapterID, externalRecordID), record)
+	if errorsIsNoRows(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find finance import record: %w", err)
+	}
+	return record, nil
+}
+
+type payableStore interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
+func (r *PostgresRepository) createPayable(ctx context.Context, store payableStore, input CreatePayableInput, dates financeExpenseDates) (*Payable, error) {
+	payable := &Payable{}
+	err := scanPayable(store.QueryRow(ctx, `
+		INSERT INTO finance_payables (
+			payable_type, source_type, source_id, external_payable_id, invoice_number,
+			vendor_id, vendor_name, employee_id, employee_name, agent_id, project_id,
+			organization_id, department_id, account_code, account_name, cost_center_code,
+			cost_center_name, amount, tax_amount, currency, period_start, period_end,
+			invoice_date, due_date, status, metadata
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+		        $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+		RETURNING id, payable_type, source_type, source_id, external_payable_id, invoice_number,
+		          vendor_id, vendor_name, employee_id, employee_name, agent_id, project_id,
+		          organization_id, department_id, account_code, account_name, cost_center_code,
+		          cost_center_name, amount::float8, tax_amount::float8, currency, period_start,
+		          period_end, invoice_date, due_date, status, paid_amount::float8, metadata,
+		          created_at, updated_at
+	`, input.PayableType, input.SourceType, input.SourceID, input.ExternalPayableID, input.InvoiceNumber,
+		input.VendorID, input.VendorName, input.EmployeeID, input.EmployeeName, input.AgentID, input.ProjectID,
+		input.OrganizationID, input.DepartmentID, input.AccountCode, input.AccountName, input.CostCenterCode,
+		input.CostCenterName, input.Amount, input.TaxAmount, input.Currency, dates.PeriodStart, dates.PeriodEnd,
+		dates.InvoiceDate, dates.PaymentDueDate, input.Status, mustJSON(input.Metadata)), payable)
+	if err != nil {
+		return nil, fmt.Errorf("create finance payable: %w", err)
+	}
+	return payable, nil
+}
+
+func payableSelectSQL() string {
+	return `SELECT id, payable_type, source_type, source_id, external_payable_id, invoice_number,
+		          vendor_id, vendor_name, employee_id, employee_name, agent_id, project_id,
+		          organization_id, department_id, account_code, account_name, cost_center_code,
+		          cost_center_name, amount::float8, tax_amount::float8, currency, period_start,
+		          period_end, invoice_date, due_date, status, paid_amount::float8, metadata,
+		          created_at, updated_at
+	        FROM finance_payables`
 }
 
 type exportableCostRow struct {
@@ -531,13 +902,87 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
+func scanImportBatch(row scanner, batch *ImportBatch) error {
+	var metadataJSON []byte
+	var adapterID pgtype.UUID
+	if err := row.Scan(&batch.ID, &adapterID, &batch.SourceType, &batch.FileName, &batch.Status,
+		&batch.TotalRecords, &batch.ProcessedRecords, &batch.FailedRecords, &metadataJSON,
+		&batch.CreatedAt, &batch.CompletedAt); err != nil {
+		return err
+	}
+	batch.AdapterID = uuidPtr(adapterID)
+	return json.Unmarshal(metadataJSON, &batch.Metadata)
+}
+
+func scanImportRecord(row scanner, record *ImportRecord) error {
+	var rawJSON, normalizedJSON, metadataJSON []byte
+	var adapterID, ledgerID, payableID pgtype.UUID
+	if err := row.Scan(&record.ID, &record.BatchID, &adapterID, &record.ExternalRecordID,
+		&record.ExpenseType, &rawJSON, &normalizedJSON, &ledgerID, &payableID, &record.Status,
+		&record.ErrorMessage, &metadataJSON, &record.CreatedAt); err != nil {
+		return err
+	}
+	record.AdapterID = uuidPtr(adapterID)
+	record.CostLedgerEntryID = uuidPtr(ledgerID)
+	record.PayableID = uuidPtr(payableID)
+	_ = json.Unmarshal(rawJSON, &record.RawPayload)
+	_ = json.Unmarshal(normalizedJSON, &record.NormalizedPayload)
+	return json.Unmarshal(metadataJSON, &record.Metadata)
+}
+
+func scanPayable(row scanner, payable *Payable) error {
+	var metadataJSON []byte
+	var sourceID, agentID, projectID, organizationID, departmentID pgtype.UUID
+	if err := row.Scan(&payable.ID, &payable.PayableType, &payable.SourceType, &sourceID,
+		&payable.ExternalPayableID, &payable.InvoiceNumber, &payable.VendorID, &payable.VendorName,
+		&payable.EmployeeID, &payable.EmployeeName, &agentID, &projectID, &organizationID,
+		&departmentID, &payable.AccountCode, &payable.AccountName, &payable.CostCenterCode,
+		&payable.CostCenterName, &payable.Amount, &payable.TaxAmount, &payable.Currency,
+		&payable.PeriodStart, &payable.PeriodEnd, &payable.InvoiceDate, &payable.DueDate,
+		&payable.Status, &payable.PaidAmount, &metadataJSON, &payable.CreatedAt, &payable.UpdatedAt); err != nil {
+		return err
+	}
+	payable.SourceID = uuidPtr(sourceID)
+	payable.AgentID = uuidPtr(agentID)
+	payable.ProjectID = uuidPtr(projectID)
+	payable.OrganizationID = uuidPtr(organizationID)
+	payable.DepartmentID = uuidPtr(departmentID)
+	return json.Unmarshal(metadataJSON, &payable.Metadata)
+}
+
+func scanPayment(row scanner, payment *Payment) error {
+	var metadataJSON []byte
+	if err := row.Scan(&payment.ID, &payment.PaymentNumber, &payment.ExternalPaymentID,
+		&payment.PaymentMethod, &payment.PayerAccount, &payment.PayeeAccount, &payment.VendorID,
+		&payment.VendorName, &payment.EmployeeID, &payment.EmployeeName, &payment.Amount,
+		&payment.Currency, &payment.PaidAt, &payment.Status, &metadataJSON, &payment.CreatedAt,
+		&payment.UpdatedAt); err != nil {
+		return err
+	}
+	return json.Unmarshal(metadataJSON, &payment.Metadata)
+}
+
+func scanPaymentAllocation(row scanner, allocation *PaymentAllocation) error {
+	var metadataJSON []byte
+	if err := row.Scan(&allocation.ID, &allocation.PaymentID, &allocation.PayableID,
+		&allocation.Amount, &allocation.Currency, &metadataJSON, &allocation.CreatedAt); err != nil {
+		return err
+	}
+	return json.Unmarshal(metadataJSON, &allocation.Metadata)
+}
+
 func scanAdapter(row scanner, adapter *FinanceAdapter) error {
 	var metadataJSON []byte
+	var fieldMappingJSON []byte
+	var pullConfigJSON []byte
 	if err := row.Scan(&adapter.ID, &adapter.Name, &adapter.EndpointURL, &adapter.AuthType,
-		&adapter.MaskedSecret, &adapter.Status, &adapter.TimeoutMS, &adapter.RetryCount,
+		&adapter.AdapterType, &adapter.Direction, &adapter.MaskedSecret, &adapter.Status, &adapter.TimeoutMS, &adapter.RetryCount,
+		&fieldMappingJSON, &pullConfigJSON, &adapter.LastSyncAt, &adapter.LastSyncStatus,
 		&metadataJSON, &adapter.CreatedAt, &adapter.UpdatedAt); err != nil {
 		return err
 	}
+	_ = json.Unmarshal(fieldMappingJSON, &adapter.FieldMapping)
+	_ = json.Unmarshal(pullConfigJSON, &adapter.PullConfig)
 	return json.Unmarshal(metadataJSON, &adapter.Metadata)
 }
 
@@ -581,6 +1026,99 @@ func scanWebhookEvent(row scanner, event *WebhookEvent) error {
 	}
 	event.BatchID = uuidPtr(batchID)
 	return json.Unmarshal(payloadJSON, &event.Payload)
+}
+
+type financeExpenseDates struct {
+	OccurredAt     *time.Time
+	InvoiceDate    *time.Time
+	PaymentDueDate *time.Time
+	PaidAt         *time.Time
+	PeriodStart    *time.Time
+	PeriodEnd      *time.Time
+}
+
+func actorIDForExpense(input FinanceExpenseInput) *uuid.UUID {
+	if input.AgentID != nil {
+		return input.AgentID
+	}
+	return nil
+}
+
+func actorTypeForExpense(input FinanceExpenseInput) string {
+	if input.AgentID != nil {
+		return "agent"
+	}
+	if input.EmployeeID != "" {
+		return "human"
+	}
+	return ""
+}
+
+func payableTypeForExpense(expenseType string) string {
+	switch expenseType {
+	case "salary":
+		return "salary"
+	case "project_expense":
+		return "project"
+	case "model_fee":
+		return "model"
+	case "agent_fee":
+		return "agent"
+	default:
+		return "expense"
+	}
+}
+
+func payableStatusFromPayment(status string) string {
+	switch status {
+	case "paid":
+		return "paid"
+	case "partially_paid":
+		return "partially_paid"
+	case "void":
+		return "void"
+	default:
+		return "open"
+	}
+}
+
+func expensePayload(input FinanceExpenseInput) map[string]any {
+	return map[string]any{
+		"external_record_id": input.ExternalRecordID,
+		"expense_type":       input.ExpenseType,
+		"cost_category":      input.CostCategory,
+		"amount":             input.Amount,
+		"currency":           input.Currency,
+		"occurred_at":        input.OccurredAt,
+		"description":        input.Description,
+		"account_code":       input.AccountCode,
+		"account_name":       input.AccountName,
+		"cost_center_code":   input.CostCenterCode,
+		"cost_center_name":   input.CostCenterName,
+		"vendor_id":          input.VendorID,
+		"vendor_name":        input.VendorName,
+		"employee_id":        input.EmployeeID,
+		"employee_name":      input.EmployeeName,
+		"agent_id":           input.AgentID,
+		"agent_name":         input.AgentName,
+		"organization_id":    input.OrganizationID,
+		"department_id":      input.DepartmentID,
+		"requirement_id":     input.RequirementID,
+		"project_id":         input.ProjectID,
+		"workflow_id":        input.WorkflowID,
+		"task_id":            input.TaskID,
+		"capability_id":      input.CapabilityID,
+		"tax_amount":         input.TaxAmount,
+		"tax_rate":           input.TaxRate,
+		"invoice_number":     input.InvoiceNumber,
+		"invoice_date":       input.InvoiceDate,
+		"payment_status":     input.PaymentStatus,
+		"payment_due_date":   input.PaymentDueDate,
+		"paid_at":            input.PaidAt,
+		"period_start":       input.PeriodStart,
+		"period_end":         input.PeriodEnd,
+		"metadata":           input.Metadata,
+	}
 }
 
 func uuidPtr(value pgtype.UUID) *uuid.UUID {

@@ -125,8 +125,8 @@ const dedicatedDomains = new Set([
   'Costing',
   ...lifecycleDomains,
 ])
-const menuStorageKey = 'meta_org.menu.groups.v1'
-const expandedMenuStorageKey = 'meta_org.menu.expanded.v1'
+const menuStorageKey = 'meta_org.menu.groups.v2'
+const expandedMenuStorageKey = 'meta_org.menu.expanded.v2'
 const themeStorageKey = 'meta_org.theme.v1'
 const legacyMenuStorageKey = 'harness.menu.groups.v1'
 const legacyExpandedMenuStorageKey = 'harness.menu.expanded.v1'
@@ -135,22 +135,28 @@ const defaultMenuGroups: MenuGroup[] = [
   {
     id: 'business',
     label: '业务闭环',
-    domains: ['MetaResource', 'Requirement', 'Project', 'Delivery', 'Cost', 'Feedback'],
+    domains: ['Requirement', 'Project', 'Delivery', 'Cost', 'Feedback'],
   },
   {
-    id: 'organization',
-    label: '组织能力',
-    domains: ['Organization', 'Workflow', 'Capability'],
-  },
-  {
-    id: 'governance',
-    label: '治理演进',
-    domains: ['Governance', 'Evolution', 'Verification'],
-  },
-  {
-    id: 'system',
-    label: '系统工具',
-    domains: ['MetaOrg', 'Dashboard', 'DeveloperTools', 'Costing', 'Finance', 'Identity', 'Layer', 'Observability'],
+    id: 'baseData',
+    label: '基础数据',
+    domains: [
+      'MetaResource',
+      'Organization',
+      'Workflow',
+      'Capability',
+      'Governance',
+      'Evolution',
+      'Verification',
+      'MetaOrg',
+      'Dashboard',
+      'DeveloperTools',
+      'Costing',
+      'Finance',
+      'Identity',
+      'Layer',
+      'Observability',
+    ],
   },
 ]
 
@@ -964,13 +970,13 @@ function NavigationSidebar({
               <button
                 type="button"
                 onClick={() => onToggleGroup(group.id)}
-                className="flex h-7 w-full items-center justify-between px-2 text-left text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500"
+                className="flex h-9 w-full items-center justify-between px-2 text-left text-base font-semibold tracking-normal text-slate-300"
               >
                 <span className="inline-flex min-w-0 items-center gap-2">
-                  {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+                  {expanded ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
                   <span className="truncate">{t(`nav.group.${group.id}`)}</span>
                 </span>
-                <span>{groupOperations}</span>
+                <span className="text-xs font-bold text-slate-500">{groupOperations}</span>
               </button>
 
               {expanded && (

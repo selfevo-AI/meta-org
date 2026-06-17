@@ -36,6 +36,16 @@ type Repository interface {
 	UpdateExportLineStatus(ctx context.Context, id uuid.UUID, input UpdateExportLineStatusInput) (*ExportLine, error)
 	LinkProjectCostEntry(ctx context.Context, lineID uuid.UUID, entryID uuid.UUID) error
 	ListReconciliation(ctx context.Context, limit int) ([]ReconciliationItem, error)
+	CreateImportBatch(ctx context.Context, adapterID *uuid.UUID, sourceType string, fileName string, total int, metadata map[string]any) (*ImportBatch, error)
+	CompleteImportBatch(ctx context.Context, id uuid.UUID, processed int, failed int) (*ImportBatch, error)
+	ListImportBatches(ctx context.Context, limit int) ([]ImportBatch, error)
+	ListImportRecords(ctx context.Context, limit int) ([]ImportRecord, error)
+	CreateImportedExpense(ctx context.Context, batchID uuid.UUID, adapterID uuid.UUID, raw map[string]any, input FinanceExpenseInput, occurredAt time.Time, dates financeExpenseDates) (*ImportRecord, error)
+	CreatePayable(ctx context.Context, input CreatePayableInput, dates financeExpenseDates) (*Payable, error)
+	ListPayables(ctx context.Context, limit int) ([]Payable, error)
+	CreatePayment(ctx context.Context, input CreatePaymentInput, paidAt *time.Time) (*Payment, error)
+	ListPayments(ctx context.Context, limit int) ([]Payment, error)
+	AllocatePayment(ctx context.Context, paymentID uuid.UUID, input AllocatePaymentInput) (*PaymentAllocation, error)
 }
 
 type CostPoster interface {
@@ -412,6 +422,190 @@ func (s *Service) ListReconciliation(ctx context.Context, limit int) ([]Reconcil
 	return items, err
 }
 
+func (s *Service) ImportExpenses(ctx context.Context, input ImportExpensesInput) (*ImportExpensesResult, error) {
+	if input.AdapterID == uuid.Nil {
+		return nil, fmt.Errorf("%w: adapter_id is required", ErrValidation)
+	}
+	if len(input.Records) == 0 {
+		return nil, fmt.Errorf("%w: records are required", ErrValidation)
+	}
+	if input.SourceType == "" {
+		input.SourceType = "api"
+	}
+	adapter, err := s.repo.GetAdapterSecret(ctx, input.AdapterID)
+	if err != nil {
+		return nil, err
+	}
+	batch, err := s.repo.CreateImportBatch(ctx, &input.AdapterID, input.SourceType, input.FileName, len(input.Records), input.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	records := make([]ImportRecord, 0, len(input.Records))
+	processed := 0
+	failed := 0
+	for _, raw := range input.Records {
+		expense, dates, err := normalizeExpenseRecord(raw, adapter.FieldMapping)
+		if err != nil {
+			failed++
+			continue
+		}
+		record, err := s.repo.CreateImportedExpense(ctx, batch.ID, input.AdapterID, raw, expense, expenseOccurredAt(dates), dates)
+		if err != nil {
+			failed++
+			continue
+		}
+		records = append(records, *record)
+		processed++
+	}
+	batch, err = s.repo.CompleteImportBatch(ctx, batch.ID, processed, failed)
+	if err != nil {
+		return nil, err
+	}
+	return &ImportExpensesResult{Batch: batch, Records: records}, nil
+}
+
+func (s *Service) ReceiveExpenseWebhook(ctx context.Context, adapterID uuid.UUID, body []byte, signature string, authorization string) (*ImportExpensesResult, error) {
+	if adapterID == uuid.Nil {
+		return nil, fmt.Errorf("%w: adapter id is required", ErrValidation)
+	}
+	adapter, err := s.repo.GetAdapterSecret(ctx, adapterID)
+	if err != nil {
+		return nil, err
+	}
+	if !verifyAdapterCallback(adapter, body, signature, authorization) {
+		return nil, fmt.Errorf("%w: invalid webhook signature", ErrForbidden)
+	}
+	payload := map[string]any{}
+	if len(body) > 0 {
+		if err := json.Unmarshal(body, &payload); err != nil {
+			return nil, fmt.Errorf("%w: invalid webhook payload", ErrValidation)
+		}
+	}
+	records := recordsFromPayload(payload)
+	return s.ImportExpenses(ctx, ImportExpensesInput{
+		AdapterID:  adapterID,
+		SourceType: "webhook",
+		Records:    records,
+		Metadata:   map[string]any{"webhook_payload": payload},
+	})
+}
+
+func (s *Service) PullAdapterExpenses(ctx context.Context, adapterID uuid.UUID) (*ImportExpensesResult, error) {
+	if adapterID == uuid.Nil {
+		return nil, fmt.Errorf("%w: adapter id is required", ErrValidation)
+	}
+	adapter, err := s.repo.GetAdapterSecret(ctx, adapterID)
+	if err != nil {
+		return nil, err
+	}
+	if adapter.EndpointURL == "" {
+		return nil, fmt.Errorf("%w: adapter endpoint_url is required", ErrValidation)
+	}
+	reqCtx, cancel := context.WithTimeout(ctx, adapterTimeout(adapter.TimeoutMS))
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, adapter.EndpointURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create finance pull request: %w", err)
+	}
+	if adapter.AuthType == AuthBearer {
+		req.Header.Set("Authorization", "Bearer "+adapter.Secret)
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("pull finance expenses: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%w: pull endpoint returned HTTP %d", ErrValidation, resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, fmt.Errorf("read finance pull response: %w", err)
+	}
+	payload := map[string]any{}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, fmt.Errorf("%w: invalid pull response", ErrValidation)
+	}
+	return s.ImportExpenses(ctx, ImportExpensesInput{
+		AdapterID:  adapterID,
+		SourceType: "pull",
+		Records:    recordsFromPayload(payload),
+		Metadata:   map[string]any{"pull_status_code": resp.StatusCode},
+	})
+}
+
+func (s *Service) ListImportBatches(ctx context.Context, limit int) ([]ImportBatch, error) {
+	items, err := s.repo.ListImportBatches(ctx, normalizeLimit(limit))
+	if items == nil {
+		items = []ImportBatch{}
+	}
+	return items, err
+}
+
+func (s *Service) ListImportRecords(ctx context.Context, limit int) ([]ImportRecord, error) {
+	items, err := s.repo.ListImportRecords(ctx, normalizeLimit(limit))
+	if items == nil {
+		items = []ImportRecord{}
+	}
+	return items, err
+}
+
+func (s *Service) CreatePayable(ctx context.Context, input CreatePayableInput) (*Payable, error) {
+	normalizePayableInput(&input)
+	if input.Amount <= 0 {
+		return nil, fmt.Errorf("%w: amount must be greater than zero", ErrValidation)
+	}
+	dates, err := datesFromPayable(input)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.CreatePayable(ctx, input, dates)
+}
+
+func (s *Service) ListPayables(ctx context.Context, limit int) ([]Payable, error) {
+	items, err := s.repo.ListPayables(ctx, normalizeLimit(limit))
+	if items == nil {
+		items = []Payable{}
+	}
+	return items, err
+}
+
+func (s *Service) CreatePayment(ctx context.Context, input CreatePaymentInput) (*Payment, error) {
+	normalizePaymentInput(&input)
+	if input.Amount <= 0 {
+		return nil, fmt.Errorf("%w: amount must be greater than zero", ErrValidation)
+	}
+	paidAt, err := parseOptionalTime(input.PaidAt)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.CreatePayment(ctx, input, paidAt)
+}
+
+func (s *Service) ListPayments(ctx context.Context, limit int) ([]Payment, error) {
+	items, err := s.repo.ListPayments(ctx, normalizeLimit(limit))
+	if items == nil {
+		items = []Payment{}
+	}
+	return items, err
+}
+
+func (s *Service) AllocatePayment(ctx context.Context, paymentID uuid.UUID, input AllocatePaymentInput) (*PaymentAllocation, error) {
+	if paymentID == uuid.Nil || input.PayableID == uuid.Nil {
+		return nil, fmt.Errorf("%w: payment_id and payable_id are required", ErrValidation)
+	}
+	if input.Amount <= 0 {
+		return nil, fmt.Errorf("%w: amount must be greater than zero", ErrValidation)
+	}
+	if input.Currency == "" {
+		input.Currency = "CNY"
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+	return s.repo.AllocatePayment(ctx, paymentID, input)
+}
+
 func (s *Service) markExportFailed(ctx context.Context, id uuid.UUID, message string) (*ExportBatch, error) {
 	batch, err := s.repo.UpdateExportBatchStatus(ctx, id, UpdateExportBatchStatusInput{
 		Status:       BatchFailed,
@@ -564,6 +758,12 @@ func normalizeCreateAdapterInput(input *CreateAdapterInput) {
 	if input.AuthType == "" {
 		input.AuthType = AuthHMAC
 	}
+	if input.AdapterType == "" {
+		input.AdapterType = "generic"
+	}
+	if input.Direction == "" {
+		input.Direction = "bidirectional"
+	}
 	if input.Status == "" {
 		input.Status = AdapterActive
 	}
@@ -578,6 +778,12 @@ func normalizeCreateAdapterInput(input *CreateAdapterInput) {
 	}
 	if input.Metadata == nil {
 		input.Metadata = map[string]any{}
+	}
+	if input.FieldMapping == nil {
+		input.FieldMapping = map[string]any{}
+	}
+	if input.PullConfig == nil {
+		input.PullConfig = map[string]any{}
 	}
 }
 
@@ -633,6 +839,274 @@ func validAuthType(authType string) bool {
 
 func validAdapterStatus(status string) bool {
 	return status == AdapterActive || status == AdapterDisabled || status == AdapterError
+}
+
+func recordsFromPayload(payload map[string]any) []map[string]any {
+	for _, key := range []string{"records", "expenses", "lines"} {
+		raw, ok := payload[key].([]any)
+		if !ok {
+			continue
+		}
+		records := make([]map[string]any, 0, len(raw))
+		for _, item := range raw {
+			if record, ok := item.(map[string]any); ok {
+				records = append(records, record)
+			}
+		}
+		return records
+	}
+	return []map[string]any{payload}
+}
+
+func normalizeExpenseRecord(raw map[string]any, mapping map[string]any) (FinanceExpenseInput, financeExpenseDates, error) {
+	value := func(field string) any {
+		if external, ok := mapping[field].(string); ok && external != "" {
+			if v, exists := raw[external]; exists {
+				return v
+			}
+		}
+		return raw[field]
+	}
+	input := FinanceExpenseInput{
+		ExternalRecordID: stringAny(value("external_record_id")),
+		ExpenseType:      firstNonEmpty(stringAny(value("expense_type")), "daily_expense"),
+		CostCategory:     stringAny(value("cost_category")),
+		Amount:           floatAny(value("amount")),
+		Currency:         firstNonEmpty(stringAny(value("currency")), "CNY"),
+		OccurredAt:       stringAny(value("occurred_at")),
+		Description:      stringAny(value("description")),
+		AccountCode:      stringAny(value("account_code")),
+		AccountName:      stringAny(value("account_name")),
+		CostCenterCode:   stringAny(value("cost_center_code")),
+		CostCenterName:   stringAny(value("cost_center_name")),
+		VendorID:         stringAny(value("vendor_id")),
+		VendorName:       stringAny(value("vendor_name")),
+		EmployeeID:       stringAny(value("employee_id")),
+		EmployeeName:     stringAny(value("employee_name")),
+		AgentName:        stringAny(value("agent_name")),
+		TaxAmount:        floatAny(value("tax_amount")),
+		TaxRate:          floatAny(value("tax_rate")),
+		InvoiceNumber:    stringAny(value("invoice_number")),
+		InvoiceDate:      stringAny(value("invoice_date")),
+		PaymentStatus:    firstNonEmpty(stringAny(value("payment_status")), "unpaid"),
+		PaymentDueDate:   stringAny(value("payment_due_date")),
+		PaidAt:           stringAny(value("paid_at")),
+		PeriodStart:      stringAny(value("period_start")),
+		PeriodEnd:        stringAny(value("period_end")),
+		Metadata:         map[string]any{"raw_source": "finance_import"},
+	}
+	if input.CostCategory == "" {
+		input.CostCategory = costCategoryForExpense(input.ExpenseType)
+	}
+	input.AgentID = uuidAny(value("agent_id"))
+	input.OrganizationID = uuidAny(value("organization_id"))
+	input.DepartmentID = uuidAny(value("department_id"))
+	input.RequirementID = uuidAny(value("requirement_id"))
+	input.ProjectID = uuidAny(value("project_id"))
+	input.WorkflowID = uuidAny(value("workflow_id"))
+	input.TaskID = uuidAny(value("task_id"))
+	input.CapabilityID = uuidAny(value("capability_id"))
+	if input.ExternalRecordID == "" {
+		return input, financeExpenseDates{}, fmt.Errorf("%w: external_record_id is required", ErrValidation)
+	}
+	if input.Amount == 0 {
+		return input, financeExpenseDates{}, fmt.Errorf("%w: amount is required", ErrValidation)
+	}
+	dates, err := datesFromExpense(input)
+	if err != nil {
+		return input, dates, err
+	}
+	return input, dates, nil
+}
+
+func datesFromExpense(input FinanceExpenseInput) (financeExpenseDates, error) {
+	occurredAt, err := parseOptionalTime(input.OccurredAt)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	invoiceDate, err := parseOptionalDate(input.InvoiceDate)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	dueDate, err := parseOptionalDate(input.PaymentDueDate)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	paidAt, err := parseOptionalTime(input.PaidAt)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	periodStart, err := parseOptionalDate(input.PeriodStart)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	periodEnd, err := parseOptionalDate(input.PeriodEnd)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	return financeExpenseDates{
+		OccurredAt:     occurredAt,
+		InvoiceDate:    invoiceDate,
+		PaymentDueDate: dueDate,
+		PaidAt:         paidAt,
+		PeriodStart:    periodStart,
+		PeriodEnd:      periodEnd,
+	}, nil
+}
+
+func datesFromPayable(input CreatePayableInput) (financeExpenseDates, error) {
+	invoiceDate, err := parseOptionalDate(input.InvoiceDate)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	dueDate, err := parseOptionalDate(input.DueDate)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	periodStart, err := parseOptionalDate(input.PeriodStart)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	periodEnd, err := parseOptionalDate(input.PeriodEnd)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	return financeExpenseDates{InvoiceDate: invoiceDate, PaymentDueDate: dueDate, PeriodStart: periodStart, PeriodEnd: periodEnd}, nil
+}
+
+func expenseOccurredAt(dates financeExpenseDates) time.Time {
+	if dates.OccurredAt != nil {
+		return *dates.OccurredAt
+	}
+	return time.Now()
+}
+
+func parseOptionalDate(value string) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	parsed, err := time.Parse("2006-01-02", value)
+	if err == nil {
+		return &parsed, nil
+	}
+	return parseOptionalTime(value)
+}
+
+func parseOptionalTime(value string) (*time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	if parsed, err := time.Parse(time.RFC3339, value); err == nil {
+		return &parsed, nil
+	}
+	if parsed, err := time.Parse("2006-01-02", value); err == nil {
+		return &parsed, nil
+	}
+	return nil, fmt.Errorf("%w: invalid date/time %q", ErrValidation, value)
+}
+
+func costCategoryForExpense(expenseType string) string {
+	switch strings.ToLower(strings.TrimSpace(expenseType)) {
+	case "salary":
+		return "human"
+	case "model_fee":
+		return "model_token"
+	case "agent_fee":
+		return "agent"
+	case "project_expense", "daily_expense":
+		return "finance"
+	default:
+		return "manual"
+	}
+}
+
+func normalizePayableInput(input *CreatePayableInput) {
+	if input.PayableType == "" {
+		input.PayableType = "expense"
+	}
+	if input.SourceType == "" {
+		input.SourceType = "manual"
+	}
+	if input.Currency == "" {
+		input.Currency = "CNY"
+	}
+	if input.Status == "" {
+		input.Status = "open"
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+}
+
+func normalizePaymentInput(input *CreatePaymentInput) {
+	if input.Currency == "" {
+		input.Currency = "CNY"
+	}
+	if input.Status == "" {
+		input.Status = "paid"
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+}
+
+func stringAny(value any) string {
+	if value == nil {
+		return ""
+	}
+	switch v := value.(type) {
+	case string:
+		return strings.TrimSpace(v)
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(v))
+	}
+}
+
+func floatAny(value any) float64 {
+	switch v := value.(type) {
+	case float64:
+		return v
+	case float32:
+		return float64(v)
+	case int:
+		return float64(v)
+	case int64:
+		return float64(v)
+	case json.Number:
+		f, _ := v.Float64()
+		return f
+	case string:
+		var out float64
+		_, _ = fmt.Sscanf(strings.TrimSpace(v), "%f", &out)
+		return out
+	default:
+		return 0
+	}
+}
+
+func uuidAny(value any) *uuid.UUID {
+	raw := stringAny(value)
+	if raw == "" || raw == "<nil>" {
+		return nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return nil
+	}
+	return &id
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" && strings.TrimSpace(value) != "<nil>" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func normalizeLimit(limit int) int {

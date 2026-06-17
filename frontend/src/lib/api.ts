@@ -50,6 +50,48 @@ export async function listRoles(): Promise<Role[]> {
   return apiRequest<Role[]>('/roles')
 }
 
+export async function listDataTables(token: string, category?: string): Promise<DataTable[]> {
+  const query = category ? `?category=${encodeURIComponent(category)}` : ''
+  return apiRequest<DataTable[]>(`/governance/data/tables${query}`, { token })
+}
+
+export async function listDataFields(token: string, tableName: string): Promise<DataField[]> {
+  return apiRequest<DataField[]>(`/governance/data/tables/${encodeURIComponent(tableName)}/fields`, { token })
+}
+
+export async function getUserFieldPreference(token: string, tableName: string): Promise<UserFieldPreference> {
+  return apiRequest<UserFieldPreference>(`/governance/data/field-preferences/${encodeURIComponent(tableName)}`, { token })
+}
+
+export async function saveUserFieldPreference(token: string, tableName: string, input: SaveUserFieldPreferenceInput): Promise<UserFieldPreference> {
+  return apiRequest<UserFieldPreference>(`/governance/data/field-preferences/${encodeURIComponent(tableName)}`, {
+    method: 'PUT',
+    token,
+    body: input,
+  })
+}
+
+export async function createFieldPermissionRule(token: string, input: CreateFieldPermissionRuleInput): Promise<FieldPermissionRule> {
+  return apiRequest<FieldPermissionRule>('/governance/data/field-permissions', {
+    method: 'POST',
+    token,
+    body: input,
+  })
+}
+
+export async function listFieldPermissionRules(token: string, tableName?: string): Promise<FieldPermissionRule[]> {
+  const query = tableName ? `?table=${encodeURIComponent(tableName)}` : ''
+  return apiRequest<FieldPermissionRule[]>(`/governance/data/field-permissions${query}`, { token })
+}
+
+export async function checkFieldAccess(token: string, input: FieldAccessCheckInput): Promise<FieldAccessCheckResult> {
+  return apiRequest<FieldAccessCheckResult>('/governance/data/field-access/check', {
+    method: 'POST',
+    token,
+    body: input,
+  })
+}
+
 export async function getDashboardOverview(token: string): Promise<DashboardOverview> {
   return apiRequest<DashboardOverview>('/dashboard/overview', { token })
 }
@@ -260,6 +302,49 @@ export async function listFinanceReconciliation(token: string): Promise<FinanceR
   return apiRequest<FinanceReconciliationItem[]>('/finance/reconciliation', { token })
 }
 
+export async function importFinanceExpenses(token: string, input: ImportFinanceExpensesInput): Promise<FinanceImportResult> {
+  return apiRequest<FinanceImportResult>('/finance/imports', { method: 'POST', token, body: input })
+}
+
+export async function importFinanceExpenseFile(token: string, adapterID: string, file: File): Promise<FinanceImportResult> {
+  const form = new FormData()
+  form.append('adapter_id', adapterID)
+  form.append('file', file)
+  return apiRequest<FinanceImportResult>('/finance/imports/files', { method: 'POST', token, body: form })
+}
+
+export async function pullFinanceExpenses(token: string, adapterID: string): Promise<FinanceImportResult> {
+  return apiRequest<FinanceImportResult>(`/finance/imports/${adapterID}/pull`, { method: 'POST', token })
+}
+
+export async function listFinanceImportBatches(token: string): Promise<FinanceImportBatch[]> {
+  return apiRequest<FinanceImportBatch[]>('/finance/import-batches', { token })
+}
+
+export async function listFinanceImportRecords(token: string): Promise<FinanceImportRecord[]> {
+  return apiRequest<FinanceImportRecord[]>('/finance/import-records', { token })
+}
+
+export async function createFinancePayable(token: string, input: CreateFinancePayableInput): Promise<FinancePayable> {
+  return apiRequest<FinancePayable>('/finance/payables', { method: 'POST', token, body: input })
+}
+
+export async function listFinancePayables(token: string): Promise<FinancePayable[]> {
+  return apiRequest<FinancePayable[]>('/finance/payables', { token })
+}
+
+export async function createFinancePayment(token: string, input: CreateFinancePaymentInput): Promise<FinancePayment> {
+  return apiRequest<FinancePayment>('/finance/payments', { method: 'POST', token, body: input })
+}
+
+export async function listFinancePayments(token: string): Promise<FinancePayment[]> {
+  return apiRequest<FinancePayment[]>('/finance/payments', { token })
+}
+
+export async function allocateFinancePayment(token: string, paymentID: string, input: AllocateFinancePaymentInput): Promise<FinancePaymentAllocation> {
+  return apiRequest<FinancePaymentAllocation>(`/finance/payments/${paymentID}/allocate`, { method: 'POST', token, body: input })
+}
+
 export async function listCurrencies(token: string): Promise<Currency[]> {
   return apiRequest<Currency[]>('/costing/currencies', { token })
 }
@@ -336,6 +421,95 @@ export interface Role {
   role_type: 'planner' | 'executor' | 'reviewer'
   description?: string
   permissions: string[]
+}
+
+export interface DataTable {
+  table_name: string
+  master_table_name: string
+  detail_table_name: string
+  key_prefix: string
+  display_name: string
+  category: string
+  is_base_data: boolean
+  is_business_scenario: boolean
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface DataField {
+  table_name: string
+  field_name: string
+  data_type: string
+  display_name: string
+  is_master_key: boolean
+  is_sub_key: boolean
+  is_visible_default: boolean
+  permission_level: string
+  display_order: number
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface UserFieldPreference {
+  actor_id: string
+  table_name: string
+  visible_fields: string[]
+  field_order: string[]
+  field_widths: Record<string, number>
+  created_at?: string
+  updated_at?: string
+}
+
+export interface SaveUserFieldPreferenceInput {
+  visible_fields: string[]
+  field_order: string[]
+  field_widths: Record<string, number>
+}
+
+export interface FieldPermissionRule {
+  id: string
+  table_name: string
+  field_name: string
+  actor_type: string
+  actor_id?: string
+  role_id?: string
+  action: 'read' | 'write' | 'delete' | 'admin'
+  behavior: 'allow' | 'notify' | 'approve' | 'deny'
+  required_level: string
+  reason: string
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateFieldPermissionRuleInput {
+  table_name: string
+  field_name?: string
+  actor_type?: string
+  actor_id?: string
+  role_id?: string
+  action: 'read' | 'write' | 'delete' | 'admin'
+  behavior?: 'allow' | 'notify' | 'approve' | 'deny'
+  required_level?: string
+  reason?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface FieldAccessCheckInput {
+  actor_id?: string
+  actor_type?: string
+  table_name: string
+  field_name?: string
+  action: 'read' | 'write' | 'delete' | 'admin'
+}
+
+export interface FieldAccessCheckResult {
+  allowed: boolean
+  behavior: string
+  required_level: string
+  reason: string
 }
 
 export interface AIAgent {
@@ -961,10 +1135,16 @@ export interface FinanceAdapter {
   name: string
   endpoint_url: string
   auth_type: 'hmac' | 'bearer'
+  adapter_type: string
+  direction: string
   masked_secret: string
   status: string
   timeout_ms: number
   retry_count: number
+  field_mapping: Record<string, unknown>
+  pull_config: Record<string, unknown>
+  last_sync_at?: string
+  last_sync_status: string
   metadata: Record<string, unknown>
   created_at: string
   updated_at: string
@@ -974,9 +1154,13 @@ export interface CreateFinanceAdapterInput {
   name: string
   endpoint_url: string
   auth_type: 'hmac' | 'bearer'
+  adapter_type?: string
+  direction?: string
   secret: string
   timeout_ms?: number
   retry_count?: number
+  field_mapping?: Record<string, unknown>
+  pull_config?: Record<string, unknown>
   metadata?: Record<string, unknown>
 }
 
@@ -1035,6 +1219,154 @@ export interface FinanceReconciliationItem {
   error_message: string
   submitted_at?: string
   updated_at: string
+}
+
+export interface ImportFinanceExpensesInput {
+  adapter_id: string
+  source_type?: string
+  file_name?: string
+  records: Array<Record<string, unknown>>
+  metadata?: Record<string, unknown>
+}
+
+export interface FinanceImportBatch {
+  id: string
+  adapter_id?: string
+  source_type: string
+  file_name: string
+  status: string
+  total_records: number
+  processed_records: number
+  failed_records: number
+  metadata: Record<string, unknown>
+  created_at: string
+  completed_at?: string
+}
+
+export interface FinanceImportRecord {
+  id: string
+  batch_id: string
+  adapter_id?: string
+  external_record_id: string
+  expense_type: string
+  raw_payload: Record<string, unknown>
+  normalized_payload: Record<string, unknown>
+  cost_ledger_entry_id?: string
+  payable_id?: string
+  status: string
+  error_message: string
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
+export interface FinanceImportResult {
+  batch: FinanceImportBatch
+  records: FinanceImportRecord[]
+}
+
+export interface FinancePayable {
+  id: string
+  payable_type: string
+  source_type: string
+  external_payable_id: string
+  invoice_number: string
+  vendor_id: string
+  vendor_name: string
+  employee_id: string
+  employee_name: string
+  project_id?: string
+  account_code: string
+  account_name: string
+  cost_center_code: string
+  cost_center_name: string
+  amount: number
+  tax_amount: number
+  currency: string
+  period_start?: string
+  period_end?: string
+  invoice_date?: string
+  due_date?: string
+  status: string
+  paid_amount: number
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateFinancePayableInput {
+  payable_type?: string
+  external_payable_id?: string
+  invoice_number?: string
+  vendor_id?: string
+  vendor_name?: string
+  employee_id?: string
+  employee_name?: string
+  project_id?: string
+  account_code?: string
+  account_name?: string
+  cost_center_code?: string
+  cost_center_name?: string
+  amount: number
+  tax_amount?: number
+  currency?: string
+  invoice_date?: string
+  due_date?: string
+  status?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface FinancePayment {
+  id: string
+  payment_number: string
+  external_payment_id: string
+  payment_method: string
+  payer_account: string
+  payee_account: string
+  vendor_id: string
+  vendor_name: string
+  employee_id: string
+  employee_name: string
+  amount: number
+  currency: string
+  paid_at?: string
+  status: string
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateFinancePaymentInput {
+  payment_number?: string
+  external_payment_id?: string
+  payment_method?: string
+  payer_account?: string
+  payee_account?: string
+  vendor_id?: string
+  vendor_name?: string
+  employee_id?: string
+  employee_name?: string
+  amount: number
+  currency?: string
+  paid_at?: string
+  status?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface AllocateFinancePaymentInput {
+  payable_id: string
+  amount: number
+  currency?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface FinancePaymentAllocation {
+  id: string
+  payment_id: string
+  payable_id: string
+  amount: number
+  currency: string
+  metadata: Record<string, unknown>
+  created_at: string
 }
 
 export interface Currency {

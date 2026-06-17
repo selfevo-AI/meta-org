@@ -255,3 +255,242 @@ func (r *Repository) ListAccessDecisions(ctx context.Context, limit int) ([]Acce
 	}
 	return decisions, nil
 }
+
+func (r *Repository) ListDataTables(ctx context.Context, category string) ([]DataTable, error) {
+	query := `SELECT table_name, master_table_name, detail_table_name, key_prefix, display_name, category,
+	                 is_base_data, is_business_scenario, metadata, created_at, updated_at
+	          FROM data_table_catalog`
+	args := []any{}
+	if category != "" {
+		query += ` WHERE category = $1`
+		args = append(args, category)
+	}
+	query += ` ORDER BY category, display_name, table_name`
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list data tables: %w", err)
+	}
+	defer rows.Close()
+
+	tables := make([]DataTable, 0)
+	for rows.Next() {
+		var table DataTable
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&table.TableName,
+			&table.MasterTableName,
+			&table.DetailTableName,
+			&table.KeyPrefix,
+			&table.DisplayName,
+			&table.Category,
+			&table.IsBaseData,
+			&table.IsBusinessScenario,
+			&metadataJSON,
+			&table.CreatedAt,
+			&table.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan data table: %w", err)
+		}
+		_ = json.Unmarshal(metadataJSON, &table.Metadata)
+		tables = append(tables, table)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list data tables iteration: %w", err)
+	}
+	return tables, nil
+}
+
+func (r *Repository) ListDataFields(ctx context.Context, tableName string) ([]DataField, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT table_name, field_name, data_type, display_name, is_master_key, is_sub_key,
+		        is_visible_default, permission_level, display_order, metadata, created_at, updated_at
+		 FROM data_field_catalog
+		 WHERE table_name = $1
+		 ORDER BY display_order, field_name`, tableName)
+	if err != nil {
+		return nil, fmt.Errorf("list data fields: %w", err)
+	}
+	defer rows.Close()
+
+	fields := make([]DataField, 0)
+	for rows.Next() {
+		var field DataField
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&field.TableName,
+			&field.FieldName,
+			&field.DataType,
+			&field.DisplayName,
+			&field.IsMasterKey,
+			&field.IsSubKey,
+			&field.IsVisibleDefault,
+			&field.PermissionLevel,
+			&field.DisplayOrder,
+			&metadataJSON,
+			&field.CreatedAt,
+			&field.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan data field: %w", err)
+		}
+		_ = json.Unmarshal(metadataJSON, &field.Metadata)
+		fields = append(fields, field)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list data fields iteration: %w", err)
+	}
+	return fields, nil
+}
+
+func (r *Repository) GetUserFieldPreference(ctx context.Context, actorID, tableName string) (*UserFieldPreference, error) {
+	pref := &UserFieldPreference{}
+	var visibleJSON, orderJSON, widthsJSON []byte
+	err := r.db.QueryRow(ctx,
+		`SELECT actor_id, table_name, visible_fields, field_order, field_widths, created_at, updated_at
+		 FROM user_field_preferences
+		 WHERE actor_id = $1 AND table_name = $2`, actorID, tableName,
+	).Scan(&pref.ActorID, &pref.TableName, &visibleJSON, &orderJSON, &widthsJSON, &pref.CreatedAt, &pref.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get user field preference: %w", err)
+	}
+	_ = json.Unmarshal(visibleJSON, &pref.VisibleFields)
+	_ = json.Unmarshal(orderJSON, &pref.FieldOrder)
+	_ = json.Unmarshal(widthsJSON, &pref.FieldWidths)
+	return pref, nil
+}
+
+func (r *Repository) UpsertUserFieldPreference(ctx context.Context, actorID, tableName string, input UpsertUserFieldPreferenceInput) (*UserFieldPreference, error) {
+	visibleJSON, _ := json.Marshal(input.VisibleFields)
+	orderJSON, _ := json.Marshal(input.FieldOrder)
+	widthsJSON, _ := json.Marshal(input.FieldWidths)
+
+	pref := &UserFieldPreference{}
+	err := r.db.QueryRow(ctx,
+		`INSERT INTO user_field_preferences(actor_id, table_name, visible_fields, field_order, field_widths)
+		 VALUES ($1, $2, $3, $4, $5)
+		 ON CONFLICT (actor_id, table_name) DO UPDATE SET
+		    visible_fields = EXCLUDED.visible_fields,
+		    field_order = EXCLUDED.field_order,
+		    field_widths = EXCLUDED.field_widths,
+		    updated_at = NOW()
+		 RETURNING actor_id, table_name, visible_fields, field_order, field_widths, created_at, updated_at`,
+		actorID, tableName, visibleJSON, orderJSON, widthsJSON,
+	).Scan(&pref.ActorID, &pref.TableName, &visibleJSON, &orderJSON, &widthsJSON, &pref.CreatedAt, &pref.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("upsert user field preference: %w", err)
+	}
+	_ = json.Unmarshal(visibleJSON, &pref.VisibleFields)
+	_ = json.Unmarshal(orderJSON, &pref.FieldOrder)
+	_ = json.Unmarshal(widthsJSON, &pref.FieldWidths)
+	return pref, nil
+}
+
+func (r *Repository) CreateFieldPermissionRule(ctx context.Context, input CreateFieldPermissionRuleInput) (*FieldPermissionRule, error) {
+	metadataJSON, _ := json.Marshal(input.Metadata)
+	rule := &FieldPermissionRule{}
+	err := r.db.QueryRow(ctx,
+		`INSERT INTO field_permission_rules(table_name, field_name, actor_type, actor_id, role_id, action, behavior, required_level, reason, metadata)
+		 VALUES ($1, $2, $3, NULLIF($4, ''), $5, $6, $7, $8, $9, $10)
+		 RETURNING id, table_name, field_name, actor_type, COALESCE(actor_id, ''), role_id, action, behavior, required_level, reason, metadata, created_at, updated_at`,
+		input.TableName, input.FieldName, input.ActorType, input.ActorID, input.RoleID, input.Action, input.Behavior, input.RequiredLevel, input.Reason, metadataJSON,
+	).Scan(
+		&rule.ID,
+		&rule.TableName,
+		&rule.FieldName,
+		&rule.ActorType,
+		&rule.ActorID,
+		&rule.RoleID,
+		&rule.Action,
+		&rule.Behavior,
+		&rule.RequiredLevel,
+		&rule.Reason,
+		&metadataJSON,
+		&rule.CreatedAt,
+		&rule.UpdatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create field permission rule: %w", err)
+	}
+	_ = json.Unmarshal(metadataJSON, &rule.Metadata)
+	return rule, nil
+}
+
+func (r *Repository) ListFieldPermissionRules(ctx context.Context, tableName string) ([]FieldPermissionRule, error) {
+	query := `SELECT id, table_name, field_name, actor_type, COALESCE(actor_id, ''), role_id, action, behavior,
+	                 required_level, reason, metadata, created_at, updated_at
+	          FROM field_permission_rules`
+	args := []any{}
+	if tableName != "" {
+		query += ` WHERE table_name = $1`
+		args = append(args, tableName)
+	}
+	query += ` ORDER BY table_name, field_name, action, actor_type, created_at DESC`
+
+	rows, err := r.db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list field permission rules: %w", err)
+	}
+	defer rows.Close()
+
+	rules := make([]FieldPermissionRule, 0)
+	for rows.Next() {
+		var rule FieldPermissionRule
+		var metadataJSON []byte
+		if err := rows.Scan(
+			&rule.ID,
+			&rule.TableName,
+			&rule.FieldName,
+			&rule.ActorType,
+			&rule.ActorID,
+			&rule.RoleID,
+			&rule.Action,
+			&rule.Behavior,
+			&rule.RequiredLevel,
+			&rule.Reason,
+			&metadataJSON,
+			&rule.CreatedAt,
+			&rule.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan field permission rule: %w", err)
+		}
+		_ = json.Unmarshal(metadataJSON, &rule.Metadata)
+		rules = append(rules, rule)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list field permission rules iteration: %w", err)
+	}
+	return rules, nil
+}
+
+func (r *Repository) CheckFieldAccess(ctx context.Context, input FieldAccessCheckInput) (*FieldAccessCheckResult, error) {
+	if input.FieldName == "" {
+		input.FieldName = "*"
+	}
+	result := &FieldAccessCheckResult{
+		Allowed:       true,
+		Behavior:      "allow",
+		RequiredLevel: "L1",
+		Reason:        "no matching field rule",
+	}
+	err := r.db.QueryRow(ctx,
+		`SELECT behavior, required_level, reason
+		 FROM field_permission_rules
+		 WHERE table_name = $1
+		   AND action = $2
+		   AND (field_name = $3 OR field_name = '*')
+		   AND (actor_type = $4 OR actor_type = '*')
+		   AND (actor_id = $5 OR actor_id IS NULL)
+		 ORDER BY
+		   CASE WHEN actor_id = $5 THEN 0 ELSE 1 END,
+		   CASE WHEN actor_type = $4 THEN 0 ELSE 1 END,
+		   CASE WHEN field_name = $3 THEN 0 ELSE 1 END,
+		   created_at DESC
+		 LIMIT 1`,
+		input.TableName, input.Action, input.FieldName, input.ActorType, input.ActorID,
+	).Scan(&result.Behavior, &result.RequiredLevel, &result.Reason)
+	if err != nil {
+		return result, nil
+	}
+	result.Allowed = result.Behavior == "allow" || result.Behavior == "notify"
+	return result, nil
+}
