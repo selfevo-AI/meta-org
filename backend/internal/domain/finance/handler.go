@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/dberrors"
 )
 
 type Handler struct {
@@ -172,6 +173,8 @@ func statusFromError(err error) int {
 	switch {
 	case errors.Is(err, ErrValidation):
 		return http.StatusBadRequest
+	case dberrors.IsUniqueViolation(err):
+		return http.StatusConflict
 	case errors.Is(err, ErrForbidden):
 		return http.StatusForbidden
 	case errors.Is(err, ErrNotFound), errors.Is(err, pgx.ErrNoRows):

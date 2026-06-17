@@ -24,14 +24,15 @@ func (r *PostgresRepository) CreateTool(ctx context.Context, input CreateToolInp
 	err := scanToolRow(r.db.QueryRow(ctx, `
 		INSERT INTO tool_definitions (
 			name, description, source_type, default_policy, risk_level, required_level,
-			input_schema, output_schema, metadata, is_active
+			tool_category, approval_tier_required, input_schema, output_schema, metadata, is_active
 		)
 		VALUES ($1, $2, COALESCE(NULLIF($3, ''), 'internal_api'), COALESCE(NULLIF($4, ''), 'approve'),
-			COALESCE(NULLIF($5, ''), 'medium'), COALESCE(NULLIF($6, ''), 'L1'), $7, $8, $9, COALESCE($10, TRUE))
+			COALESCE(NULLIF($5, ''), 'medium'), COALESCE(NULLIF($6, ''), 'L1'),
+			COALESCE(NULLIF($7, ''), 'execution_operation'), COALESCE(NULLIF($8, ''), 'executor'), $9, $10, $11, COALESCE($12, TRUE))
 		RETURNING id, name, description, source_type, default_policy, risk_level, required_level,
-			input_schema, output_schema, metadata, is_active, created_at, updated_at
+			tool_category, approval_tier_required, input_schema, output_schema, metadata, is_active, created_at, updated_at
 	`, input.Name, input.Description, input.SourceType, input.DefaultPolicy, input.RiskLevel, input.RequiredLevel,
-		mustJSON(input.InputSchema), mustJSON(input.OutputSchema), mustJSON(input.Metadata), input.IsActive), tool)
+		input.ToolCategory, input.ApprovalTierRequired, mustJSON(input.InputSchema), mustJSON(input.OutputSchema), mustJSON(input.Metadata), input.IsActive), tool)
 	if err != nil {
 		return nil, fmt.Errorf("create tool definition: %w", err)
 	}
@@ -41,7 +42,7 @@ func (r *PostgresRepository) CreateTool(ctx context.Context, input CreateToolInp
 func (r *PostgresRepository) ListTools(ctx context.Context, limit int) ([]ToolDefinition, error) {
 	rows, err := r.db.Query(ctx, `
 		SELECT id, name, description, source_type, default_policy, risk_level, required_level,
-			input_schema, output_schema, metadata, is_active, created_at, updated_at
+			tool_category, approval_tier_required, input_schema, output_schema, metadata, is_active, created_at, updated_at
 		FROM tool_definitions
 		ORDER BY name
 		LIMIT $1
@@ -62,16 +63,18 @@ func (r *PostgresRepository) UpdateTool(ctx context.Context, id uuid.UUID, input
 			default_policy = COALESCE($4, default_policy),
 			risk_level = COALESCE($5, risk_level),
 			required_level = COALESCE($6, required_level),
-			input_schema = CASE WHEN $7::jsonb IS NULL THEN input_schema ELSE $7::jsonb END,
-			output_schema = CASE WHEN $8::jsonb IS NULL THEN output_schema ELSE $8::jsonb END,
-			metadata = CASE WHEN $9::jsonb IS NULL THEN metadata ELSE $9::jsonb END,
-			is_active = COALESCE($10, is_active),
+			tool_category = COALESCE($7, tool_category),
+			approval_tier_required = COALESCE($8, approval_tier_required),
+			input_schema = CASE WHEN $9::jsonb IS NULL THEN input_schema ELSE $9::jsonb END,
+			output_schema = CASE WHEN $10::jsonb IS NULL THEN output_schema ELSE $10::jsonb END,
+			metadata = CASE WHEN $11::jsonb IS NULL THEN metadata ELSE $11::jsonb END,
+			is_active = COALESCE($12, is_active),
 			updated_at = NOW()
 		WHERE id = $1
 		RETURNING id, name, description, source_type, default_policy, risk_level, required_level,
-			input_schema, output_schema, metadata, is_active, created_at, updated_at
+			tool_category, approval_tier_required, input_schema, output_schema, metadata, is_active, created_at, updated_at
 	`, id, input.Description, input.SourceType, input.DefaultPolicy, input.RiskLevel, input.RequiredLevel,
-		nullableJSON(input.InputSchema), nullableJSON(input.OutputSchema), nullableJSON(input.Metadata), input.IsActive), tool)
+		input.ToolCategory, input.ApprovalTierRequired, nullableJSON(input.InputSchema), nullableJSON(input.OutputSchema), nullableJSON(input.Metadata), input.IsActive), tool)
 	if err != nil {
 		return nil, fmt.Errorf("update tool definition: %w", err)
 	}
@@ -82,7 +85,7 @@ func (r *PostgresRepository) GetToolByID(ctx context.Context, id uuid.UUID) (*To
 	tool := &ToolDefinition{}
 	err := scanToolRow(r.db.QueryRow(ctx, `
 		SELECT id, name, description, source_type, default_policy, risk_level, required_level,
-			input_schema, output_schema, metadata, is_active, created_at, updated_at
+			tool_category, approval_tier_required, input_schema, output_schema, metadata, is_active, created_at, updated_at
 		FROM tool_definitions WHERE id = $1
 	`, id), tool)
 	if err != nil {
@@ -95,7 +98,7 @@ func (r *PostgresRepository) GetToolByName(ctx context.Context, name string) (*T
 	tool := &ToolDefinition{}
 	err := scanToolRow(r.db.QueryRow(ctx, `
 		SELECT id, name, description, source_type, default_policy, risk_level, required_level,
-			input_schema, output_schema, metadata, is_active, created_at, updated_at
+			tool_category, approval_tier_required, input_schema, output_schema, metadata, is_active, created_at, updated_at
 		FROM tool_definitions WHERE name = $1 AND is_active
 	`, name), tool)
 	if err != nil {
@@ -110,16 +113,16 @@ func (r *PostgresRepository) CreateExecution(ctx context.Context, input CreateEx
 		INSERT INTO tool_executions (
 			tool_id, invocation_id, actor_id, actor_type, organization_id, department_id,
 			project_id, workflow_id, task_id, idempotency_key, policy, governance_decision,
-			status, arguments
+			requested_by_human_id, status, arguments
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT DO NOTHING
 		RETURNING id, tool_id, invocation_id, actor_id, actor_type, organization_id, department_id,
 			project_id, workflow_id, task_id, idempotency_key, policy, governance_decision,
-			status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
+			requested_by_human_id, status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
 	`, input.ToolID, input.InvocationID, input.ActorID, input.ActorType, input.OrganizationID, input.DepartmentID,
 		input.ProjectID, input.WorkflowID, input.TaskID, input.IdempotencyKey, input.Policy, input.GovernanceDecision,
-		input.Status, mustJSON(input.Arguments)), execution)
+		input.RequestedByHumanID, input.Status, mustJSON(input.Arguments)), execution)
 	if err == nil {
 		return execution, nil
 	}
@@ -129,7 +132,7 @@ func (r *PostgresRepository) CreateExecution(ctx context.Context, input CreateEx
 	err = scanExecutionRow(r.db.QueryRow(ctx, `
 		SELECT id, tool_id, invocation_id, actor_id, actor_type, organization_id, department_id,
 			project_id, workflow_id, task_id, idempotency_key, policy, governance_decision,
-			status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
+			requested_by_human_id, status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
 		FROM tool_executions
 		WHERE tool_id = $1 AND idempotency_key = $2
 	`, input.ToolID, input.IdempotencyKey), execution)
@@ -147,7 +150,7 @@ func (r *PostgresRepository) CompleteExecution(ctx context.Context, id uuid.UUID
 		WHERE id = $1
 		RETURNING id, tool_id, invocation_id, actor_id, actor_type, organization_id, department_id,
 			project_id, workflow_id, task_id, idempotency_key, policy, governance_decision,
-			status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
+			requested_by_human_id, status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
 	`, id, input.Status, input.ResultSummary, mustJSON(input.Result), input.ErrorMessage, input.DurationMS), execution)
 	if err != nil {
 		return nil, fmt.Errorf("complete tool execution: %w", err)
@@ -160,7 +163,7 @@ func (r *PostgresRepository) CreateApproval(ctx context.Context, executionID uui
 	err := scanApprovalRow(r.db.QueryRow(ctx, `
 		INSERT INTO tool_approvals (execution_id, requested_by, reason, expires_at)
 		VALUES ($1, $2, $3, NOW() + INTERVAL '24 hours')
-		RETURNING id, execution_id, status, requested_by, reviewed_by, reason, expires_at, created_at, reviewed_at
+		RETURNING id, execution_id, status, requested_by, reviewed_by, approved_by_human_id, reason, expires_at, created_at, reviewed_at
 	`, executionID, requestedBy, reason), approval)
 	if err != nil {
 		return nil, fmt.Errorf("create tool approval: %w", err)
@@ -172,7 +175,7 @@ func (r *PostgresRepository) ListExecutions(ctx context.Context, limit int) ([]T
 	rows, err := r.db.Query(ctx, `
 		SELECT id, tool_id, invocation_id, actor_id, actor_type, organization_id, department_id,
 			project_id, workflow_id, task_id, idempotency_key, policy, governance_decision,
-			status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
+			requested_by_human_id, status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
 		FROM tool_executions
 		ORDER BY created_at DESC
 		LIMIT $1
@@ -189,13 +192,79 @@ func (r *PostgresRepository) GetExecution(ctx context.Context, id uuid.UUID) (*T
 	err := scanExecutionRow(r.db.QueryRow(ctx, `
 		SELECT id, tool_id, invocation_id, actor_id, actor_type, organization_id, department_id,
 			project_id, workflow_id, task_id, idempotency_key, policy, governance_decision,
-			status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
+			requested_by_human_id, status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
 		FROM tool_executions WHERE id = $1
 	`, id), execution)
 	if err != nil {
 		return nil, fmt.Errorf("get tool execution: %w", err)
 	}
 	return execution, nil
+}
+
+func (r *PostgresRepository) GetApproval(ctx context.Context, id uuid.UUID) (*ToolApproval, error) {
+	approval := &ToolApproval{}
+	err := scanApprovalRow(r.db.QueryRow(ctx, `
+		SELECT id, execution_id, status, requested_by, reviewed_by, approved_by_human_id, reason, expires_at, created_at, reviewed_at
+		FROM tool_approvals
+		WHERE id = $1
+	`, id), approval)
+	if err != nil {
+		return nil, fmt.Errorf("get tool approval: %w", err)
+	}
+	return approval, nil
+}
+
+func (r *PostgresRepository) GetHumanAuthorityTier(ctx context.Context, userID uuid.UUID, organizationID *uuid.UUID) (string, error) {
+	var tier string
+	if organizationID != nil {
+		err := r.db.QueryRow(ctx, `
+			SELECT COALESCE(
+				(SELECT 'organization_creator'
+				 WHERE EXISTS (
+					SELECT 1 FROM organizations WHERE id = $1 AND created_by = $2
+				 )),
+				(SELECT authority_tier
+				 FROM organization_memberships
+				 WHERE organization_id = $1 AND user_id = $2 AND status = 'active'
+				 ORDER BY CASE authority_tier
+					WHEN 'organization_creator' THEN 3
+					WHEN 'reviewer' THEN 2
+					WHEN 'executor' THEN 1
+					ELSE 0
+				 END DESC
+				 LIMIT 1),
+				''
+			)
+		`, *organizationID, userID).Scan(&tier)
+		if err != nil {
+			return "", fmt.Errorf("get human authority tier: %w", err)
+		}
+		return tier, nil
+	}
+
+	err := r.db.QueryRow(ctx, `
+		SELECT COALESCE(
+			(SELECT 'organization_creator'
+			 WHERE EXISTS (
+				SELECT 1 FROM organizations WHERE created_by = $1
+			 )),
+			(SELECT authority_tier
+			 FROM organization_memberships
+			 WHERE user_id = $1 AND status = 'active'
+			 ORDER BY CASE authority_tier
+				WHEN 'organization_creator' THEN 3
+				WHEN 'reviewer' THEN 2
+				WHEN 'executor' THEN 1
+				ELSE 0
+			 END DESC
+			 LIMIT 1),
+			''
+		)
+	`, userID).Scan(&tier)
+	if err != nil {
+		return "", fmt.Errorf("get human authority tier: %w", err)
+	}
+	return tier, nil
 }
 
 func (r *PostgresRepository) UpdateApproval(ctx context.Context, id uuid.UUID, status string, reviewedBy *uuid.UUID, reason string) (*ToolApproval, error) {
@@ -208,9 +277,13 @@ func (r *PostgresRepository) UpdateApproval(ctx context.Context, id uuid.UUID, s
 	approval := &ToolApproval{}
 	err = scanApprovalRow(tx.QueryRow(ctx, `
 		UPDATE tool_approvals
-		SET status = $2, reviewed_by = $3, reason = COALESCE(NULLIF($4, ''), reason), reviewed_at = NOW()
+		SET status = $2,
+			reviewed_by = $3,
+			approved_by_human_id = $3,
+			reason = COALESCE(NULLIF($4, ''), reason),
+			reviewed_at = NOW()
 		WHERE id = $1
-		RETURNING id, execution_id, status, requested_by, reviewed_by, reason, expires_at, created_at, reviewed_at
+		RETURNING id, execution_id, status, requested_by, reviewed_by, approved_by_human_id, reason, expires_at, created_at, reviewed_at
 	`, id, status, reviewedBy, reason), approval)
 	if err != nil {
 		return nil, fmt.Errorf("update tool approval: %w", err)
@@ -235,7 +308,7 @@ type scanner interface {
 func scanToolRow(row scanner, tool *ToolDefinition) error {
 	var inputJSON, outputJSON, metaJSON []byte
 	if err := row.Scan(&tool.ID, &tool.Name, &tool.Description, &tool.SourceType, &tool.DefaultPolicy,
-		&tool.RiskLevel, &tool.RequiredLevel, &inputJSON, &outputJSON, &metaJSON,
+		&tool.RiskLevel, &tool.RequiredLevel, &tool.ToolCategory, &tool.ApprovalTierRequired, &inputJSON, &outputJSON, &metaJSON,
 		&tool.IsActive, &tool.CreatedAt, &tool.UpdatedAt); err != nil {
 		return err
 	}
@@ -252,12 +325,12 @@ func scanToolRow(row scanner, tool *ToolDefinition) error {
 }
 
 func scanExecutionRow(row scanner, execution *ToolExecution) error {
-	var invocationID, organizationID, departmentID, projectID, workflowID, taskID pgtype.UUID
+	var invocationID, organizationID, departmentID, projectID, workflowID, taskID, requestedByHumanID pgtype.UUID
 	var argsJSON, resultJSON []byte
 	var completedAt pgtype.Timestamptz
 	if err := row.Scan(&execution.ID, &execution.ToolID, &invocationID, &execution.ActorID, &execution.ActorType,
 		&organizationID, &departmentID, &projectID, &workflowID, &taskID, &execution.IdempotencyKey,
-		&execution.Policy, &execution.GovernanceDecision, &execution.Status, &argsJSON, &execution.ResultSummary,
+		&execution.Policy, &execution.GovernanceDecision, &requestedByHumanID, &execution.Status, &argsJSON, &execution.ResultSummary,
 		&resultJSON, &execution.ErrorMessage, &execution.DurationMS, &execution.CreatedAt, &completedAt); err != nil {
 		return err
 	}
@@ -267,6 +340,7 @@ func scanExecutionRow(row scanner, execution *ToolExecution) error {
 	execution.ProjectID = uuidPointer(projectID)
 	execution.WorkflowID = uuidPointer(workflowID)
 	execution.TaskID = uuidPointer(taskID)
+	execution.RequestedByHumanID = uuidPointer(requestedByHumanID)
 	if completedAt.Valid {
 		t := completedAt.Time
 		execution.CompletedAt = &t
@@ -281,14 +355,15 @@ func scanExecutionRow(row scanner, execution *ToolExecution) error {
 }
 
 func scanApprovalRow(row scanner, approval *ToolApproval) error {
-	var requestedBy, reviewedBy pgtype.UUID
+	var requestedBy, reviewedBy, approvedByHumanID pgtype.UUID
 	var expiresAt, reviewedAt pgtype.Timestamptz
 	if err := row.Scan(&approval.ID, &approval.ExecutionID, &approval.Status, &requestedBy, &reviewedBy,
-		&approval.Reason, &expiresAt, &approval.CreatedAt, &reviewedAt); err != nil {
+		&approvedByHumanID, &approval.Reason, &expiresAt, &approval.CreatedAt, &reviewedAt); err != nil {
 		return err
 	}
 	approval.RequestedBy = uuidPointer(requestedBy)
 	approval.ReviewedBy = uuidPointer(reviewedBy)
+	approval.ApprovedByHumanID = uuidPointer(approvedByHumanID)
 	if expiresAt.Valid {
 		t := expiresAt.Time
 		approval.ExpiresAt = &t

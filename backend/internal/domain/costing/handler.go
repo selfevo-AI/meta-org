@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/dberrors"
 )
 
 type Handler struct {
@@ -154,6 +155,8 @@ func writeResult(w http.ResponseWriter, status int, payload any, err error) {
 		code := http.StatusInternalServerError
 		if errors.Is(err, ErrValidation) {
 			code = http.StatusBadRequest
+		} else if dberrors.IsUniqueViolation(err) {
+			code = http.StatusConflict
 		} else if errors.Is(err, ErrNotFound) {
 			code = http.StatusNotFound
 		}

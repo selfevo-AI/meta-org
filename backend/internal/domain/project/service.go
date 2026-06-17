@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -13,6 +14,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/costing"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/metaresource"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/workflow"
 	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
@@ -31,6 +33,7 @@ type Service struct {
 	evolution    *evolution.Service
 	organization *organization.Service
 	workflow     *workflow.Service
+	metaResource *metaresource.Service
 	costRecorder CostRecorder
 }
 
@@ -64,6 +67,12 @@ func WithWorkflowService(wf *workflow.Service) ServiceOption {
 	}
 }
 
+func WithMetaResourceService(meta *metaresource.Service) ServiceOption {
+	return func(s *Service) {
+		s.metaResource = meta
+	}
+}
+
 func WithCostRecorder(recorder CostRecorder) ServiceOption {
 	return func(s *Service) {
 		s.costRecorder = recorder
@@ -92,7 +101,18 @@ func (s *Service) CreateRequirement(ctx context.Context, input CreateRequirement
 	if err := s.requireAccess(ctx, actorID, actorType, "requirement.create", "requirement", nil, input.OrganizationID, input.DepartmentID, nil, input.RequiredLevel, input.RiskLevel, nil); err != nil {
 		return nil, err
 	}
-	return s.repo.CreateRequirement(ctx, input)
+	req, err := s.repo.CreateRequirement(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	req = s.ensureRequirementPDCA(ctx, req, actorID, actorType)
+	s.recordRequirementPDCA(ctx, req, metaresource.StagePlan, "requirement_created", &req.ID, actorID, actorType, map[string]any{
+		"title":          req.Title,
+		"priority":       req.Priority,
+		"risk_level":     req.RiskLevel,
+		"required_level": req.RequiredLevel,
+	}, "Requirement captured", "Analyze requirement")
+	return req, nil
 }
 
 func (s *Service) ListRequirements(ctx context.Context, limit int) ([]Requirement, error) {
@@ -243,6 +263,9 @@ func (s *Service) SyncRequirementAnalysisWorkflow(ctx context.Context, requireme
 	if err := s.requireAccess(ctx, actorID, actorType, "requirement.workflow.sync", "requirement", &requirementID, req.OrganizationID, req.DepartmentID, nil, req.RequiredLevel, req.RiskLevel, nil); err != nil {
 		return nil, err
 	}
+	if err := validateRequirementStatus(req.Status, "sync_analysis"); err != nil {
+		return nil, err
+	}
 
 	workflowID := input.WorkflowID
 	if workflowID == uuid.Nil {
@@ -309,6 +332,7 @@ func (s *Service) SyncRequirementAnalysisWorkflow(ctx context.Context, requireme
 	if err != nil {
 		return nil, err
 	}
+	s.recordRequirementPDCA(ctx, updatedRequirement, metaresource.StagePlan, "requirement_analyzed", &updatedRequirement.ID, actorID, actorType, result, "Requirement analysis workflow completed", "Approve requirement")
 	return map[string]any{
 		"requirement":       updatedRequirement,
 		"analysis_workflow": analysisWorkflow,
@@ -344,11 +368,19 @@ func (s *Service) AnalyzeRequirement(ctx context.Context, id uuid.UUID, input An
 	if err := s.requireAccess(ctx, actorID, actorType, "requirement.analyze", "requirement", &id, req.OrganizationID, req.DepartmentID, nil, req.RequiredLevel, req.RiskLevel, nil); err != nil {
 		return nil, err
 	}
+	if err := validateRequirementStatus(req.Status, "analyze"); err != nil {
+		return nil, err
+	}
 	analysis := buildRequirementAnalysis(req, input.Notes)
-	return s.repo.UpdateRequirement(ctx, id, UpdateRequirementInput{
+	updated, err := s.repo.UpdateRequirement(ctx, id, UpdateRequirementInput{
 		Status:   "analyzed",
 		Analysis: analysis,
 	})
+	if err != nil {
+		return nil, err
+	}
+	s.recordRequirementPDCA(ctx, updated, metaresource.StagePlan, "requirement_analyzed", &updated.ID, actorID, actorType, analysis, "Requirement analyzed", "Approve requirement")
+	return updated, nil
 }
 
 func (s *Service) ApproveRequirement(ctx context.Context, id uuid.UUID, input ActorInput) (*Requirement, error) {
@@ -363,7 +395,17 @@ func (s *Service) ApproveRequirement(ctx context.Context, id uuid.UUID, input Ac
 	if err := s.requireAccess(ctx, actorID, actorType, "requirement.approve", "requirement", &id, req.OrganizationID, req.DepartmentID, nil, minLevel(req.RequiredLevel, "L2"), req.RiskLevel, nil); err != nil {
 		return nil, err
 	}
-	return s.repo.UpdateRequirement(ctx, id, UpdateRequirementInput{Status: "approved"})
+	if err := validateRequirementStatus(req.Status, "approve"); err != nil {
+		return nil, err
+	}
+	updated, err := s.repo.UpdateRequirement(ctx, id, UpdateRequirementInput{Status: "approved"})
+	if err != nil {
+		return nil, err
+	}
+	s.recordRequirementPDCA(ctx, updated, metaresource.StagePlan, "requirement_approved", &updated.ID, actorID, actorType, map[string]any{
+		"approved_by": actorID.String(),
+	}, "Requirement approved", "Convert requirement to project")
+	return updated, nil
 }
 
 func (s *Service) ConvertRequirementToProject(ctx context.Context, id uuid.UUID, input ConvertRequirementInput) (*Project, error) {
@@ -376,6 +418,14 @@ func (s *Service) ConvertRequirementToProject(ctx context.Context, id uuid.UUID,
 		return nil, err
 	}
 	if err := s.requireAccess(ctx, actorID, actorType, "project.create", "project", nil, req.OrganizationID, req.DepartmentID, nil, req.RequiredLevel, req.RiskLevel, nil); err != nil {
+		return nil, err
+	}
+	if err := validateRequirementStatus(req.Status, "convert"); err != nil {
+		return nil, err
+	}
+	if existing, err := s.repo.GetProjectByRequirement(ctx, id); err == nil && existing != nil {
+		return nil, fmt.Errorf("%w: requirement is already converted to project %s", ErrConflict, existing.ID)
+	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
 	name := input.Name
@@ -391,6 +441,12 @@ func (s *Service) ConvertRequirementToProject(ctx context.Context, id uuid.UUID,
 		metadata = map[string]any{}
 	}
 	metadata["converted_from_requirement"] = req.ID.String()
+	if demandID := stringMetadata(req.Metadata, "demand_profile_id"); demandID != "" {
+		metadata["demand_profile_id"] = demandID
+	}
+	if cycleID := stringMetadata(req.Metadata, "pdca_cycle_id"); cycleID != "" {
+		metadata["pdca_cycle_id"] = cycleID
+	}
 	budgetAmount := input.BudgetAmount
 	if budgetAmount == 0 {
 		budgetAmount = req.BudgetAmount
@@ -416,7 +472,18 @@ func (s *Service) ConvertRequirementToProject(ctx context.Context, id uuid.UUID,
 	if err != nil {
 		return nil, err
 	}
-	_, _ = s.repo.UpdateRequirement(ctx, id, UpdateRequirementInput{Status: "converted"})
+	updatedReq, _ := s.repo.UpdateRequirement(ctx, id, UpdateRequirementInput{
+		Status: "converted",
+		Metadata: mergeMetadata(req.Metadata, map[string]any{
+			"project_id": proj.ID.String(),
+		}),
+	})
+	if updatedReq == nil {
+		updatedReq = req
+	}
+	s.recordRequirementPDCA(ctx, updatedReq, metaresource.StagePlan, "requirement_converted", &proj.ID, actorID, actorType, map[string]any{
+		"project_id": proj.ID.String(),
+	}, "Requirement converted to project", "Plan project delivery")
 	return proj, nil
 }
 
@@ -431,6 +498,9 @@ func (s *Service) CreateProject(ctx context.Context, input CreateProjectInput) (
 	}
 	if input.RequirementID != nil {
 		if req, err := s.repo.GetRequirement(ctx, *input.RequirementID); err == nil {
+			if err := validateRequirementStatus(req.Status, "convert"); err != nil {
+				return nil, err
+			}
 			if input.OrganizationID == nil {
 				input.OrganizationID = req.OrganizationID
 			}
@@ -446,12 +516,28 @@ func (s *Service) CreateProject(ctx context.Context, input CreateProjectInput) (
 			if input.BudgetCurrency == "" {
 				input.BudgetCurrency = req.BudgetCurrency
 			}
+			if input.Metadata == nil {
+				input.Metadata = map[string]any{}
+			}
+			if demandID := stringMetadata(req.Metadata, "demand_profile_id"); demandID != "" {
+				input.Metadata["demand_profile_id"] = demandID
+			}
+			if cycleID := stringMetadata(req.Metadata, "pdca_cycle_id"); cycleID != "" {
+				input.Metadata["pdca_cycle_id"] = cycleID
+			}
 		}
 	}
 	if err := s.requireAccess(ctx, actorID, actorType, "project.create", "project", nil, input.OrganizationID, input.DepartmentID, nil, input.RequiredLevel, input.RiskLevel, nil); err != nil {
 		return nil, err
 	}
-	return s.repo.CreateProject(ctx, input)
+	proj, err := s.repo.CreateProject(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	s.recordProjectPDCA(ctx, proj, metaresource.StagePlan, "project_created", &proj.ID, actorID, actorType, map[string]any{
+		"status": proj.Status,
+	}, "Project created", "Assign members and bind workflow")
+	return proj, nil
 }
 
 func (s *Service) ListProjects(ctx context.Context, limit int) ([]Project, error) {
@@ -499,7 +585,16 @@ func (s *Service) AddProjectMember(ctx context.Context, projectID uuid.UUID, inp
 	if err := s.requireAccess(ctx, actorID, actorType, "project.assign", "project", &projectID, proj.OrganizationID, proj.DepartmentID, nil, minLevel(input.PermissionLevel, proj.RequiredLevel), proj.RiskLevel, nil); err != nil {
 		return nil, err
 	}
-	return s.repo.AddProjectMember(ctx, input)
+	member, err := s.repo.AddProjectMember(ctx, input)
+	if err != nil {
+		return nil, err
+	}
+	s.recordProjectPDCA(ctx, proj, metaresource.StageDo, "project_member_added", &member.ID, actorID, actorType, map[string]any{
+		"member_actor_id":   member.ActorID.String(),
+		"member_actor_type": member.ActorType,
+		"role":              member.Role,
+	}, "Project member assigned", "Bind or execute workflow")
+	return member, nil
 }
 
 func (s *Service) ListProjectMembers(ctx context.Context, projectID uuid.UUID) ([]ProjectMember, error) {
@@ -554,7 +649,15 @@ func (s *Service) BindProjectWorkflow(ctx context.Context, projectID uuid.UUID, 
 	if workflowID == uuid.Nil {
 		return nil, fmt.Errorf("%w: workflow_id is required when workflow service is unavailable", ErrValidation)
 	}
-	return s.repo.BindProjectWorkflow(ctx, input, projectID, workflowID)
+	projectWorkflow, err := s.repo.BindProjectWorkflow(ctx, input, projectID, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	s.recordProjectPDCA(ctx, proj, metaresource.StageDo, "project_workflow_bound", &projectWorkflow.ID, actorID, actorType, map[string]any{
+		"workflow_id": workflowID.String(),
+		"purpose":     projectWorkflow.Purpose,
+	}, "Project workflow bound", "Start delivery execution")
+	return projectWorkflow, nil
 }
 
 func (s *Service) ListProjectWorkflows(ctx context.Context, projectID uuid.UUID) ([]ProjectWorkflow, error) {
@@ -609,11 +712,24 @@ func (s *Service) UpdateProjectStatus(ctx context.Context, projectID uuid.UUID, 
 	if !isValidProjectStatus(input.Status) {
 		return nil, fmt.Errorf("%w: invalid project status", ErrValidation)
 	}
+	if err := s.validateProjectStatusChange(ctx, proj, input.Status); err != nil {
+		return nil, err
+	}
 	if err := s.requireAccess(ctx, actorID, actorType, "project.status", "project", &projectID, proj.OrganizationID, proj.DepartmentID, nil, proj.RequiredLevel, proj.RiskLevel, nil); err != nil {
 		return nil, err
 	}
 	metadata := mergeMetadata(proj.Metadata, map[string]any{"last_status_note": input.Note})
-	return s.repo.UpdateProject(ctx, projectID, UpdateProjectInput{Status: input.Status, Metadata: metadata})
+	updated, err := s.repo.UpdateProject(ctx, projectID, UpdateProjectInput{Status: input.Status, Metadata: metadata})
+	if err != nil {
+		return nil, err
+	}
+	stage, eventType, nextAction := projectStatusPDCA(input.Status)
+	s.recordProjectPDCA(ctx, updated, stage, eventType, &updated.ID, actorID, actorType, map[string]any{
+		"from_status": proj.Status,
+		"to_status":   input.Status,
+		"note":        input.Note,
+	}, "Project status updated", nextAction)
+	return updated, nil
 }
 
 func (s *Service) GetProjectOverview(ctx context.Context, projectID uuid.UUID) (*ProjectOverview, error) {
@@ -645,6 +761,7 @@ func (s *Service) GetProjectOverview(ctx context.Context, projectID uuid.UUID) (
 	if err != nil {
 		return nil, err
 	}
+	s.syncProjectWorkflowStatuses(ctx, workflows)
 	return &ProjectOverview{
 		Project:      proj,
 		Requirement:  req,
@@ -653,6 +770,7 @@ func (s *Service) GetProjectOverview(ctx context.Context, projectID uuid.UUID) (
 		Deliverables: deliverables,
 		CostSummary:  costSummary,
 		Evaluations:  evaluations,
+		Lifecycle:    buildProjectLifecycle(proj, req, members, workflows, deliverables, costSummary, evaluations),
 	}, nil
 }
 
@@ -666,6 +784,12 @@ func (s *Service) CreateDeliverable(ctx context.Context, projectID uuid.UUID, in
 		return nil, err
 	}
 	normalizeDeliverableInput(&input)
+	if err := validateProjectCanWriteDeliverable(proj.Status); err != nil {
+		return nil, err
+	}
+	if input.Status != "draft" && input.Status != "submitted" {
+		return nil, fmt.Errorf("%w: deliverable can only be created as draft or submitted", ErrValidation)
+	}
 	action := "deliverable.write"
 	if input.Status == "submitted" {
 		action = "deliverable.submit"
@@ -673,7 +797,22 @@ func (s *Service) CreateDeliverable(ctx context.Context, projectID uuid.UUID, in
 	if err := s.requireAccess(ctx, actorID, actorType, action, "project", &projectID, proj.OrganizationID, proj.DepartmentID, nil, proj.RequiredLevel, proj.RiskLevel, nil); err != nil {
 		return nil, err
 	}
-	return s.repo.CreateDeliverable(ctx, projectID, input, &actorID, actorType)
+	deliverable, err := s.repo.CreateDeliverable(ctx, projectID, input, &actorID, actorType)
+	if err != nil {
+		return nil, err
+	}
+	stage := metaresource.StageDo
+	eventType := "deliverable_created"
+	nextAction := "Submit deliverable"
+	if deliverable.Status == "submitted" {
+		eventType = "deliverable_submitted"
+		nextAction = "Accept or reject deliverable"
+	}
+	s.recordProjectPDCA(ctx, proj, stage, eventType, &deliverable.ID, actorID, actorType, map[string]any{
+		"deliverable_status": deliverable.Status,
+		"deliverable_type":   deliverable.DeliverableType,
+	}, "Deliverable updated", nextAction)
+	return deliverable, nil
 }
 
 func (s *Service) ListDeliverables(ctx context.Context, projectID uuid.UUID) ([]Deliverable, error) {
@@ -728,7 +867,13 @@ func (s *Service) CreateCostEntry(ctx context.Context, projectID uuid.UUID, inpu
 	if err != nil {
 		return nil, err
 	}
+	if input.Currency == "" {
+		input.Currency = proj.BudgetCurrency
+	}
 	normalizeCostEntryInput(&input)
+	if input.Amount <= 0 {
+		return nil, fmt.Errorf("%w: amount must be greater than zero", ErrValidation)
+	}
 	if err := s.requireAccess(ctx, actorID, actorType, "cost.write", "project", &projectID, proj.OrganizationID, proj.DepartmentID, nil, proj.RequiredLevel, proj.RiskLevel, nil); err != nil {
 		return nil, err
 	}
@@ -737,6 +882,11 @@ func (s *Service) CreateCostEntry(ctx context.Context, projectID uuid.UUID, inpu
 		return nil, err
 	}
 	s.recordCostEntry(ctx, proj, entry)
+	s.recordProjectPDCA(ctx, proj, metaresource.StageDo, "cost_recorded", &entry.ID, actorID, actorType, map[string]any{
+		"source_type": entry.SourceType,
+		"amount":      entry.Amount,
+		"currency":    entry.Currency,
+	}, "Project cost recorded", "Review cost and delivery evidence")
 	return entry, nil
 }
 
@@ -791,9 +941,16 @@ func (s *Service) RefreshCost(ctx context.Context, projectID uuid.UUID, actorInp
 		return nil, err
 	}
 	entries := []CostEntry{}
+	refreshPeriod := time.Now().UTC().Format("2006-01-02")
 	for _, member := range members {
 		if member.CostRate <= 0 || member.AllocationPercent <= 0 || member.Status == "archived" {
 			continue
+		}
+		if existing, err := s.repo.GetMemberAllocationCostEntry(ctx, projectID, member.ID, refreshPeriod); err == nil && existing != nil {
+			entries = append(entries, *existing)
+			continue
+		} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return nil, err
 		}
 		amount := member.CostRate * (member.AllocationPercent / 100)
 		entry, err := s.repo.CreateCostEntry(ctx, projectID, CreateCostEntryInput{
@@ -801,12 +958,13 @@ func (s *Service) RefreshCost(ctx context.Context, projectID uuid.UUID, actorInp
 			EntryActorID:   &member.ActorID,
 			EntryActorType: member.ActorType,
 			Amount:         amount,
-			Currency:       "CNY",
+			Currency:       proj.BudgetCurrency,
 			Description:    "member allocation cost snapshot",
 			Metadata: map[string]any{
 				"project_member_id":  member.ID.String(),
 				"allocation_percent": member.AllocationPercent,
 				"cost_rate":          member.CostRate,
+				"refresh_period":     refreshPeriod,
 				"refresh_actor_id":   actorID.String(),
 				"refresh_actor_type": actorType,
 			},
@@ -815,6 +973,11 @@ func (s *Service) RefreshCost(ctx context.Context, projectID uuid.UUID, actorInp
 			return nil, err
 		}
 		s.recordCostEntry(ctx, proj, entry)
+		s.recordProjectPDCA(ctx, proj, metaresource.StageDo, "cost_refreshed", &entry.ID, actorID, actorType, map[string]any{
+			"project_member_id": member.ID.String(),
+			"amount":            entry.Amount,
+			"refresh_period":    refreshPeriod,
+		}, "Member allocation cost refreshed", "Review project cost")
 		entries = append(entries, *entry)
 	}
 	return entries, nil
@@ -878,6 +1041,10 @@ func (s *Service) CreateProjectEvaluation(ctx context.Context, projectID uuid.UU
 		return nil, err
 	}
 	s.recordEvaluationOutcome(ctx, proj, eval)
+	s.recordProjectPDCA(ctx, proj, metaresource.StageAccept, "project_evaluated", &eval.ID, actorID, actorType, map[string]any{
+		"overall_score": eval.OverallScore,
+		"conclusion":    eval.Conclusion,
+	}, "Project evaluated", "Close feedback")
 	return eval, nil
 }
 
@@ -900,6 +1067,9 @@ func (s *Service) CloseFeedback(ctx context.Context, projectID uuid.UUID, input 
 	}
 	if err := s.requireAccess(ctx, actorID, actorType, "evaluation.create", "project", &projectID, proj.OrganizationID, proj.DepartmentID, nil, proj.RequiredLevel, proj.RiskLevel, nil); err != nil {
 		return nil, err
+	}
+	if proj.Status != "completed" && proj.Status != "closed" {
+		return nil, fmt.Errorf("%w: project must be completed before closing feedback", ErrConflict)
 	}
 	outcomeScore := clampScore(input.OutcomeScore)
 	if input.OutcomeScore == 0 {
@@ -934,10 +1104,20 @@ func (s *Service) CloseFeedback(ctx context.Context, projectID uuid.UUID, input 
 			updated++
 		}
 	}
-	updatedProject, _ := s.repo.UpdateProject(ctx, projectID, UpdateProjectInput{
+	if updated == 0 {
+		return nil, fmt.Errorf("%w: feedback requires at least one project evaluation or member", ErrConflict)
+	}
+	updatedProject, err := s.repo.UpdateProject(ctx, projectID, UpdateProjectInput{
 		Status:   "closed",
 		Metadata: mergeMetadata(proj.Metadata, map[string]any{"close_feedback": input.Conclusion}),
 	})
+	if err != nil {
+		return nil, err
+	}
+	s.recordProjectPDCA(ctx, updatedProject, metaresource.StageAccept, "project_feedback_closed", &updatedProject.ID, actorID, actorType, map[string]any{
+		"outcome_score": outcomeScore,
+		"conclusion":    input.Conclusion,
+	}, "Project feedback closed", "Use learning in the next PDCA cycle")
 	return map[string]any{
 		"project":        updatedProject,
 		"outcome_score":  outcomeScore,
@@ -954,6 +1134,9 @@ func (s *Service) changeDeliverableStatus(ctx context.Context, id uuid.UUID, inp
 	if err != nil {
 		return nil, err
 	}
+	if err := validateDeliverableStatusChange(deliverable.Status, status); err != nil {
+		return nil, err
+	}
 	actorID, actorType, err := s.resolveActor(ctx, input.ActorInput)
 	if err != nil {
 		return nil, err
@@ -967,7 +1150,28 @@ func (s *Service) changeDeliverableStatus(ctx context.Context, id uuid.UUID, inp
 	if input.Reason != "" {
 		input.Metadata["reason"] = input.Reason
 	}
-	return s.repo.UpdateDeliverableStatus(ctx, id, status, &actorID, actorType, input.Evidence, input.Metadata)
+	updated, err := s.repo.UpdateDeliverableStatus(ctx, id, status, &actorID, actorType, input.Evidence, input.Metadata)
+	if err != nil {
+		return nil, err
+	}
+	stage := metaresource.StageDo
+	eventType := "deliverable_submitted"
+	nextAction := "Accept or reject deliverable"
+	if status == "accepted" {
+		stage = metaresource.StageAccept
+		eventType = "deliverable_accepted"
+		nextAction = "Complete project"
+	} else if status == "rejected" {
+		stage = metaresource.StageChange
+		eventType = "deliverable_rejected"
+		nextAction = "Revise and resubmit deliverable"
+	}
+	s.recordProjectPDCA(ctx, proj, stage, eventType, &updated.ID, actorID, actorType, map[string]any{
+		"from_status": deliverable.Status,
+		"to_status":   status,
+		"reason":      input.Reason,
+	}, "Deliverable status changed", nextAction)
+	return updated, nil
 }
 
 func (s *Service) resolveActor(ctx context.Context, input ActorInput) (uuid.UUID, string, error) {
@@ -1416,6 +1620,405 @@ func isValidProjectStatus(status string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+func validateRequirementStatus(status string, action string) error {
+	switch action {
+	case "analyze", "sync_analysis":
+		if status == "draft" || status == "analyzed" {
+			return nil
+		}
+	case "approve":
+		if status == "analyzed" {
+			return nil
+		}
+	case "convert":
+		if status == "approved" {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: requirement status %q cannot %s", ErrConflict, status, action)
+}
+
+func validateProjectCanWriteDeliverable(status string) error {
+	switch status {
+	case "active", "delivering":
+		return nil
+	default:
+		return fmt.Errorf("%w: project status %q cannot write deliverables", ErrConflict, status)
+	}
+}
+
+func validateDeliverableStatusChange(current string, next string) error {
+	switch next {
+	case "submitted":
+		if current == "draft" || current == "rejected" {
+			return nil
+		}
+	case "accepted", "rejected":
+		if current == "submitted" {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: deliverable status %q cannot transition to %q", ErrConflict, current, next)
+}
+
+func (s *Service) validateProjectStatusChange(ctx context.Context, proj *Project, next string) error {
+	if proj.Status == next {
+		return nil
+	}
+	if proj.Status == "closed" || proj.Status == "cancelled" {
+		return fmt.Errorf("%w: terminal project status %q cannot change", ErrConflict, proj.Status)
+	}
+	switch next {
+	case "paused":
+		if proj.Status == "planning" || proj.Status == "active" || proj.Status == "delivering" {
+			return nil
+		}
+	case "active":
+		if proj.Status != "planning" && proj.Status != "paused" {
+			break
+		}
+		members, err := s.ListProjectMembers(ctx, proj.ID)
+		if err != nil {
+			return err
+		}
+		workflows, err := s.ListProjectWorkflows(ctx, proj.ID)
+		if err != nil {
+			return err
+		}
+		blockers := projectReadinessBlockers(members, workflows)
+		if len(blockers) > 0 {
+			return fmt.Errorf("%w: %s", ErrConflict, strings.Join(blockers, "; "))
+		}
+		return nil
+	case "delivering":
+		if proj.Status != "active" && proj.Status != "paused" {
+			break
+		}
+		deliverables, err := s.ListDeliverables(ctx, proj.ID)
+		if err != nil {
+			return err
+		}
+		if len(deliverables) == 0 {
+			return fmt.Errorf("%w: at least one deliverable is required before delivering", ErrConflict)
+		}
+		return nil
+	case "completed":
+		if proj.Status != "delivering" && proj.Status != "active" {
+			break
+		}
+		deliverables, err := s.ListDeliverables(ctx, proj.ID)
+		if err != nil {
+			return err
+		}
+		if !hasDeliverableStatus(deliverables, "accepted") {
+			return fmt.Errorf("%w: at least one accepted deliverable is required before completion", ErrConflict)
+		}
+		return nil
+	case "closed":
+		if proj.Status == "completed" {
+			return nil
+		}
+	case "cancelled":
+		return nil
+	}
+	return fmt.Errorf("%w: project status %q cannot transition to %q", ErrConflict, proj.Status, next)
+}
+
+func projectReadinessBlockers(members []ProjectMember, workflows []ProjectWorkflow) []string {
+	blockers := []string{}
+	if len(activeProjectMembers(members)) == 0 {
+		blockers = append(blockers, "at least one active project member is required")
+	}
+	if len(activeProjectWorkflows(workflows)) == 0 {
+		blockers = append(blockers, "at least one active project workflow is required")
+	}
+	return blockers
+}
+
+func activeProjectMembers(members []ProjectMember) []ProjectMember {
+	active := []ProjectMember{}
+	for _, member := range members {
+		if member.Status == "active" {
+			active = append(active, member)
+		}
+	}
+	return active
+}
+
+func activeProjectWorkflows(workflows []ProjectWorkflow) []ProjectWorkflow {
+	active := []ProjectWorkflow{}
+	for _, item := range workflows {
+		if item.Status == "active" {
+			active = append(active, item)
+		}
+	}
+	return active
+}
+
+func hasDeliverableStatus(deliverables []Deliverable, status string) bool {
+	for _, deliverable := range deliverables {
+		if deliverable.Status == status {
+			return true
+		}
+	}
+	return false
+}
+
+func buildProjectLifecycle(proj *Project, req *Requirement, members []ProjectMember, workflows []ProjectWorkflow, deliverables []Deliverable, costSummary *CostSummary, evaluations []ProjectEvaluation) ProjectLifecycle {
+	lifecycle := ProjectLifecycle{
+		Stage:          proj.Status,
+		PDCAStage:      projectPDCAStage(proj.Status, deliverables),
+		AllowedActions: []string{},
+		Blockers:       []string{},
+	}
+	if proj.RequirementID != nil {
+		lifecycle.RequirementID = proj.RequirementID.String()
+	}
+	if demandID := stringMetadata(proj.Metadata, "demand_profile_id"); demandID != "" {
+		lifecycle.DemandProfileID = demandID
+	} else if req != nil {
+		lifecycle.DemandProfileID = stringMetadata(req.Metadata, "demand_profile_id")
+	}
+	if cycleID := stringMetadata(proj.Metadata, "pdca_cycle_id"); cycleID != "" {
+		lifecycle.PDCACycleID = cycleID
+	} else if req != nil {
+		lifecycle.PDCACycleID = stringMetadata(req.Metadata, "pdca_cycle_id")
+	}
+
+	switch proj.Status {
+	case "planning":
+		lifecycle.Blockers = projectReadinessBlockers(members, workflows)
+		lifecycle.AllowedActions = append(lifecycle.AllowedActions, "add_member", "bind_workflow")
+		if len(lifecycle.Blockers) == 0 {
+			lifecycle.AllowedActions = append(lifecycle.AllowedActions, "activate_project")
+			lifecycle.NextAction = "activate_project"
+		} else {
+			lifecycle.NextAction = "prepare_project"
+		}
+	case "active":
+		lifecycle.AllowedActions = append(lifecycle.AllowedActions, "create_deliverable", "submit_deliverable", "refresh_cost", "pause_project")
+		if len(deliverables) > 0 {
+			lifecycle.AllowedActions = append(lifecycle.AllowedActions, "start_delivery")
+			lifecycle.NextAction = "start_delivery"
+		} else {
+			lifecycle.Blockers = append(lifecycle.Blockers, "at least one deliverable is required before delivering")
+			lifecycle.NextAction = "create_deliverable"
+		}
+	case "delivering":
+		lifecycle.AllowedActions = append(lifecycle.AllowedActions, "create_deliverable", "submit_deliverable", "accept_deliverable", "reject_deliverable", "refresh_cost")
+		if hasDeliverableStatus(deliverables, "accepted") {
+			lifecycle.AllowedActions = append(lifecycle.AllowedActions, "complete_project")
+			lifecycle.NextAction = "complete_project"
+		} else {
+			lifecycle.Blockers = append(lifecycle.Blockers, "accepted deliverable is required before completion")
+			lifecycle.NextAction = "accept_deliverable"
+		}
+	case "completed":
+		lifecycle.AllowedActions = append(lifecycle.AllowedActions, "create_evaluation")
+		if len(evaluations) > 0 || len(activeProjectMembers(members)) > 0 {
+			lifecycle.AllowedActions = append(lifecycle.AllowedActions, "close_feedback")
+			lifecycle.NextAction = "close_feedback"
+		} else {
+			lifecycle.Blockers = append(lifecycle.Blockers, "evaluation or active member is required before closing feedback")
+			lifecycle.NextAction = "create_evaluation"
+		}
+	case "paused":
+		lifecycle.AllowedActions = append(lifecycle.AllowedActions, "activate_project", "cancel_project")
+		lifecycle.NextAction = "activate_project"
+	case "closed":
+		lifecycle.NextAction = "review_pdca_outcome"
+	case "cancelled":
+		lifecycle.NextAction = "archive_or_replan"
+	}
+	if costSummary != nil && costSummary.BudgetAmount > 0 && costSummary.BudgetVariance < 0 {
+		lifecycle.Blockers = append(lifecycle.Blockers, "project is over budget")
+	}
+	return lifecycle
+}
+
+func projectPDCAStage(status string, deliverables []Deliverable) string {
+	switch status {
+	case "planning":
+		return metaresource.StagePlan
+	case "active", "delivering", "paused":
+		if hasDeliverableStatus(deliverables, "rejected") {
+			return metaresource.StageChange
+		}
+		return metaresource.StageDo
+	case "completed", "closed":
+		return metaresource.StageAccept
+	default:
+		return metaresource.StageChange
+	}
+}
+
+func projectStatusPDCA(status string) (string, string, string) {
+	switch status {
+	case "planning":
+		return metaresource.StagePlan, "project_planned", "Assign members and bind workflow"
+	case "active":
+		return metaresource.StageDo, "project_activated", "Create and submit deliverables"
+	case "delivering":
+		return metaresource.StageDo, "project_delivery_started", "Accept or reject deliverables"
+	case "completed":
+		return metaresource.StageAccept, "project_completed", "Create evaluation and close feedback"
+	case "closed":
+		return metaresource.StageAccept, "project_closed", "Review PDCA outcome"
+	case "paused":
+		return metaresource.StageChange, "project_paused", "Resume or replan project"
+	case "cancelled":
+		return metaresource.StageChange, "project_cancelled", "Archive or replan"
+	default:
+		return metaresource.StageDo, "project_status_changed", "Continue project"
+	}
+}
+
+func (s *Service) syncProjectWorkflowStatuses(ctx context.Context, workflows []ProjectWorkflow) {
+	if s.workflow == nil {
+		return
+	}
+	for i := range workflows {
+		if workflows[i].Status != "active" {
+			continue
+		}
+		inst, err := s.workflow.GetWorkflow(ctx, workflows[i].WorkflowID)
+		if err != nil || inst.Status != workflow.WorkflowCompleted {
+			continue
+		}
+		workflows[i].Status = "completed"
+		_ = s.repo.UpdateProjectWorkflowStatus(ctx, workflows[i].ID, "completed")
+	}
+}
+
+func (s *Service) ensureRequirementPDCA(ctx context.Context, req *Requirement, actorID uuid.UUID, actorType string) *Requirement {
+	if s.metaResource == nil || req == nil {
+		return req
+	}
+	if stringMetadata(req.Metadata, "demand_profile_id") != "" && stringMetadata(req.Metadata, "pdca_cycle_id") != "" {
+		return req
+	}
+	demand, err := s.metaResource.CreateDemandProfile(ctx, metaresource.CreateDemandProfileInput{
+		RequirementID: &req.ID,
+		Title:         req.Title,
+		Goal:          req.Description,
+		Status:        "planned",
+		BudgetConstraints: map[string]any{
+			"amount":   req.BudgetAmount,
+			"currency": req.BudgetCurrency,
+		},
+		RiskConstraints: map[string]any{
+			"risk_level":     req.RiskLevel,
+			"required_level": req.RequiredLevel,
+		},
+		Metadata: map[string]any{
+			"source":     "project_lifecycle",
+			"created_by": actorID.String(),
+			"actor_type": actorType,
+		},
+	})
+	if err != nil {
+		return req
+	}
+	cycle, err := s.metaResource.CreateCycle(ctx, metaresource.CreatePDCACycleInput{
+		DemandProfileID: &demand.ID,
+		RequirementID:   &req.ID,
+		CurrentStage:    metaresource.StagePlan,
+		Summary:         req.Title,
+		Metadata: map[string]any{
+			"source": "project_lifecycle",
+		},
+	})
+	if err != nil {
+		return req
+	}
+	updated, err := s.repo.UpdateRequirement(ctx, req.ID, UpdateRequirementInput{
+		Metadata: mergeMetadata(req.Metadata, map[string]any{
+			"demand_profile_id": demand.ID.String(),
+			"pdca_cycle_id":     cycle.ID.String(),
+		}),
+	})
+	if err != nil {
+		return req
+	}
+	return updated
+}
+
+func (s *Service) recordRequirementPDCA(ctx context.Context, req *Requirement, stage string, eventType string, sourceID *uuid.UUID, actorID uuid.UUID, actorType string, evidence map[string]any, decision string, nextAction string) {
+	if s.metaResource == nil || req == nil {
+		return
+	}
+	cycleID, err := uuid.Parse(stringMetadata(req.Metadata, "pdca_cycle_id"))
+	if err != nil || cycleID == uuid.Nil {
+		return
+	}
+	_, _ = s.metaResource.CreateEvent(ctx, metaresource.CreatePDCAEventInput{
+		CycleID:    cycleID,
+		Stage:      stage,
+		EventType:  eventType,
+		SourceType: "requirement",
+		SourceID:   sourceID,
+		ActorID:    &actorID,
+		ActorType:  actorType,
+		Evidence:   evidence,
+		Decision:   decision,
+		NextAction: nextAction,
+		Metadata: map[string]any{
+			"requirement_id": req.ID.String(),
+		},
+	})
+}
+
+func (s *Service) recordProjectPDCA(ctx context.Context, proj *Project, stage string, eventType string, sourceID *uuid.UUID, actorID uuid.UUID, actorType string, evidence map[string]any, decision string, nextAction string) {
+	if s.metaResource == nil || proj == nil {
+		return
+	}
+	cycleIDString := stringMetadata(proj.Metadata, "pdca_cycle_id")
+	if cycleIDString == "" && proj.RequirementID != nil {
+		if req, err := s.repo.GetRequirement(ctx, *proj.RequirementID); err == nil {
+			cycleIDString = stringMetadata(req.Metadata, "pdca_cycle_id")
+		}
+	}
+	cycleID, err := uuid.Parse(cycleIDString)
+	if err != nil || cycleID == uuid.Nil {
+		return
+	}
+	_, _ = s.metaResource.CreateEvent(ctx, metaresource.CreatePDCAEventInput{
+		CycleID:    cycleID,
+		Stage:      stage,
+		EventType:  eventType,
+		SourceType: "project",
+		SourceID:   sourceID,
+		ActorID:    &actorID,
+		ActorType:  actorType,
+		Evidence:   evidence,
+		Decision:   decision,
+		NextAction: nextAction,
+		Metadata: map[string]any{
+			"project_id":     proj.ID.String(),
+			"requirement_id": uuidString(proj.RequirementID),
+		},
+	})
+	if eventType == "project_feedback_closed" {
+		if score, ok := evidence["outcome_score"].(float64); ok {
+			_ = s.metaResource.CompleteCycle(ctx, cycleID, score, proj.Name)
+		}
+	}
+}
+
+func stringMetadata(metadata map[string]any, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	switch value := metadata[key].(type) {
+	case string:
+		return strings.TrimSpace(value)
+	case fmt.Stringer:
+		return strings.TrimSpace(value.String())
+	default:
+		return ""
 	}
 }
 

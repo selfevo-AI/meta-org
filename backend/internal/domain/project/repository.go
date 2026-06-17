@@ -311,6 +311,21 @@ func (r *Repository) GetProject(ctx context.Context, id uuid.UUID) (*Project, er
 	return proj, nil
 }
 
+func (r *Repository) GetProjectByRequirement(ctx context.Context, requirementID uuid.UUID) (*Project, error) {
+	proj := &Project{}
+	err := scanProject(r.db.QueryRow(ctx,
+		`SELECT id, requirement_id, organization_id, department_id, name, description, status,
+		        priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at
+		 FROM projects
+		 WHERE requirement_id = $1 AND status <> 'cancelled'
+		 ORDER BY created_at ASC
+		 LIMIT 1`, requirementID), proj)
+	if err != nil {
+		return nil, fmt.Errorf("get project by requirement: %w", err)
+	}
+	return proj, nil
+}
+
 func (r *Repository) UpdateProject(ctx context.Context, id uuid.UUID, input UpdateProjectInput) (*Project, error) {
 	proj := &Project{}
 	err := scanProject(r.db.QueryRow(ctx,
@@ -418,6 +433,14 @@ func (r *Repository) ListProjectWorkflows(ctx context.Context, projectID uuid.UU
 		return nil, fmt.Errorf("list project workflows iteration: %w", err)
 	}
 	return workflows, nil
+}
+
+func (r *Repository) UpdateProjectWorkflowStatus(ctx context.Context, id uuid.UUID, status string) error {
+	_, err := r.db.Exec(ctx, `UPDATE project_workflows SET status = $2 WHERE id = $1`, id, status)
+	if err != nil {
+		return fmt.Errorf("update project workflow status: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) CreateDeliverable(ctx context.Context, projectID uuid.UUID, input CreateDeliverableInput, submittedByID *uuid.UUID, submittedByType string) (*Deliverable, error) {
@@ -566,6 +589,24 @@ func (r *Repository) GetCostEntryBySource(ctx context.Context, sourceType string
 		 LIMIT 1`, sourceType, sourceID), entry)
 	if err != nil {
 		return nil, fmt.Errorf("get cost entry by source: %w", err)
+	}
+	return entry, nil
+}
+
+func (r *Repository) GetMemberAllocationCostEntry(ctx context.Context, projectID uuid.UUID, memberID uuid.UUID, refreshPeriod string) (*CostEntry, error) {
+	entry := &CostEntry{}
+	err := scanCostEntry(r.db.QueryRow(ctx,
+		`SELECT id, project_id, source_type, source_id, actor_id, actor_type, amount,
+		        currency, occurred_at, description, metadata, created_at
+		 FROM project_cost_entries
+		 WHERE project_id = $1
+		   AND source_type = 'member_allocation'
+		   AND metadata->>'project_member_id' = $2
+		   AND metadata->>'refresh_period' = $3
+		 ORDER BY created_at ASC
+		 LIMIT 1`, projectID, memberID.String(), refreshPeriod), entry)
+	if err != nil {
+		return nil, fmt.Errorf("get member allocation cost entry: %w", err)
 	}
 	return entry, nil
 }

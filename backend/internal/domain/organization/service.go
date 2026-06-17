@@ -354,11 +354,17 @@ func (s *Service) AddOrganizationMember(ctx context.Context, departmentID uuid.U
 	if input.Status == "" {
 		input.Status = "active"
 	}
+	if input.AuthorityTier == "" {
+		input.AuthorityTier = AuthorityExecutor
+	}
 	if input.Metadata == nil {
 		input.Metadata = map[string]any{}
 	}
 	if !isValidOrgStatus(input.Status) {
 		return nil, fmt.Errorf("%w: invalid membership status", ErrValidation)
+	}
+	if !isValidAuthorityTier(input.AuthorityTier) {
+		return nil, fmt.Errorf("%w: invalid authority tier", ErrValidation)
 	}
 	if err := validateMembershipActor(input); err != nil {
 		return nil, err
@@ -385,6 +391,9 @@ func (s *Service) ListOrganizationMemberships(ctx context.Context, orgID uuid.UU
 func (s *Service) UpdateOrganizationMembership(ctx context.Context, id uuid.UUID, input UpdateOrganizationMembershipInput) (*OrganizationMembership, error) {
 	if input.Status != "" && !isValidOrgStatus(input.Status) {
 		return nil, fmt.Errorf("%w: invalid membership status", ErrValidation)
+	}
+	if input.AuthorityTier != "" && !isValidAuthorityTier(input.AuthorityTier) {
+		return nil, fmt.Errorf("%w: invalid authority tier", ErrValidation)
 	}
 	return s.repo.UpdateOrganizationMembership(ctx, id, input)
 }
@@ -845,6 +854,15 @@ func isValidOrgStatus(status string) bool {
 func isValidMemberType(memberType string) bool {
 	switch memberType {
 	case "internal", "external", "agent":
+		return true
+	default:
+		return false
+	}
+}
+
+func isValidAuthorityTier(tier AuthorityTier) bool {
+	switch tier {
+	case AuthorityOrganizationCreator, AuthorityReviewer, AuthorityExecutor:
 		return true
 	default:
 		return false

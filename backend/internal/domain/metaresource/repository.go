@@ -224,6 +224,23 @@ func (r *Repository) ListCycles(ctx context.Context, limit int) ([]PDCACycle, er
 	return items, rows.Err()
 }
 
+func (r *Repository) CompleteCycle(ctx context.Context, id uuid.UUID, outcomeScore float64, summary string) error {
+	_, err := r.db.Exec(ctx, `
+		UPDATE pdca_cycles
+		SET status = 'completed',
+			current_stage = 'accept',
+			outcome_score = $2,
+			summary = COALESCE(NULLIF($3, ''), summary),
+			completed_at = COALESCE(completed_at, NOW()),
+			updated_at = NOW()
+		WHERE id = $1
+	`, id, outcomeScore, summary)
+	if err != nil {
+		return fmt.Errorf("complete pdca cycle: %w", err)
+	}
+	return nil
+}
+
 func (r *Repository) CreateEvent(ctx context.Context, input CreatePDCAEventInput) (*PDCAEvent, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {

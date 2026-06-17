@@ -1,31 +1,25 @@
 'use client'
 
-import { Bot, CircleStop, Send, Sparkles, Wrench } from 'lucide-react'
+import { Bot, CircleStop, ListChecks, Send } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   API_BASE,
   createAssistantSession,
   getAIInvocation,
-  listProviderChannels,
+  listModelProviders,
+  listModels,
   type AssistantStep,
   type CostBreakdown,
-  type ProviderChannel,
+  type ModelCatalogItem,
+  type ModelProvider,
 } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 import { streamSSEPost } from '@/lib/stream'
 
-type AssistantState =
-  | 'idle'
-  | 'streaming'
-  | 'approval_required'
-  | 'completed'
-  | 'provider_error'
-  | 'governance_denied'
-  | 'cancelled'
+type AssistantState = 'idle' | 'streaming' | 'approval_required' | 'completed' | 'provider_error' | 'governance_denied' | 'cancelled'
 
 interface GatewayStreamData {
   invocation_id?: string
-  type?: string
   delta?: string
   error?: string
   done?: boolean
@@ -34,10 +28,6 @@ interface GatewayStreamData {
   estimated_cost_amount?: number
   cost_amount?: number
   currency?: string
-  tool_call?: {
-    name?: string
-    status?: string
-  }
   usage?: {
     input_tokens?: number
     output_tokens?: number
@@ -47,12 +37,6 @@ interface GatewayStreamData {
     cache_creation_1h_tokens?: number
     image_output_tokens?: number
   }
-}
-
-interface AssistantEvent {
-  id: string
-  event: string
-  detail: string
 }
 
 interface AssistantUsage {
@@ -72,37 +56,25 @@ interface AssistantCost {
   breakdown?: CostBreakdown
 }
 
+interface ChatMessage {
+  id: string
+  role: 'user' | 'assistant'
+  content: string
+}
+
 interface AIAssistantProps {
   token: string
-  contextType:
-    | 'meta_org'
-    | 'business_process'
-    | 'requirement'
-    | 'project'
-    | 'organization'
-    | 'governance'
-    | 'model_settings'
-    | 'self_evolution'
+  contextType: string
   contextID?: string
+  initialIntent?: string
+  initialIntentKey?: string
+  autoRunInitialIntent?: boolean
   className?: string
 }
 
-const contextActions: Record<AIAssistantProps['contextType'], string[]> = {
-  meta_org: ['assistant.action.summarizeHealth', 'assistant.action.reviewRisks'],
-  business_process: ['assistant.action.processNextStep', 'assistant.action.reviewRisks'],
-  requirement: ['assistant.action.analyzeRequirement', 'assistant.action.acceptanceCriteria'],
-  project: ['assistant.action.recommendMembers', 'assistant.action.generateWorkflow', 'assistant.action.estimateCost'],
-  organization: ['assistant.action.suggestPositions', 'assistant.action.capabilityGaps'],
-  governance: ['assistant.action.explainDecision', 'assistant.action.proposeRule'],
-  model_settings: ['assistant.action.testProviders', 'assistant.action.inspectSchemas'],
-  self_evolution: ['assistant.action.evolutionSignal', 'assistant.action.evolutionKnowledge'],
-}
+const modelPreferenceKey = 'meta_org.assistant.model_by_module.v1'
 
-function assistantModule(contextType: AIAssistantProps['contextType']): string {
-  return contextType
-}
-
-function assistantMode(contextType: AIAssistantProps['contextType']): 'business_process' | 'self_evolution' {
+function assistantMode(contextType: string): 'business_process' | 'self_evolution' {
   return contextType === 'self_evolution' ? 'self_evolution' : 'business_process'
 }
 
@@ -115,101 +87,164 @@ function money(value: number | undefined, currency: string, empty: string): stri
   return typeof value === 'number' ? `${currency} ${value.toFixed(4)}` : empty
 }
 
-export function AIAssistant({ token, contextType, contextID, className = '' }: AIAssistantProps) {
+function totalTokens(usage: AssistantUsage): number | undefined {
+  if (typeof usage.input_tokens !== 'number' && typeof usage.output_tokens !== 'number') return undefined
+  return (usage.input_tokens ?? 0) + (usage.output_tokens ?? 0)
+}
+
+function loadModelPreferences(): Record<string, string> {
+  if (typeof window === 'undefined') return {}
+  try {
+    return JSON.parse(window.localStorage.getItem(modelPreferenceKey) || '{}')
+  } catch {
+    return {}
+  }
+}
+
+function saveModelPreference(moduleKey: string, modelID: string) {
+  if (typeof window === 'undefined' || !modelID) return
+  const preferences = loadModelPreferences()
+  preferences[moduleKey] = modelID
+  window.localStorage.setItem(modelPreferenceKey, JSON.stringify(preferences))
+}
+
+export function AIAssistant({
+  token,
+  contextType,
+  contextID,
+  initialIntent,
+  initialIntentKey,
+  autoRunInitialIntent = false,
+  className = '',
+}: AIAssistantProps) {
   const { t } = useI18n()
-  const [providerType, setProviderType] = useState<'openai' | 'anthropic' | 'gemini'>('openai')
-  const [model, setModel] = useState('gpt-4o-mini')
-  const [preferredChannelID, setPreferredChannelID] = useState('')
-  const [serviceTier, setServiceTier] = useState('')
-  const [reasoningEffort, setReasoningEffort] = useState('')
-  const [positionID, setPositionID] = useState('')
-  const [positionAssignmentID, setPositionAssignmentID] = useState('')
-  const [channels, setChannels] = useState<ProviderChannel[]>([])
+  const [models, setModels] = useState<ModelCatalogItem[]>([])
+  const [providers, setProviders] = useState<ModelProvider[]>([])
+  const [selectedModelID, setSelectedModelID] = useState('')
   const [prompt, setPrompt] = useState('')
   const [state, setState] = useState<AssistantState>('idle')
-  const [output, setOutput] = useState('')
-  const [events, setEvents] = useState<AssistantEvent[]>([])
+  const [messages, setMessages] = useState<ChatMessage[]>([])
   const [invocationID, setInvocationID] = useState('')
   const [sessionID, setSessionID] = useState('')
+  const [steps, setSteps] = useState<AssistantStep[]>([])
   const [usage, setUsage] = useState<AssistantUsage>({})
   const [cost, setCost] = useState<AssistantCost>({ currency: 'CNY' })
-  const [channelName, setChannelName] = useState('')
   const abortRef = useRef<AbortController | null>(null)
-  const channelLabels = useMemo(() => Object.fromEntries(channels.map((channel) => [channel.id, channel.name])), [channels])
+  const consumedIntentRef = useRef('')
 
   useEffect(() => {
     let cancelled = false
-    listProviderChannels(token)
-      .then((items) => {
-        if (!cancelled) setChannels(items)
+    Promise.all([listModels(token), listModelProviders(token)])
+      .then(([modelItems, providerItems]) => {
+        if (cancelled) return
+        const activeModels = modelItems.filter((item) => item.status === 'active')
+        const nextModels = activeModels.length > 0 ? activeModels : modelItems
+        const preferences = loadModelPreferences()
+        setModels(nextModels)
+        setProviders(providerItems)
+        setSelectedModelID((current) => current || preferences[contextType] || nextModels[0]?.id || '')
       })
       .catch(() => {
-        if (!cancelled) setChannels([])
+        if (!cancelled) {
+          setModels([])
+          setProviders([])
+          setSelectedModelID('')
+        }
       })
     return () => {
       cancelled = true
     }
-  }, [token])
+  }, [contextType, token])
 
-  async function send(nextPrompt = prompt) {
-    const trimmed = nextPrompt.trim()
+  const selectedModel = useMemo(
+    () => models.find((model) => model.id === selectedModelID) ?? models[0],
+    [models, selectedModelID],
+  )
+  const providerByID = useMemo(() => Object.fromEntries(providers.map((provider) => [provider.id, provider])), [providers])
+
+  function changeModel(modelID: string) {
+    setSelectedModelID(modelID)
+    saveModelPreference(contextType, modelID)
+  }
+
+  useEffect(() => {
+    const key = initialIntentKey || initialIntent || ''
+    if (!initialIntent || !key || consumedIntentRef.current === key || state === 'streaming') return
+    consumedIntentRef.current = key
+    if (autoRunInitialIntent) {
+      void send(initialIntent)
+      return
+    }
+    setPrompt(initialIntent)
+    // This effect is keyed by initialIntentKey; including send would resubmit when chat state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoRunInitialIntent, initialIntent, initialIntentKey, state])
+
+  async function send(messageOverride?: string) {
+    const trimmed = (messageOverride ?? prompt).trim()
     if (!trimmed || state === 'streaming') return
     const controller = new AbortController()
     abortRef.current = controller
     setState('streaming')
-    setOutput('')
-    setEvents([])
     setInvocationID('')
     setSessionID('')
+    setSteps([])
     setUsage({})
     setCost({ currency: 'CNY' })
-    setChannelName('')
-    let currentInvocationID = ''
+    if (!messageOverride) setPrompt('')
 
-    const scopedMessage = [
-      t('assistant.contextLabel'),
-      contextType,
-      contextID ? `${t('assistant.contextId')}: ${contextID}` : '',
-      trimmed,
-    ]
-      .filter(Boolean)
-      .join('\n')
+    const userMessage: ChatMessage = { id: `user-${Date.now()}`, role: 'user', content: trimmed }
+    const assistantMessage: ChatMessage = { id: `assistant-${Date.now()}`, role: 'assistant', content: '' }
+    setMessages((current) => [...current, userMessage, assistantMessage])
+
+    const provider = selectedModel ? providerByID[selectedModel.provider_id] : undefined
+    const modelKey = selectedModel?.model_key || 'gpt-4o-mini'
+    let currentInvocationID = ''
 
     try {
       const session = await createAssistantSession(token, {
         title: trimmed.slice(0, 80),
         mode: assistantMode(contextType),
-        module_key: assistantModule(contextType),
-        provider_type: providerType,
-        model,
-        preferred_channel_id: preferredChannelID || undefined,
-        service_tier: serviceTier || undefined,
-        reasoning_effort: reasoningEffort || undefined,
-        position_id: positionID.trim() || undefined,
-        position_assignment_id: positionAssignmentID.trim() || undefined,
-        project_id: contextType === 'project' ? contextID : undefined,
-        metadata: { source_context: contextType, context_id: contextID || '' },
+        module_key: contextType,
+        provider_id: selectedModel?.provider_id,
+        provider_type: selectedModel ? undefined : 'openai',
+        model: modelKey,
+        metadata: {
+          source_context: contextType,
+          context_id: contextID || '',
+          selected_model_id: selectedModel?.id || '',
+          selected_model_key: modelKey,
+          selected_provider_type: provider?.provider_type || 'openai',
+        },
       })
       setSessionID(session.id)
       await streamSSEPost<GatewayStreamData>(
         `${API_BASE}/assistant/sessions/${session.id}/runs`,
         token,
         {
-          message: scopedMessage,
-          provider_type: providerType,
-          model,
-          preferred_channel_id: preferredChannelID || undefined,
-          service_tier: serviceTier || undefined,
-          reasoning_effort: reasoningEffort || undefined,
+          message: trimmed,
+          provider_id: selectedModel?.provider_id,
+          provider_type: selectedModel ? undefined : 'openai',
+          model: modelKey,
         },
-        ({ event, data }) => {
+        ({ data }) => {
           const nextInvocationID = data.invocation_id || data.step?.invocation_id
           if (nextInvocationID) {
             currentInvocationID = nextInvocationID
             setInvocationID(nextInvocationID)
           }
+          if (data.step) {
+            setSteps((current) => {
+              if (current.some((step) => step.id === data.step?.id)) return current
+              return [...current, data.step as AssistantStep]
+            })
+          }
           if (data.delta) {
-            setOutput((current) => current + data.delta)
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantMessage.id ? { ...message, content: message.content + data.delta } : message,
+              ),
+            )
           }
           if (data.usage) {
             setUsage({
@@ -229,28 +264,17 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
               currency: data.currency || current.currency,
             }))
           }
-          if (data.tool_call || data.step || event.startsWith('tool_') || event === 'approval_required' || event === 'memory_updated') {
-            const toolStatus = data.tool_call?.status ?? data.step?.status ?? ''
-            if (event.includes('approval') || toolStatus === 'approval_required') {
-              setState('approval_required')
-            }
-            setEvents((current) => [
-              ...current,
-              {
-                id: `${event}-${current.length}`,
-                event,
-                detail: data.step?.summary || data.tool_call?.name || data.tool_call?.status || t('assistant.toolCall'),
-              },
-            ])
-          }
+          if (data.step?.status === 'approval_required') setState('approval_required')
           if (data.error) {
             const denied = data.error.toLowerCase().includes('denied') || data.error.toLowerCase().includes('forbidden')
             setState(denied ? 'governance_denied' : 'provider_error')
-            setEvents((current) => [...current, { id: `${event}-${current.length}`, event, detail: data.error || '' }])
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantMessage.id ? { ...message, content: data.error || t('assistant.error') } : message,
+              ),
+            )
           }
-          if (data.done) {
-            setState(completedState)
-          }
+          if (data.done) setState(completedState)
         },
         controller.signal,
       )
@@ -267,16 +291,8 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
             image_output_tokens: invocation.image_output_tokens,
           })
           setCost({ final: invocation.cost_amount, currency: invocation.currency, breakdown: invocation.cost_breakdown })
-          setChannelName(invocation.channel_id ? channelLabels[invocation.channel_id] || invocation.channel_id : t('assistant.providerDefaultChannel'))
-        } catch (err) {
-          setEvents((current) => [
-            ...current,
-            {
-              id: `cost-${current.length}`,
-              event: 'cost',
-              detail: err instanceof Error ? err.message : t('assistant.costUnavailable'),
-            },
-          ])
+        } catch {
+          setCost((current) => current)
         }
       }
       setState(completedState)
@@ -286,10 +302,13 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
         return
       }
       setState('provider_error')
-      setEvents((current) => [
-        ...current,
-        { id: `error-${current.length}`, event: 'error', detail: err instanceof Error ? err.message : t('assistant.error') },
-      ])
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantMessage.id
+            ? { ...message, content: err instanceof Error ? err.message : t('assistant.error') }
+            : message,
+        ),
+      )
     } finally {
       abortRef.current = null
     }
@@ -300,223 +319,141 @@ export function AIAssistant({ token, contextType, contextID, className = '' }: A
     setState('cancelled')
   }
 
-  function runAction(key: string) {
-    const nextPrompt = t(key)
-    setPrompt(nextPrompt)
-    void send(nextPrompt)
-  }
+  const tokenTotal = totalTokens(usage)
 
   return (
-    <aside className={`h-fit rounded-lg border border-slate-200 bg-white p-4 shadow-sm ${className}`}>
-      <div className="flex items-center justify-between gap-3">
+    <aside className={`flex h-full min-h-0 flex-col bg-white ${className}`}>
+      <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
         <div className="flex min-w-0 items-center gap-2">
-          <Bot className="h-5 w-5 shrink-0 text-slate-500" />
-          <h2 className="truncate text-base font-semibold text-slate-950">{t('assistant.title')}</h2>
+          <Bot className="h-5 w-5 shrink-0 text-[#AD4714]" />
+          <div className="min-w-0">
+            <h2 className="truncate text-base font-semibold text-slate-950">{t('assistant.title')}</h2>
+            <p className="truncate text-xs text-slate-500">{contextType}</p>
+          </div>
         </div>
-        <StateBadge state={state} />
+        <div className="flex min-w-0 items-center gap-2">
+          <select
+            value={selectedModelID}
+            onChange={(event) => changeModel(event.target.value)}
+            className="h-9 max-w-[220px] rounded-lg border border-slate-300 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-[#AD4714] focus:ring-2 focus:ring-[#DF6A24]/20"
+            aria-label={t('assistant.model')}
+          >
+            {models.length === 0 ? (
+              <option value="">{t('assistant.defaultModel')}</option>
+            ) : (
+              models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.display_name || model.model_key}
+                </option>
+              ))
+            )}
+          </select>
+          <StateBadge state={state} />
+        </div>
       </div>
 
-      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-        <label className="block">
-          <span className="text-xs font-semibold text-slate-500">{t('assistant.module')}</span>
-          <input
-            value={assistantModule(contextType)}
-            readOnly
-            className="mt-1 h-10 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 outline-none"
-          />
-        </label>
-        <label className="block">
-          <span className="text-xs font-semibold text-slate-500">{t('assistant.provider')}</span>
-          <select
-            value={providerType}
-            onChange={(event) => setProviderType(event.target.value as 'openai' | 'anthropic' | 'gemini')}
-            className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-          >
-            <option value="openai">{t('provider.openai')}</option>
-            <option value="anthropic">{t('provider.anthropic')}</option>
-            <option value="gemini">{t('provider.gemini')}</option>
-          </select>
-        </label>
-        <label className="block">
-          <span className="text-xs font-semibold text-slate-500">{t('assistant.model')}</span>
-          <input
-            value={model}
-            onChange={(event) => setModel(event.target.value)}
-            className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-          />
-        </label>
-        <label className="block">
-          <span className="text-xs font-semibold text-slate-500">{t('assistant.channel')}</span>
-          <select
-            value={preferredChannelID}
-            onChange={(event) => setPreferredChannelID(event.target.value)}
-            className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-          >
-            <option value="">{t('assistant.autoChannel')}</option>
-            {channels.map((channel) => (
-              <option key={channel.id} value={channel.id}>
-                {channel.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="block">
-          <span className="text-xs font-semibold text-slate-500">{t('assistant.serviceTier')}</span>
-          <select
-            value={serviceTier}
-            onChange={(event) => setServiceTier(event.target.value)}
-            className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-          >
-            <option value="">{t('assistant.tier.standard')}</option>
-            <option value="flex">{t('assistant.tier.flex')}</option>
-            <option value="priority">{t('assistant.tier.priority')}</option>
-          </select>
-        </label>
-        <label className="block">
-          <span className="text-xs font-semibold text-slate-500">{t('assistant.reasoningEffort')}</span>
-          <select
-            value={reasoningEffort}
-            onChange={(event) => setReasoningEffort(event.target.value)}
-            className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-          >
-            <option value="">{t('assistant.reasoning.auto')}</option>
-            <option value="low">{t('assistant.reasoning.low')}</option>
-            <option value="medium">{t('assistant.reasoning.medium')}</option>
-            <option value="high">{t('assistant.reasoning.high')}</option>
-          </select>
-        </label>
-        <label className="block">
-          <span className="text-xs font-semibold text-slate-500">{t('assistant.positionId')}</span>
-          <input
-            value={positionID}
-            onChange={(event) => setPositionID(event.target.value)}
-            placeholder={t('assistant.positionPlaceholder')}
-            className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-          />
-        </label>
-        <label className="block">
-          <span className="text-xs font-semibold text-slate-500">{t('assistant.positionAssignmentId')}</span>
-          <input
-            value={positionAssignmentID}
-            onChange={(event) => setPositionAssignmentID(event.target.value)}
-            placeholder={t('assistant.positionPlaceholder')}
-            className="mt-1 h-10 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-          />
-        </label>
-      </div>
-
-      <div className="mt-4 flex flex-wrap gap-2">
-        {contextActions[contextType].map((key) => (
-          <button
-            key={key}
-            type="button"
-            onClick={() => runAction(key)}
-            disabled={state === 'streaming'}
-            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            {t(key)}
-          </button>
-        ))}
-      </div>
-
-      <label className="mt-4 block">
-        <span className="text-xs font-semibold text-slate-500">{t('assistant.prompt')}</span>
-        <textarea
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-          className="mt-1 h-28 w-full resize-y rounded-lg border border-slate-300 p-3 text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-        />
-      </label>
-
-      <div className="mt-3 flex gap-2">
-        <button
-          type="button"
-          onClick={() => void send()}
-          disabled={state === 'streaming' || !prompt.trim()}
-          className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-lg bg-slate-950 px-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          <Send className="h-4 w-4" />
-          {t('assistant.send')}
-        </button>
-        {state === 'streaming' && (
-          <button
-            type="button"
-            onClick={cancel}
-            className="inline-flex h-10 items-center justify-center rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100"
-            aria-label={t('assistant.cancel')}
-          >
-            <CircleStop className="h-4 w-4" />
-          </button>
+      <div className="flex-1 space-y-3 overflow-y-auto bg-slate-50 px-5 py-4">
+        {messages.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-300 bg-white p-4 text-sm text-slate-500">
+            {t('assistant.empty')}
+          </div>
+        ) : (
+          messages.map((message) => (
+            <div
+              key={message.id}
+              className={`max-w-[88%] rounded-lg px-3 py-2 text-sm leading-6 ${
+                message.role === 'user'
+                  ? 'ml-auto bg-[#AD4714] text-[#fffaf5]'
+                  : 'mr-auto border border-slate-200 bg-white text-slate-800'
+              }`}
+            >
+              {message.content || (message.role === 'assistant' && state === 'streaming' ? t('assistant.thinking') : '')}
+            </div>
+          ))
         )}
       </div>
 
-      <div className="mt-4 min-h-[180px] rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-800">
-        {output || <span className="text-slate-400">{t('assistant.empty')}</span>}
-      </div>
-
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
-        <AssistantFact label="assistant.invocation" value={invocationID || t('common.none')} />
-        <AssistantFact label="assistant.session" value={sessionID || t('common.none')} />
-        <AssistantFact label="assistant.channel" value={channelName || (preferredChannelID ? channelLabels[preferredChannelID] || preferredChannelID : t('assistant.autoChannel'))} />
-        <AssistantFact
-          label="assistant.tokens"
-          value={
-            typeof usage.input_tokens === 'number' || typeof usage.output_tokens === 'number'
-              ? `${usage.input_tokens ?? 0} / ${usage.output_tokens ?? 0}`
-              : t('common.none')
-          }
-        />
-        <AssistantFact
-          label="assistant.cacheTokens"
-          value={
-            typeof usage.cache_creation_tokens === 'number' || typeof usage.cache_read_tokens === 'number'
-              ? `${usage.cache_creation_tokens ?? 0} / ${usage.cache_read_tokens ?? 0}`
-              : t('common.none')
-          }
-        />
-        <AssistantFact label="assistant.imageTokens" value={typeof usage.image_output_tokens === 'number' ? String(usage.image_output_tokens) : t('common.none')} />
-        <AssistantFact label="assistant.estimatedCost" value={money(cost.estimated, cost.currency, t('common.none'))} />
-        <AssistantFact label="assistant.finalCost" value={money(cost.final, cost.currency, t('common.none'))} />
-        <AssistantFact
-          label="assistant.costBreakdown"
-          value={
-            cost.breakdown
-              ? `${money(cost.breakdown.input_cost + cost.breakdown.cache_read_cost + cost.breakdown.cache_creation_cost, cost.currency, t('common.none'))} / ${money(
-                  cost.breakdown.output_cost + cost.breakdown.image_output_cost,
-                  cost.currency,
-                  t('common.none'),
-                )}`
-              : t('common.none')
-          }
-        />
-      </div>
-
-      {events.length > 0 && (
-        <div className="mt-4 space-y-2">
-          {events.map((item) => (
-            <div key={item.id} className="flex items-start gap-2 rounded-lg border border-slate-200 bg-white p-2 text-xs">
-              <Wrench className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-500" />
-              <div className="min-w-0">
-                <p className="font-semibold text-slate-700">{item.event}</p>
-                <p className="mt-1 break-words text-slate-500">{item.detail}</p>
-              </div>
-            </div>
-          ))}
+      <div className="border-t border-slate-200 bg-white px-5 py-3">
+        <div className="mb-3 flex flex-wrap items-center gap-2 text-xs text-slate-500">
+          <span>{t('assistant.tokens')}: {tokenTotal ?? t('common.none')}</span>
+          <span>{t('assistant.finalCost')}: {money(cost.final ?? cost.estimated, cost.currency, t('common.none'))}</span>
+          {invocationID && <span className="max-w-[220px] truncate">{t('assistant.invocation')}: {invocationID}</span>}
         </div>
-      )}
+        <div className="flex items-end gap-2">
+          <textarea
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                event.preventDefault()
+                void send()
+              }
+            }}
+            placeholder={t('assistant.chatPlaceholder')}
+            className="min-h-[72px] flex-1 resize-none rounded-lg border border-slate-300 p-3 text-sm text-slate-900 outline-none transition focus:border-[#AD4714] focus:ring-2 focus:ring-[#DF6A24]/20"
+          />
+          {state === 'streaming' ? (
+            <button
+              type="button"
+              onClick={cancel}
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-slate-300 text-slate-700 transition hover:bg-slate-100"
+              aria-label={t('assistant.cancel')}
+            >
+              <CircleStop className="h-4 w-4" />
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => void send()}
+              disabled={!prompt.trim()}
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#AD4714] text-[#fffaf5] transition hover:bg-[#B84F18] disabled:cursor-not-allowed disabled:opacity-50"
+              aria-label={t('assistant.send')}
+            >
+              <Send className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+        {steps.length > 0 && (
+          <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600">
+              <ListChecks className="h-4 w-4" />
+              {t('assistant.executionTimeline')}
+            </div>
+            <div className="space-y-2">
+              {steps.map((step) => (
+                <StepCard key={step.id} step={step} />
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
     </aside>
   )
 }
 
-function AssistantFact({ label, value }: { label: string; value: string }) {
+function StepCard({ step }: { step: AssistantStep }) {
   const { t } = useI18n()
+  const tone =
+    step.status === 'completed'
+      ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+      : step.status === 'approval_required'
+        ? 'border-amber-200 bg-amber-50 text-amber-800'
+        : step.status === 'failed'
+          ? 'border-red-200 bg-red-50 text-red-800'
+          : 'border-slate-200 bg-white text-slate-700'
+  const toolName = typeof step.data?.tool_name === 'string' ? step.data.tool_name : ''
   return (
-    <div className="min-w-0 rounded-md border border-slate-200 bg-white px-2.5 py-2">
-      <p className="text-xs font-semibold text-slate-500">{t(label)}</p>
-      <p className="mt-1 truncate text-xs font-medium text-slate-800" title={value}>
-        {value}
-      </p>
+    <div className={`rounded-lg border px-3 py-2 text-xs ${tone}`}>
+      <div className="flex items-center justify-between gap-2">
+        <span className="font-semibold">{t(`assistant.step.${step.step_type}`)}</span>
+        <span className="shrink-0">{t(`assistant.state.${step.status}`)}</span>
+      </div>
+      <p className="mt-1 line-clamp-2 text-[11px] opacity-80">{step.summary || toolName || t('common.none')}</p>
+      {(step.tool_execution_id || step.tool_approval_id) && (
+        <p className="mt-1 truncate text-[10px] opacity-70">
+          {step.tool_execution_id || step.tool_approval_id}
+        </p>
+      )}
     </div>
   )
 }
@@ -531,9 +468,5 @@ function StateBadge({ state }: { state: AssistantState }) {
         : state === 'approval_required'
           ? 'border-amber-200 bg-amber-50 text-amber-700'
           : 'border-slate-200 bg-slate-50 text-slate-600'
-  return (
-    <span className={`inline-flex h-7 max-w-[150px] items-center truncate rounded-md border px-2 text-xs font-semibold ${tone}`}>
-      {t(`assistant.state.${state}`)}
-    </span>
-  )
+  return <span className={`inline-flex h-7 max-w-[150px] items-center truncate rounded-md border px-2 text-xs font-semibold ${tone}`}>{t(`assistant.state.${state}`)}</span>
 }

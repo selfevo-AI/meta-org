@@ -27,15 +27,28 @@ type ToolExecutor interface {
 }
 
 type Service struct {
-	repo       Repository
-	ai         AIInvoker
-	tools      ToolExecutor
-	maxTurns   int
-	maxHistory int
+	repo            Repository
+	ai              AIInvoker
+	tools           ToolExecutor
+	contextResolver ContextResolver
+	maxTurns        int
+	maxHistory      int
 }
 
-func NewService(repo Repository, ai AIInvoker, tools ToolExecutor) *Service {
-	return &Service{repo: repo, ai: ai, tools: tools, maxTurns: 12, maxHistory: 40}
+type ServiceOption func(*Service)
+
+func WithContextResolver(resolver ContextResolver) ServiceOption {
+	return func(s *Service) {
+		s.contextResolver = resolver
+	}
+}
+
+func NewService(repo Repository, ai AIInvoker, tools ToolExecutor, opts ...ServiceOption) *Service {
+	s := &Service{repo: repo, ai: ai, tools: tools, maxTurns: 12, maxHistory: 40}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 func (s *Service) CreateSession(ctx context.Context, actorID uuid.UUID, actorType string, input CreateSessionInput) (*Session, error) {
@@ -121,6 +134,10 @@ func (s *Service) runLoop(ctx context.Context, events chan<- RunEvent, session *
 		fail(err, 0)
 		return
 	}
+	workContext := WorkRecordContext{ModuleKey: session.ModuleKey}
+	if s.contextResolver != nil {
+		workContext = s.contextResolver.Resolve(ctx, session)
+	}
 	history, err := s.repo.ListMessages(ctx, session.ID, s.maxHistory)
 	if err != nil {
 		fail(err, 0)
@@ -132,7 +149,7 @@ func (s *Service) runLoop(ctx context.Context, events chan<- RunEvent, session *
 		return
 	}
 
-	messages := buildAIMessages(session, memories, history)
+	messages := buildAIMessages(session, memories, history, workContext)
 	tools := gatewayTools(toolDefs)
 	providerID, channelID, providerType, model, serviceTier, effort := runModelConfig(session, input)
 	if (providerID == nil && providerType == "") || model == "" {
@@ -165,6 +182,8 @@ func (s *Service) runLoop(ctx context.Context, events chan<- RunEvent, session *
 				"module_key":             session.ModuleKey,
 				"position_id":            uuidString(session.PositionID),
 				"position_assignment_id": uuidString(session.PositionAssignmentID),
+				"context_record_count":   len(workContext.Records),
+				"context_error":          workContext.Error,
 			},
 		})
 		if err != nil {
@@ -184,7 +203,7 @@ func (s *Service) runLoop(ctx context.Context, events chan<- RunEvent, session *
 			StepType:     StepLLM,
 			Status:       StatusCompleted,
 			Summary:      trimSummary(output.Content),
-			Data:         map[string]any{"tool_call_count": len(output.ToolCalls), "model": output.Model, "provider_type": output.ProviderType},
+			Data:         map[string]any{"tool_call_count": len(output.ToolCalls), "model": output.Model, "provider_type": output.ProviderType, "context_record_count": len(workContext.Records)},
 			Turn:         turn,
 		})
 		if err != nil {
@@ -309,8 +328,8 @@ func (s *Service) finishRun(ctx context.Context, send func(RunEvent) bool, sessi
 	send(RunEvent{Type: "done", Done: true, Data: map[string]any{"status": StatusCompleted}})
 }
 
-func buildAIMessages(session *Session, memories []Memory, history []Message) []aigateway.Message {
-	messages := []aigateway.Message{{Role: "system", Content: systemPrompt(session, memories)}}
+func buildAIMessages(session *Session, memories []Memory, history []Message, workContext WorkRecordContext) []aigateway.Message {
+	messages := []aigateway.Message{{Role: "system", Content: systemPrompt(session, memories, workContext)}}
 	for _, item := range history {
 		msg := aigateway.Message{Role: item.Role, Content: item.Content, ToolCallID: item.ToolCallID, ToolName: item.ToolName}
 		if item.Role == "assistant" {
@@ -324,10 +343,15 @@ func buildAIMessages(session *Session, memories []Memory, history []Message) []a
 	return messages
 }
 
-func systemPrompt(session *Session, memories []Memory) string {
+func systemPrompt(session *Session, memories []Memory, workContext WorkRecordContext) string {
 	var b strings.Builder
 	b.WriteString("You are a business process and system self-evolution assistant for this organization.\n")
-	b.WriteString("Use tools when they are needed to analyze requirements, operate project workflows, prepare governance context, or create evolution knowledge/signals.\n")
+	b.WriteString("Authorized humans may operate the workspace directly or call you as the execution Agent from the current module.\n")
+	b.WriteString("When a human delegates work to you, perform operational changes by Agent tool calls. Do not instruct the human to call APIs, edit JSON payloads, or execute delegated write operations manually.\n")
+	b.WriteString("Humans provide intent, query records, and approve or reject decisions; you inspect context, call tools, summarize results, and stop for approval when required.\n")
+	b.WriteString("Use tools for delegated create, update, delete, workflow, governance, finance, model-configuration, cost, organization, and project operations.\n")
+	b.WriteString("For high-risk, financial, governance, external, model-configuration, or destructive actions, rely on the tool runtime approval policy and stop when approval_required is returned.\n")
+	b.WriteString("Before using tools, inspect the scoped work records below and infer the safest current entity context. If the target entity remains ambiguous, ask a short review question instead of guessing.\n")
 	b.WriteString("Memory isolation rule: only use memories and work records from the exact module_key and organization position scope shown here. Do not infer or import context from other modules or positions.\n")
 	b.WriteString(fmt.Sprintf("mode=%s module_key=%s organization_id=%s department_id=%s position_id=%s position_assignment_id=%s\n",
 		session.Mode, session.ModuleKey, uuidString(session.OrganizationID), uuidString(session.DepartmentID),
@@ -340,6 +364,30 @@ func systemPrompt(session *Session, memories []Memory) string {
 			if memory.Content != "" {
 				b.WriteString(": ")
 				b.WriteString(memory.Content)
+			}
+			b.WriteByte('\n')
+		}
+	}
+	if workContext.Error != "" {
+		b.WriteString("Work record context unavailable: ")
+		b.WriteString(workContext.Error)
+		b.WriteByte('\n')
+	} else if len(workContext.Records) > 0 {
+		b.WriteString("Recent work records from this module:\n")
+		for _, record := range workContext.Records {
+			b.WriteString("- ")
+			b.WriteString(record.Type)
+			b.WriteString(" ")
+			b.WriteString(record.ID)
+			b.WriteString(" status=")
+			b.WriteString(record.Status)
+			if record.Title != "" {
+				b.WriteString(" title=")
+				b.WriteString(record.Title)
+			}
+			if record.CreatedAt != "" {
+				b.WriteString(" created_at=")
+				b.WriteString(record.CreatedAt)
 			}
 			b.WriteByte('\n')
 		}
@@ -431,7 +479,7 @@ func toolCallID(call aigateway.ToolCall, index int) string {
 }
 
 func actorIDForAttribution(session *Session) *uuid.UUID {
-	if session.ActorType == "human" {
+	if session.ActorType == "human" || session.ActorType == "internal_human" || session.ActorType == "external_human" {
 		return &session.ActorID
 	}
 	return nil

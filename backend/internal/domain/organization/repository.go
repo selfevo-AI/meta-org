@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -19,25 +20,29 @@ func NewRepository(db *pgxpool.Pool) *PostgresRepository {
 
 func (r *PostgresRepository) CreateOrganization(ctx context.Context, input CreateOrganizationInput) (*Organization, error) {
 	org := &Organization{}
+	var createdBy pgtype.UUID
 	err := r.db.QueryRow(ctx,
-		`INSERT INTO organizations (name, description) VALUES ($1, $2)
-		 RETURNING id, name, COALESCE(description, ''), created_at, updated_at`,
-		input.Name, input.Description,
-	).Scan(&org.ID, &org.Name, &org.Description, &org.CreatedAt, &org.UpdatedAt)
+		`INSERT INTO organizations (name, description, created_by) VALUES ($1, $2, $3)
+		 RETURNING id, name, COALESCE(description, ''), created_by, created_at, updated_at`,
+		input.Name, input.Description, input.CreatedBy,
+	).Scan(&org.ID, &org.Name, &org.Description, &createdBy, &org.CreatedAt, &org.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create organization: %w", err)
 	}
+	org.CreatedBy = uuidPointer(createdBy)
 	return org, nil
 }
 
 func (r *PostgresRepository) GetOrganizationByID(ctx context.Context, id uuid.UUID) (*Organization, error) {
 	org := &Organization{}
+	var createdBy pgtype.UUID
 	err := r.db.QueryRow(ctx,
-		`SELECT id, name, COALESCE(description, ''), created_at, updated_at FROM organizations WHERE id = $1`, id,
-	).Scan(&org.ID, &org.Name, &org.Description, &org.CreatedAt, &org.UpdatedAt)
+		`SELECT id, name, COALESCE(description, ''), created_by, created_at, updated_at FROM organizations WHERE id = $1`, id,
+	).Scan(&org.ID, &org.Name, &org.Description, &createdBy, &org.CreatedAt, &org.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get organization: %w", err)
 	}
+	org.CreatedBy = uuidPointer(createdBy)
 	return org, nil
 }
 
@@ -46,7 +51,7 @@ func (r *PostgresRepository) ListOrganizations(ctx context.Context, limit int) (
 		limit = 50
 	}
 	rows, err := r.db.Query(ctx,
-		`SELECT id, name, COALESCE(description, ''), created_at, updated_at
+		`SELECT id, name, COALESCE(description, ''), created_by, created_at, updated_at
 		 FROM organizations ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list organizations: %w", err)
@@ -56,9 +61,11 @@ func (r *PostgresRepository) ListOrganizations(ctx context.Context, limit int) (
 	var organizations []Organization
 	for rows.Next() {
 		var org Organization
-		if err := rows.Scan(&org.ID, &org.Name, &org.Description, &org.CreatedAt, &org.UpdatedAt); err != nil {
+		var createdBy pgtype.UUID
+		if err := rows.Scan(&org.ID, &org.Name, &org.Description, &createdBy, &org.CreatedAt, &org.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan organization: %w", err)
 		}
+		org.CreatedBy = uuidPointer(createdBy)
 		organizations = append(organizations, org)
 	}
 	if err := rows.Err(); err != nil {
@@ -674,6 +681,9 @@ func (r *PostgresRepository) AddOrganizationMember(ctx context.Context, input Ad
 	if input.Status == "" {
 		input.Status = "active"
 	}
+	if input.AuthorityTier == "" {
+		input.AuthorityTier = AuthorityExecutor
+	}
 	metadataJSON, err := json.Marshal(input.Metadata)
 	if err != nil {
 		return nil, fmt.Errorf("marshal membership metadata: %w", err)
@@ -684,32 +694,32 @@ func (r *PostgresRepository) AddOrganizationMember(ctx context.Context, input Ad
 	case "internal":
 		userID := *input.UserID
 		err = r.db.QueryRow(ctx,
-			`INSERT INTO organization_memberships (organization_id, department_id, member_type, user_id, title, role_id, status, metadata)
-			 SELECT organization_id, id, $2, $3, $4, $5, $6, $7 FROM departments WHERE id = $1
+			`INSERT INTO organization_memberships (organization_id, department_id, member_type, user_id, title, role_id, authority_tier, status, metadata)
+			 SELECT organization_id, id, $2, $3, $4, $5, $6, $7, $8 FROM departments WHERE id = $1
 			 ON CONFLICT (department_id, user_id) WHERE member_type = 'internal'
-			 DO UPDATE SET title = EXCLUDED.title, role_id = EXCLUDED.role_id, status = EXCLUDED.status, metadata = EXCLUDED.metadata, updated_at = NOW()
+			 DO UPDATE SET title = EXCLUDED.title, role_id = EXCLUDED.role_id, authority_tier = EXCLUDED.authority_tier, status = EXCLUDED.status, metadata = EXCLUDED.metadata, updated_at = NOW()
 			 RETURNING id`,
-			input.DepartmentID, input.MemberType, userID, input.Title, input.RoleID, input.Status, metadataJSON,
+			input.DepartmentID, input.MemberType, userID, input.Title, input.RoleID, input.AuthorityTier, input.Status, metadataJSON,
 		).Scan(&membershipID)
 	case "external":
 		externalMemberID := *input.ExternalMemberID
 		err = r.db.QueryRow(ctx,
-			`INSERT INTO organization_memberships (organization_id, department_id, member_type, external_member_id, title, role_id, status, metadata)
-			 SELECT organization_id, id, $2, $3, $4, $5, $6, $7 FROM departments WHERE id = $1
+			`INSERT INTO organization_memberships (organization_id, department_id, member_type, external_member_id, title, role_id, authority_tier, status, metadata)
+			 SELECT organization_id, id, $2, $3, $4, $5, $6, $7, $8 FROM departments WHERE id = $1
 			 ON CONFLICT (department_id, external_member_id) WHERE member_type = 'external'
-			 DO UPDATE SET title = EXCLUDED.title, role_id = EXCLUDED.role_id, status = EXCLUDED.status, metadata = EXCLUDED.metadata, updated_at = NOW()
+			 DO UPDATE SET title = EXCLUDED.title, role_id = EXCLUDED.role_id, authority_tier = EXCLUDED.authority_tier, status = EXCLUDED.status, metadata = EXCLUDED.metadata, updated_at = NOW()
 			 RETURNING id`,
-			input.DepartmentID, input.MemberType, externalMemberID, input.Title, input.RoleID, input.Status, metadataJSON,
+			input.DepartmentID, input.MemberType, externalMemberID, input.Title, input.RoleID, input.AuthorityTier, input.Status, metadataJSON,
 		).Scan(&membershipID)
 	case "agent":
 		agentID := *input.AgentID
 		err = r.db.QueryRow(ctx,
-			`INSERT INTO organization_memberships (organization_id, department_id, member_type, agent_id, title, role_id, status, metadata)
-			 SELECT organization_id, id, $2, $3, $4, $5, $6, $7 FROM departments WHERE id = $1
+			`INSERT INTO organization_memberships (organization_id, department_id, member_type, agent_id, title, role_id, authority_tier, status, metadata)
+			 SELECT organization_id, id, $2, $3, $4, $5, $6, $7, $8 FROM departments WHERE id = $1
 			 ON CONFLICT (department_id, agent_id) WHERE member_type = 'agent'
-			 DO UPDATE SET title = EXCLUDED.title, role_id = EXCLUDED.role_id, status = EXCLUDED.status, metadata = EXCLUDED.metadata, updated_at = NOW()
+			 DO UPDATE SET title = EXCLUDED.title, role_id = EXCLUDED.role_id, authority_tier = EXCLUDED.authority_tier, status = EXCLUDED.status, metadata = EXCLUDED.metadata, updated_at = NOW()
 			 RETURNING id`,
-			input.DepartmentID, input.MemberType, agentID, input.Title, input.RoleID, input.Status, metadataJSON,
+			input.DepartmentID, input.MemberType, agentID, input.Title, input.RoleID, input.AuthorityTier, input.Status, metadataJSON,
 		).Scan(&membershipID)
 	default:
 		return nil, fmt.Errorf("unsupported member type: %s", input.MemberType)
@@ -775,11 +785,12 @@ func (r *PostgresRepository) UpdateOrganizationMembership(ctx context.Context, i
 		`UPDATE organization_memberships SET
 			title = COALESCE(NULLIF($2, ''), title),
 			role_id = COALESCE($3, role_id),
-			status = COALESCE(NULLIF($4, ''), status),
-			metadata = COALESCE($5::jsonb, metadata),
+			authority_tier = COALESCE(NULLIF($4::text, ''), authority_tier),
+			status = COALESCE(NULLIF($5, ''), status),
+			metadata = COALESCE($6::jsonb, metadata),
 			updated_at = NOW()
 		 WHERE id = $1`,
-		id, input.Title, input.RoleID, input.Status, metadataJSON)
+		id, input.Title, input.RoleID, input.AuthorityTier, input.Status, metadataJSON)
 	if err != nil {
 		return nil, fmt.Errorf("update organization membership: %w", err)
 	}
@@ -965,6 +976,7 @@ func membershipSelectSQL() string {
 		om.title,
 		om.role_id,
 		COALESCE(r.name, '') AS role_name,
+		om.authority_tier,
 		om.status,
 		om.joined_at,
 		om.metadata,
@@ -993,6 +1005,7 @@ func scanOrganizationMembership(scan scanFunc) (*OrganizationMembership, error) 
 		&membership.Title,
 		&membership.RoleID,
 		&membership.RoleName,
+		&membership.AuthorityTier,
 		&membership.Status,
 		&membership.JoinedAt,
 		&metadataJSON,
@@ -1005,4 +1018,12 @@ func scanOrganizationMembership(scan scanFunc) (*OrganizationMembership, error) 
 		return nil, fmt.Errorf("unmarshal organization membership metadata: %w", err)
 	}
 	return membership, nil
+}
+
+func uuidPointer(value pgtype.UUID) *uuid.UUID {
+	if !value.Valid {
+		return nil
+	}
+	id := uuid.UUID(value.Bytes)
+	return &id
 }

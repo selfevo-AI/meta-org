@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/dberrors"
 	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
@@ -127,11 +128,22 @@ func authenticatedActor(w http.ResponseWriter, r *http.Request) (uuid.UUID, stri
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid authenticated user"})
 		return uuid.Nil, "", false
 	}
-	actorType := user.Type
-	if actorType == "ai" {
-		actorType = "ai_agent"
+	return id, normalizeAuthenticatedActorType(user.Type), true
+}
+
+func normalizeAuthenticatedActorType(actorType string) string {
+	switch actorType {
+	case "human", "internal", "internal_human":
+		return "internal_human"
+	case "external_human":
+		return "external_human"
+	case "ai", "ai_agent", "agent", "internal_agent":
+		return "internal_agent"
+	case "external_agent":
+		return "external_agent"
+	default:
+		return actorType
 	}
-	return id, actorType, true
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
@@ -176,6 +188,8 @@ func statusFromError(err error) int {
 	switch {
 	case errors.Is(err, ErrValidation):
 		return http.StatusBadRequest
+	case dberrors.IsUniqueViolation(err):
+		return http.StatusConflict
 	case errors.Is(err, ErrNotFound), errors.Is(err, pgx.ErrNoRows):
 		return http.StatusNotFound
 	default:

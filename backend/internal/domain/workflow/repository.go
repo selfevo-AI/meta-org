@@ -284,12 +284,8 @@ func (r *Repository) CompleteTaskWithWorkflowProgress(ctx context.Context, taskI
 			return fmt.Errorf("unmarshal existing task output: %w", err)
 		}
 	}
-
-	if _, err := tx.Exec(ctx,
-		`UPDATE tasks SET status = $1, output = $2, updated_at = NOW() WHERE id = $3`,
-		TaskCompleted, outputJSON, taskID,
-	); err != nil {
-		return fmt.Errorf("update task status: %w", err)
+	if task.Status != TaskAssigned && task.Status != TaskInProgress {
+		return fmt.Errorf("%w: task status %q cannot be completed", ErrValidation, task.Status)
 	}
 
 	inst := &WorkflowInstance{}
@@ -304,6 +300,12 @@ func (r *Repository) CompleteTaskWithWorkflowProgress(ctx context.Context, taskI
 	if err := json.Unmarshal(contextJSON, &inst.Context); err != nil {
 		return fmt.Errorf("unmarshal workflow context: %w", err)
 	}
+	if inst.Status != WorkflowActive {
+		return fmt.Errorf("%w: workflow status %q cannot progress", ErrValidation, inst.Status)
+	}
+	if task.Stage != inst.CurrentStage {
+		return fmt.Errorf("%w: task stage %d is not current stage %d", ErrValidation, task.Stage, inst.CurrentStage)
+	}
 
 	var stagesJSON []byte
 	var stages []Stage
@@ -312,6 +314,16 @@ func (r *Repository) CompleteTaskWithWorkflowProgress(ctx context.Context, taskI
 	}
 	if err := json.Unmarshal(stagesJSON, &stages); err != nil {
 		return fmt.Errorf("unmarshal workflow template stages: %w", err)
+	}
+	if task.Stage >= len(stages) {
+		return fmt.Errorf("%w: task stage %d is outside workflow stages", ErrValidation, task.Stage)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE tasks SET status = $1, output = $2, updated_at = NOW() WHERE id = $3`,
+		TaskCompleted, outputJSON, taskID,
+	); err != nil {
+		return fmt.Errorf("update task status: %w", err)
 	}
 
 	nextStage := inst.CurrentStage + 1

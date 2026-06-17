@@ -11,6 +11,8 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/dberrors"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 type Handler struct {
@@ -100,22 +102,31 @@ func (h *Handler) reviewApproval(w http.ResponseWriter, r *http.Request, status 
 		return
 	}
 	var input struct {
-		ReviewedBy *uuid.UUID `json:"reviewed_by,omitempty"`
-		Reason     string     `json:"reason,omitempty"`
+		Reason string `json:"reason,omitempty"`
 	}
 	if !decodeJSON(w, r, &input) {
 		return
 	}
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok || user.Type != "human" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "human reviewer is required"})
+		return
+	}
+	reviewedBy, err := uuid.Parse(user.ID)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid reviewer id"})
+		return
+	}
 	var (
-		result *ToolApproval
-		err    error
+		result    *ToolApproval
+		reviewErr error
 	)
 	if status == ApprovalApproved {
-		result, err = h.service.Approve(r.Context(), id, input.ReviewedBy, input.Reason)
+		result, reviewErr = h.service.Approve(r.Context(), id, &reviewedBy, input.Reason)
 	} else {
-		result, err = h.service.Reject(r.Context(), id, input.ReviewedBy, input.Reason)
+		result, reviewErr = h.service.Reject(r.Context(), id, &reviewedBy, input.Reason)
 	}
-	writeResult(w, http.StatusOK, result, err)
+	writeResult(w, http.StatusOK, result, reviewErr)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
@@ -160,6 +171,10 @@ func statusFromError(err error) int {
 	switch {
 	case errors.Is(err, ErrValidation):
 		return http.StatusBadRequest
+	case dberrors.IsUniqueViolation(err):
+		return http.StatusConflict
+	case errors.Is(err, ErrForbidden):
+		return http.StatusForbidden
 	case errors.Is(err, ErrNotFound), errors.Is(err, pgx.ErrNoRows):
 		return http.StatusNotFound
 	default:

@@ -176,6 +176,14 @@ export async function listToolExecutions(token: string): Promise<ToolExecution[]
   return apiRequest<ToolExecution[]>('/tool-executions', { token })
 }
 
+export async function approveToolApproval(token: string, id: string, reason = 'approved from human review console'): Promise<ToolApproval> {
+  return apiRequest<ToolApproval>(`/tool-approvals/${id}/approve`, { method: 'POST', token, body: { reason } })
+}
+
+export async function rejectToolApproval(token: string, id: string, reason = 'rejected from human review console'): Promise<ToolApproval> {
+  return apiRequest<ToolApproval>(`/tool-approvals/${id}/reject`, { method: 'POST', token, body: { reason } })
+}
+
 export async function listInvocations(token: string): Promise<AIInvocation[]> {
   return apiRequest<AIInvocation[]>('/ai-gateway/invocations', { token })
 }
@@ -729,6 +737,8 @@ export interface ToolDefinition {
   default_policy: string
   risk_level: string
   required_level: string
+  tool_category: string
+  approval_tier_required: string
   status: string
   input_schema: Record<string, unknown>
   output_schema: Record<string, unknown>
@@ -743,12 +753,26 @@ export interface ToolExecution {
   tool_name?: string
   actor_id: string
   actor_type: string
+  requested_by_human_id?: string
   policy: string
   status: string
   result_summary?: string
   error_message?: string
   created_at: string
   completed_at?: string
+}
+
+export interface ToolApproval {
+  id: string
+  execution_id: string
+  status: string
+  requested_by?: string
+  reviewed_by?: string
+  approved_by_human_id?: string
+  reason?: string
+  expires_at?: string
+  created_at: string
+  reviewed_at?: string
 }
 
 export interface AIInvocation {

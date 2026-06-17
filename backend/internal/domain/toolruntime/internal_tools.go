@@ -65,16 +65,16 @@ func InternalTools(projectSvc ProjectService, financeSvc FinanceService, evoluti
 
 func DefaultToolDefinitions() []CreateToolInput {
 	return []CreateToolInput{
-		{Name: "requirement.analyze", Description: "Analyze a requirement", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2"},
-		{Name: "project.match_members", Description: "Recommend project members", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2"},
-		{Name: "project.bind_workflow", Description: "Bind workflow to project", SourceType: SourceInternalAPI, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3"},
-		{Name: "project.estimate_cost", Description: "Estimate project cost", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2"},
-		{Name: "project.create_cost_entry", Description: "Create project cost entry", SourceType: SourceInternalAPI, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3"},
-		{Name: "governance.explain_decision", Description: "Explain governance decision", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "low", RequiredLevel: "L1"},
-		{Name: "finance.prepare_export_batch", Description: "Prepare finance export batch", SourceType: SourceManualApproval, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3"},
-		{Name: "evolution.create_knowledge", Description: "Create evolution knowledge entry", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2"},
-		{Name: "evolution.create_signal", Description: "Create evolution signal", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2"},
-		{Name: "evolution.propose_experiment", Description: "Propose evolution experiment", SourceType: SourceInternalAPI, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3"},
+		{Name: "requirement.analyze", Description: "Analyze a requirement", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2", ToolCategory: ToolCategoryExecutionOperation, ApprovalTierRequired: ApprovalTierExecutor},
+		{Name: "project.match_members", Description: "Recommend project members", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2", ToolCategory: ToolCategoryExecutionOperation, ApprovalTierRequired: ApprovalTierExecutor},
+		{Name: "project.bind_workflow", Description: "Bind workflow to project", SourceType: SourceInternalAPI, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3", ToolCategory: ToolCategoryBusinessApproval, ApprovalTierRequired: ApprovalTierReviewer},
+		{Name: "project.estimate_cost", Description: "Estimate project cost", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2", ToolCategory: ToolCategoryExecutionOperation, ApprovalTierRequired: ApprovalTierExecutor},
+		{Name: "project.create_cost_entry", Description: "Create project cost entry", SourceType: SourceInternalAPI, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3", ToolCategory: ToolCategoryBusinessApproval, ApprovalTierRequired: ApprovalTierReviewer},
+		{Name: "governance.explain_decision", Description: "Explain governance decision", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "low", RequiredLevel: "L1", ToolCategory: ToolCategoryCoreData, ApprovalTierRequired: ApprovalTierOrganizationCreator},
+		{Name: "finance.prepare_export_batch", Description: "Prepare finance export batch", SourceType: SourceManualApproval, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3", ToolCategory: ToolCategoryBusinessApproval, ApprovalTierRequired: ApprovalTierReviewer},
+		{Name: "evolution.create_knowledge", Description: "Create evolution knowledge entry", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2", ToolCategory: ToolCategoryExecutionOperation, ApprovalTierRequired: ApprovalTierExecutor},
+		{Name: "evolution.create_signal", Description: "Create evolution signal", SourceType: SourceInternalAPI, DefaultPolicy: PolicyNotify, RiskLevel: "medium", RequiredLevel: "L2", ToolCategory: ToolCategoryExecutionOperation, ApprovalTierRequired: ApprovalTierExecutor},
+		{Name: "evolution.propose_experiment", Description: "Propose evolution experiment", SourceType: SourceInternalAPI, DefaultPolicy: PolicyApprove, RiskLevel: "high", RequiredLevel: "L3", ToolCategory: ToolCategoryBusinessApproval, ApprovalTierRequired: ApprovalTierReviewer},
 	}
 }
 

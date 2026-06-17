@@ -28,22 +28,32 @@ const (
 	ApprovalPending  = "pending"
 	ApprovalApproved = "approved"
 	ApprovalRejected = "rejected"
+
+	ToolCategoryCoreData           = "core_data"
+	ToolCategoryBusinessApproval   = "business_approval"
+	ToolCategoryExecutionOperation = "execution_operation"
+
+	ApprovalTierOrganizationCreator = "organization_creator"
+	ApprovalTierReviewer            = "reviewer"
+	ApprovalTierExecutor            = "executor"
 )
 
 type ToolDefinition struct {
-	ID            uuid.UUID      `json:"id"`
-	Name          string         `json:"name"`
-	Description   string         `json:"description"`
-	SourceType    string         `json:"source_type"`
-	DefaultPolicy string         `json:"default_policy"`
-	RiskLevel     string         `json:"risk_level"`
-	RequiredLevel string         `json:"required_level"`
-	InputSchema   map[string]any `json:"input_schema"`
-	OutputSchema  map[string]any `json:"output_schema"`
-	Metadata      map[string]any `json:"metadata"`
-	IsActive      bool           `json:"is_active"`
-	CreatedAt     time.Time      `json:"created_at"`
-	UpdatedAt     time.Time      `json:"updated_at"`
+	ID                   uuid.UUID      `json:"id"`
+	Name                 string         `json:"name"`
+	Description          string         `json:"description"`
+	SourceType           string         `json:"source_type"`
+	DefaultPolicy        string         `json:"default_policy"`
+	RiskLevel            string         `json:"risk_level"`
+	RequiredLevel        string         `json:"required_level"`
+	ToolCategory         string         `json:"tool_category"`
+	ApprovalTierRequired string         `json:"approval_tier_required"`
+	InputSchema          map[string]any `json:"input_schema"`
+	OutputSchema         map[string]any `json:"output_schema"`
+	Metadata             map[string]any `json:"metadata"`
+	IsActive             bool           `json:"is_active"`
+	CreatedAt            time.Time      `json:"created_at"`
+	UpdatedAt            time.Time      `json:"updated_at"`
 }
 
 type ToolExecution struct {
@@ -60,6 +70,7 @@ type ToolExecution struct {
 	IdempotencyKey     string         `json:"idempotency_key,omitempty"`
 	Policy             string         `json:"policy"`
 	GovernanceDecision string         `json:"governance_decision,omitempty"`
+	RequestedByHumanID *uuid.UUID     `json:"requested_by_human_id,omitempty"`
 	Status             string         `json:"status"`
 	Arguments          map[string]any `json:"arguments"`
 	ResultSummary      string         `json:"result_summary"`
@@ -71,15 +82,16 @@ type ToolExecution struct {
 }
 
 type ToolApproval struct {
-	ID          uuid.UUID  `json:"id"`
-	ExecutionID uuid.UUID  `json:"execution_id"`
-	Status      string     `json:"status"`
-	RequestedBy *uuid.UUID `json:"requested_by,omitempty"`
-	ReviewedBy  *uuid.UUID `json:"reviewed_by,omitempty"`
-	Reason      string     `json:"reason,omitempty"`
-	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
-	CreatedAt   time.Time  `json:"created_at"`
-	ReviewedAt  *time.Time `json:"reviewed_at,omitempty"`
+	ID                uuid.UUID  `json:"id"`
+	ExecutionID       uuid.UUID  `json:"execution_id"`
+	Status            string     `json:"status"`
+	RequestedBy       *uuid.UUID `json:"requested_by,omitempty"`
+	ReviewedBy        *uuid.UUID `json:"reviewed_by,omitempty"`
+	ApprovedByHumanID *uuid.UUID `json:"approved_by_human_id,omitempty"`
+	Reason            string     `json:"reason,omitempty"`
+	ExpiresAt         *time.Time `json:"expires_at,omitempty"`
+	CreatedAt         time.Time  `json:"created_at"`
+	ReviewedAt        *time.Time `json:"reviewed_at,omitempty"`
 }
 
 type ExecuteToolInput struct {
@@ -113,26 +125,30 @@ type ToolResult struct {
 }
 
 type CreateToolInput struct {
-	Name          string         `json:"name"`
-	Description   string         `json:"description,omitempty"`
-	SourceType    string         `json:"source_type,omitempty"`
-	DefaultPolicy string         `json:"default_policy,omitempty"`
-	RiskLevel     string         `json:"risk_level,omitempty"`
-	RequiredLevel string         `json:"required_level,omitempty"`
-	InputSchema   map[string]any `json:"input_schema,omitempty"`
-	OutputSchema  map[string]any `json:"output_schema,omitempty"`
-	Metadata      map[string]any `json:"metadata,omitempty"`
-	IsActive      *bool          `json:"is_active,omitempty"`
+	Name                 string         `json:"name"`
+	Description          string         `json:"description,omitempty"`
+	SourceType           string         `json:"source_type,omitempty"`
+	DefaultPolicy        string         `json:"default_policy,omitempty"`
+	RiskLevel            string         `json:"risk_level,omitempty"`
+	RequiredLevel        string         `json:"required_level,omitempty"`
+	ToolCategory         string         `json:"tool_category,omitempty"`
+	ApprovalTierRequired string         `json:"approval_tier_required,omitempty"`
+	InputSchema          map[string]any `json:"input_schema,omitempty"`
+	OutputSchema         map[string]any `json:"output_schema,omitempty"`
+	Metadata             map[string]any `json:"metadata,omitempty"`
+	IsActive             *bool          `json:"is_active,omitempty"`
 }
 
 type UpdateToolInput struct {
-	Description   *string        `json:"description,omitempty"`
-	SourceType    *string        `json:"source_type,omitempty"`
-	DefaultPolicy *string        `json:"default_policy,omitempty"`
-	RiskLevel     *string        `json:"risk_level,omitempty"`
-	RequiredLevel *string        `json:"required_level,omitempty"`
-	InputSchema   map[string]any `json:"input_schema,omitempty"`
-	OutputSchema  map[string]any `json:"output_schema,omitempty"`
-	Metadata      map[string]any `json:"metadata,omitempty"`
-	IsActive      *bool          `json:"is_active,omitempty"`
+	Description          *string        `json:"description,omitempty"`
+	SourceType           *string        `json:"source_type,omitempty"`
+	DefaultPolicy        *string        `json:"default_policy,omitempty"`
+	RiskLevel            *string        `json:"risk_level,omitempty"`
+	RequiredLevel        *string        `json:"required_level,omitempty"`
+	ToolCategory         *string        `json:"tool_category,omitempty"`
+	ApprovalTierRequired *string        `json:"approval_tier_required,omitempty"`
+	InputSchema          map[string]any `json:"input_schema,omitempty"`
+	OutputSchema         map[string]any `json:"output_schema,omitempty"`
+	Metadata             map[string]any `json:"metadata,omitempty"`
+	IsActive             *bool          `json:"is_active,omitempty"`
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/dberrors"
 )
 
 type Handler struct {
@@ -79,6 +80,8 @@ func (h *Handler) register(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusInternalServerError
 		if errors.Is(err, ErrValidation) {
 			status = http.StatusBadRequest
+		} else if dberrors.IsUniqueViolation(err) {
+			status = http.StatusConflict
 		}
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
@@ -99,6 +102,8 @@ func (h *Handler) registerAgent(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusInternalServerError
 		if errors.Is(err, ErrValidation) {
 			status = http.StatusBadRequest
+		} else if dberrors.IsUniqueViolation(err) {
+			status = http.StatusConflict
 		}
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return

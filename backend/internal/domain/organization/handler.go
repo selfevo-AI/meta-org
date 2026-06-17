@@ -10,6 +10,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/dberrors"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 type Handler struct {
@@ -66,11 +68,18 @@ func (h *Handler) createOrganization(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 		return
 	}
+	if user, ok := middleware.UserFromContext(r.Context()); ok && user.Type == "human" {
+		if userID, err := uuid.Parse(user.ID); err == nil {
+			input.CreatedBy = &userID
+		}
+	}
 	org, err := h.service.CreateOrganization(r.Context(), input)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, ErrValidation) {
 			status = http.StatusBadRequest
+		} else if dberrors.IsUniqueViolation(err) {
+			status = http.StatusConflict
 		}
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
@@ -584,6 +593,8 @@ func (h *Handler) createMVRU(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusInternalServerError
 		if errors.Is(err, ErrValidation) {
 			status = http.StatusBadRequest
+		} else if dberrors.IsUniqueViolation(err) {
+			status = http.StatusConflict
 		}
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
@@ -675,6 +686,8 @@ func (h *Handler) addMember(w http.ResponseWriter, r *http.Request) {
 		status := http.StatusInternalServerError
 		if errors.Is(err, ErrValidation) {
 			status = http.StatusBadRequest
+		} else if dberrors.IsUniqueViolation(err) {
+			status = http.StatusConflict
 		}
 		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
@@ -770,6 +783,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	if errors.Is(err, ErrValidation) {
 		status = http.StatusBadRequest
+	} else if dberrors.IsUniqueViolation(err) {
+		status = http.StatusConflict
 	}
 	writeJSON(w, status, map[string]string{"error": err.Error()})
 }

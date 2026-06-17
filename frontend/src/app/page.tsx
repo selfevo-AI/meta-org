@@ -2,32 +2,44 @@
 
 import {
   Activity,
+  ArrowUp,
   Bot,
+  Boxes,
   BrainCircuit,
+  BriefcaseBusiness,
   ChevronDown,
   ChevronRight,
   CheckCircle2,
+  CircleDollarSign,
+  Code2,
   FolderKanban,
   Gauge,
   GitBranch,
-  GripVertical,
+  Home as HomeIcon,
   KeyRound,
   LogOut,
-  PanelLeft,
+  Menu,
+  Moon,
+  MoreHorizontal,
   RefreshCw,
+  Search,
   ShieldCheck,
   SlidersHorizontal,
+  Sparkles,
+  Sun,
   Users,
+  WalletCards,
   Workflow,
+  X,
 } from 'lucide-react'
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { DragEvent, FormEvent } from 'react'
-import { getMetaOrgInbox, getMetaOrgOverview, listRoles, login, registerUser } from '@/lib/api'
+import { approveToolApproval, getMetaOrgInbox, getMetaOrgOverview, listRoles, login, registerUser, rejectToolApproval } from '@/lib/api'
 import type { InboxItem, MetaOrgOverview, Role } from '@/lib/api'
 import { clearSession, getSessionUser, getToken, setSession } from '@/lib/auth'
 import { useI18n } from '@/lib/i18n'
-import { apiOperations, operationDomains } from '@/lib/operations'
-import { ApiWorkbench } from './api-workbench'
+import { apiOperations, getOperationProfile, operationDomains } from '@/lib/operations'
+import type { ApiOperation } from '@/lib/operations'
 import { AIAssistant } from './ai-assistant'
 import {
   CapabilityEvaluationWorkspace,
@@ -45,6 +57,7 @@ import { ProjectLifecycleWorkspace } from './project-lifecycle-workspace'
 
 type AuthMode = 'login' | 'register'
 type WorkspaceView = 'overview' | `domain:${string}`
+type ThemeMode = 'dark' | 'light'
 
 const domainLabels: Record<string, string> = {
   MetaOrg: 'Meta-Org',
@@ -67,7 +80,29 @@ const domainLabels: Record<string, string> = {
   Finance: '财务导出',
   Costing: '成本框架',
   MetaResource: 'Meta 资源',
-  AIAssistant: 'AI 助手',
+}
+
+const domainIcons: Record<string, typeof Gauge> = {
+  MetaOrg: Sparkles,
+  Dashboard: Gauge,
+  Identity: KeyRound,
+  Organization: Users,
+  Layer: Boxes,
+  Capability: BrainCircuit,
+  Workflow,
+  Observability: Activity,
+  Verification: CheckCircle2,
+  Governance: ShieldCheck,
+  Evolution: GitBranch,
+  Requirement: BriefcaseBusiness,
+  Project: FolderKanban,
+  Delivery: ArrowUp,
+  Cost: CircleDollarSign,
+  Feedback: Activity,
+  DeveloperTools: Code2,
+  Finance: WalletCards,
+  Costing: CircleDollarSign,
+  MetaResource: Boxes,
 }
 
 type MenuGroup = {
@@ -77,7 +112,7 @@ type MenuGroup = {
 }
 
 const lifecycleDomains = ['Requirement', 'Project', 'Delivery', 'Cost', 'Feedback']
-const virtualDomains = ['AIAssistant', 'Costing', 'MetaResource']
+const virtualDomains = ['Costing', 'MetaResource']
 const dedicatedDomains = new Set([
   'MetaResource',
   'Organization',
@@ -88,11 +123,11 @@ const dedicatedDomains = new Set([
   'DeveloperTools',
   'Finance',
   'Costing',
-  'AIAssistant',
   ...lifecycleDomains,
 ])
 const menuStorageKey = 'meta_org.menu.groups.v1'
 const expandedMenuStorageKey = 'meta_org.menu.expanded.v1'
+const themeStorageKey = 'meta_org.theme.v1'
 const legacyMenuStorageKey = 'harness.menu.groups.v1'
 const legacyExpandedMenuStorageKey = 'harness.menu.expanded.v1'
 
@@ -115,7 +150,7 @@ const defaultMenuGroups: MenuGroup[] = [
   {
     id: 'system',
     label: '系统工具',
-    domains: ['MetaOrg', 'AIAssistant', 'Dashboard', 'DeveloperTools', 'Costing', 'Finance', 'Identity', 'Layer', 'Observability'],
+    domains: ['MetaOrg', 'Dashboard', 'DeveloperTools', 'Costing', 'Finance', 'Identity', 'Layer', 'Observability'],
   },
 ]
 
@@ -224,6 +259,53 @@ function loadExpandedGroups(): Record<string, boolean> {
   }
 }
 
+function loadThemeMode(): ThemeMode {
+  if (typeof window === 'undefined') return 'dark'
+  return window.localStorage.getItem(themeStorageKey) === 'light' ? 'light' : 'dark'
+}
+
+function assistantModuleForDomain(domain: string): string {
+  const modules: Record<string, string> = {
+    Overview: 'meta_org',
+    MetaOrg: 'meta_org',
+    Dashboard: 'meta_org',
+    MetaResource: 'meta_resource',
+    Requirement: 'requirement',
+    Project: 'project',
+    Delivery: 'delivery',
+    Cost: 'project_cost',
+    Feedback: 'feedback',
+    Organization: 'organization',
+    Workflow: 'workflow',
+    Capability: 'capability',
+    Governance: 'governance',
+    Evolution: 'self_evolution',
+    Verification: 'verification',
+    DeveloperTools: 'model_settings',
+    Costing: 'costing',
+    Finance: 'finance',
+  }
+  return modules[domain] ?? domain.toLowerCase()
+}
+
+function agentIntentForOperation(operation: ApiOperation, context: Record<string, string>): string {
+  const contextLines = Object.entries(context)
+    .filter(([, value]) => value)
+    .map(([key, value]) => `${key}: ${value}`)
+    .join('\n')
+  const profile = getOperationProfile(operation)
+
+  return [
+    `请作为当前功能工作台的执行 Agent 处理这个操作：${operation.title}`,
+    `操作 ID: ${operation.id}`,
+    `业务域: ${operation.domain}`,
+    `目标接口语义: ${operation.method} ${operation.path}`,
+    `风险级别: ${profile.dangerLevel}`,
+    '执行要求: 这是人类在当前工作台主动调用 Agent 的操作。请先读取当前工作记录和历史数据，必要时调用工具执行；不要要求人类手动调用 API。涉及写入、财务、治理、模型配置或高风险动作时进入审批。',
+    contextLines ? `当前已选业务上下文:\n${contextLines}` : '当前没有选中记录，请先根据数据库工作记录识别可操作对象，无法确定时向人类提出审核问题。',
+  ].join('\n')
+}
+
 export default function Home() {
   const { locale, setLocale, t } = useI18n()
   const [ready, setReady] = useState(false)
@@ -244,8 +326,14 @@ export default function Home() {
   const [workspaceView, setWorkspaceView] = useState<WorkspaceView>('overview')
   const [menuGroups, setMenuGroups] = useState<MenuGroup[]>(() => normalizeMenuGroups())
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>(() => defaultExpandedGroups())
+  const [themeMode, setThemeMode] = useState<ThemeMode>('dark')
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [menuReady, setMenuReady] = useState(false)
   const [draggedDomain, setDraggedDomain] = useState<string | null>(null)
+  const [assistantOpen, setAssistantOpen] = useState(false)
+  const [assistantIntent, setAssistantIntent] = useState('')
+  const [assistantIntentKey, setAssistantIntentKey] = useState('')
+  const [operationContext, setOperationContext] = useState<Record<string, string>>({})
 
   useEffect(() => {
     let cancelled = false
@@ -259,6 +347,7 @@ export default function Home() {
       setUserType(sessionUser?.type ?? null)
       setMenuGroups(loadMenuGroups())
       setExpandedGroups(loadExpandedGroups())
+      setThemeMode(loadThemeMode())
       setMenuReady(true)
       setReady(true)
     })
@@ -287,6 +376,11 @@ export default function Home() {
   }, [expandedGroups, menuReady])
 
   useEffect(() => {
+    if (!menuReady || typeof window === 'undefined') return
+    window.localStorage.setItem(themeStorageKey, themeMode)
+  }, [menuReady, themeMode])
+
+  useEffect(() => {
     if (!token) return
     let cancelled = false
 
@@ -313,11 +407,15 @@ export default function Home() {
     return active / total
   }, [overview])
 
+  const handleOperationContextChange = useCallback((context: Record<string, string>) => {
+    setOperationContext((current) => ({ ...current, ...context }))
+  }, [])
+
   if (!ready) {
     return (
-      <main className="min-h-screen bg-slate-50">
+      <main className="app-dark">
         <div className="flex min-h-screen items-center justify-center">
-          <RefreshCw className="h-8 w-8 animate-spin text-slate-400" />
+          <RefreshCw className="h-8 w-8 animate-spin text-[#DF6A24]" />
         </div>
       </main>
     )
@@ -411,77 +509,60 @@ export default function Home() {
     setExpandedGroups(defaultExpandedGroups())
   }
 
+  function handleViewChange(view: WorkspaceView) {
+    setWorkspaceView(view)
+    setMobileMenuOpen(false)
+  }
+
+  function delegateOperationToAgent(operation: ApiOperation) {
+    setAssistantIntent(agentIntentForOperation(operation, operationContext))
+    setAssistantIntentKey(`${operation.id}-${Date.now()}`)
+    setAssistantOpen(true)
+  }
+
+  async function handleToolApproval(id: string, decision: 'approve' | 'reject') {
+    if (!token) return
+    setOverviewLoading(true)
+    setError(null)
+    try {
+      if (decision === 'approve') {
+        await approveToolApproval(token, id)
+        setNotice(t('agent.approvalApproved'))
+      } else {
+        await rejectToolApproval(token, id)
+        setNotice(t('agent.approvalRejected'))
+      }
+      await loadOverview(token)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('common.operationFailed'))
+    } finally {
+      setOverviewLoading(false)
+    }
+  }
+
   const activeDomain = workspaceView === 'overview' ? 'MetaOrg' : workspaceView.replace('domain:', '')
   const activeGroup = menuGroups.find((group) => group.domains.includes(activeDomain))
   const activeOperationCount =
     workspaceView === 'overview'
       ? apiOperations.filter((operation) => operation.domain === 'MetaOrg').length
       : apiOperations.filter((operation) => operation.domain === activeDomain).length
+  const activeOperations = apiOperations.filter((operation) => operation.domain === (workspaceView === 'overview' ? 'MetaOrg' : activeDomain))
+  const assistantModule = assistantModuleForDomain(workspaceView === 'overview' ? 'MetaOrg' : activeDomain)
 
   return (
-    <main className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-5 sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8">
-          <div>
-            <p className="text-sm font-medium text-slate-500">{t('app.product')}</p>
-            <h1 className="mt-1 text-2xl font-semibold text-slate-950">{t('app.title')}</h1>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {userType && <StatusPill label={userType === 'ai' ? 'AI Agent' : 'Human'} tone="blue" />}
-            {overview && (
-              <StatusPill
-                label={`${t('common.refresh')} ${formatDate(overview.generated_at)}`}
-                tone={overviewLoading ? 'amber' : 'green'}
-              />
-            )}
-            <div className="inline-flex h-10 items-center rounded-lg border border-slate-300 bg-white p-1">
-              <button
-                type="button"
-                onClick={() => setLocale('zh')}
-                className={`h-8 rounded-md px-2.5 text-sm font-semibold transition ${
-                  locale === 'zh' ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                {t('language.zh')}
-              </button>
-              <button
-                type="button"
-                onClick={() => setLocale('en')}
-                className={`h-8 rounded-md px-2.5 text-sm font-semibold transition ${
-                  locale === 'en' ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100'
-                }`}
-              >
-                {t('language.en')}
-              </button>
+    <main className={`app-dark ${themeMode === 'light' ? 'theme-light' : ''}`}>
+      {!token ? (
+        <div className="mx-auto grid min-h-screen max-w-6xl gap-5 px-4 py-8 sm:px-6 lg:grid-cols-[360px_1fr] lg:items-center lg:px-8">
+          <section className="studio-panel rounded-lg p-5">
+            <div className="mb-8 flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-lg border border-[#DF6A24]/25 bg-[#DF6A24]/10">
+                <Sparkles className="h-6 w-6 text-[#F6A66A]" />
+              </div>
+              <div>
+                <p className="text-xs font-bold uppercase text-[#F6A66A]">{t('shell.breadcrumbRoot')}</p>
+                <h1 className="text-2xl font-semibold text-white">{t('app.title')}</h1>
+              </div>
             </div>
-            {token && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => loadOverview()}
-                  className="inline-flex h-10 items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                  disabled={overviewLoading}
-                >
-                  <RefreshCw className={`h-4 w-4 ${overviewLoading ? 'animate-spin' : ''}`} />
-                  {t('common.refresh')}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  className="inline-flex h-10 items-center gap-2 rounded-lg bg-slate-950 px-3 text-sm font-medium text-white transition hover:bg-slate-800"
-                >
-                  <LogOut className="h-4 w-4" />
-                  {t('common.signOut')}
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-      </header>
-
-      <div className="mx-auto grid max-w-7xl gap-5 px-4 py-6 sm:px-6 lg:grid-cols-[320px_1fr] lg:px-8">
-        {!token && (
-          <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex rounded-lg bg-slate-100 p-1">
               <button
                 type="button"
@@ -553,37 +634,72 @@ export default function Home() {
               <button
                 type="submit"
                 disabled={loading}
-                className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-[#AD4714] px-4 text-sm font-semibold text-[#fffaf5] transition hover:bg-[#B84F18] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <KeyRound className="h-4 w-4" />
                 {loading ? t('auth.processing') : mode === 'login' ? t('auth.signIn') : t('auth.createAccount')}
               </button>
             </form>
           </section>
-        )}
 
-        {!token && <RoleDirectory roles={roles} />}
-
-        {token && (
-          <section className="grid gap-5 lg:col-span-2 lg:grid-cols-[280px_1fr]">
+          <RoleDirectory roles={roles} />
+        </div>
+      ) : (
+        <div className="grid min-h-screen lg:grid-cols-[248px_1fr]">
+          <div
+            className={`fixed inset-y-0 left-0 z-40 w-[248px] transform transition lg:static lg:translate-x-0 ${
+              mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
+            }`}
+          >
             <NavigationSidebar
               workspaceView={workspaceView}
               groups={menuGroups}
               expandedGroups={expandedGroups}
-              onViewChange={setWorkspaceView}
+              onViewChange={handleViewChange}
               onToggleGroup={toggleMenuGroup}
               onDragStart={handleDomainDragStart}
               onDropDomain={handleDomainDrop}
               onReset={resetMenuLayout}
             />
+          </div>
+          {mobileMenuOpen && (
+            <button
+              type="button"
+              aria-label="Close menu"
+              className="fixed inset-0 z-30 bg-black/60 lg:hidden"
+              onClick={() => setMobileMenuOpen(false)}
+            />
+          )}
 
-            <div className="min-w-0 space-y-5">
+          <section className="min-w-0">
+            <Topbar
+              activeTitle={workspaceView === 'overview' ? t('nav.overview') : t(domainLabels[activeDomain] ?? activeDomain)}
+              activeDomain={workspaceView === 'overview' ? 'SuperClaw' : activeDomain}
+              locale={locale}
+              setLocale={setLocale}
+              themeMode={themeMode}
+              setThemeMode={setThemeMode}
+              userType={userType}
+              overview={overview}
+              overviewLoading={overviewLoading}
+              onRefresh={() => loadOverview()}
+              onSignOut={handleSignOut}
+              onOpenMenu={() => setMobileMenuOpen(true)}
+            />
+            <div className="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
               <WorkspaceHeader
                 title={workspaceView === 'overview' ? '总览' : domainLabels[activeDomain] ?? activeDomain}
                 domain={workspaceView === 'overview' ? 'Overview' : activeDomain}
                 groupLabel={workspaceView === 'overview' ? '工作台' : activeGroup?.label ?? '功能台'}
                 operationCount={activeOperationCount}
+                operations={activeOperations}
                 dedicated={workspaceView === 'overview' || dedicatedDomains.has(activeDomain)}
+                onOperationSelect={delegateOperationToAgent}
+                onAssistantOpen={() => {
+                  setAssistantIntent('')
+                  setAssistantIntentKey('')
+                  setAssistantOpen(true)
+                }}
               />
               {error && (
                 <div className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
@@ -592,7 +708,12 @@ export default function Home() {
               )}
               {workspaceView === 'overview' ? (
                 overview ? (
-                  <Dashboard overview={overview} inbox={inbox} healthRatio={healthRatio} />
+                  <Dashboard
+                    overview={overview}
+                    inbox={inbox}
+                    healthRatio={healthRatio}
+                    onReviewApproval={(id, decision) => void handleToolApproval(id, decision)}
+                  />
                 ) : (
                   <div className="flex min-h-[420px] items-center justify-center rounded-lg border border-slate-200 bg-white">
                     <RefreshCw className="h-5 w-5 animate-spin text-slate-500" />
@@ -620,9 +741,8 @@ export default function Home() {
                   token={token}
                   currentUserId={userId}
                   mode={workspaceView.replace('domain:', '') as 'Requirement' | 'Project' | 'Delivery' | 'Cost' | 'Feedback'}
+                  onOperationContextChange={handleOperationContextChange}
                 />
-              ) : workspaceView === 'domain:AIAssistant' ? (
-                <AIAssistantWorkspace token={token} />
               ) : workspaceView === 'domain:DeveloperTools' ? (
                 <DeveloperToolsWorkspace token={token} />
               ) : workspaceView === 'domain:Costing' ? (
@@ -630,18 +750,158 @@ export default function Home() {
               ) : workspaceView === 'domain:Finance' ? (
                 <FinanceWorkspace token={token} />
               ) : (
-                <ApiWorkbench
-                  key={workspaceView}
-                  token={token}
-                  domain={workspaceView.replace('domain:', '')}
-                  showDomainMenu={false}
-                />
+                <AgentOnlyWorkspace domain={workspaceView.replace('domain:', '')} onAssistantOpen={() => setAssistantOpen(true)} />
               )}
             </div>
           </section>
-        )}
-      </div>
+          {assistantOpen && (
+            <div className="fixed inset-0 z-50">
+              <button
+                type="button"
+                className="absolute inset-0 bg-black/55"
+                aria-label={t('common.close')}
+                onClick={() => {
+                  setAssistantOpen(false)
+                  setAssistantIntent('')
+                  setAssistantIntentKey('')
+                }}
+              />
+              <aside className="absolute right-0 top-0 h-full w-full max-w-xl shadow-2xl">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAssistantOpen(false)
+                    setAssistantIntent('')
+                    setAssistantIntentKey('')
+                  }}
+                  className="absolute right-3 top-3 z-10 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-100 hover:text-slate-900"
+                  aria-label={t('common.close')}
+                >
+                  <X className="h-4 w-4" />
+                </button>
+                <AIAssistant
+                  token={token}
+                  contextType={assistantModule}
+                  initialIntent={assistantIntent}
+                  initialIntentKey={assistantIntentKey}
+                  autoRunInitialIntent={Boolean(assistantIntent)}
+                />
+              </aside>
+            </div>
+          )}
+        </div>
+      )}
     </main>
+  )
+}
+
+function Topbar({
+  activeTitle,
+  activeDomain,
+  locale,
+  setLocale,
+  themeMode,
+  setThemeMode,
+  userType,
+  overview,
+  overviewLoading,
+  onRefresh,
+  onSignOut,
+  onOpenMenu,
+}: {
+  activeTitle: string
+  activeDomain: string
+  locale: 'zh' | 'en'
+  setLocale: (locale: 'zh' | 'en') => void
+  themeMode: ThemeMode
+  setThemeMode: (mode: ThemeMode) => void
+  userType: string | null
+  overview: MetaOrgOverview | null
+  overviewLoading: boolean
+  onRefresh: () => void
+  onSignOut: () => void
+  onOpenMenu: () => void
+}) {
+  const { t } = useI18n()
+  const activeWork = overview?.health.active_projects ?? 0
+  const unexportedCost = overview ? formatMoney(overview.health.unexported_cost, overview.health.currency) : 'CNY 0.00'
+
+  return (
+    <header className="sticky top-0 z-20 border-b border-slate-800/80 bg-[#121317]/88 backdrop-blur-xl">
+      <div className="flex h-[60px] items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
+        <div className="flex min-w-0 items-center gap-3">
+          <button
+            type="button"
+            onClick={onOpenMenu}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-300 lg:hidden"
+          >
+            <Menu className="h-4 w-4" />
+          </button>
+          <div className="min-w-0 text-xs font-semibold">
+            <span className="text-[#F6A66A]">{t('shell.breadcrumbRoot')}</span>
+            <span className="px-2 text-slate-500">/</span>
+            <span className="truncate text-slate-400">{activeTitle}</span>
+          </div>
+        </div>
+
+        <div className="flex min-w-0 items-center justify-end gap-2">
+          <div className="hidden items-center gap-2 text-xs font-semibold text-slate-400 xl:flex">
+            <span>{t('shell.liveBounties', { count: activeWork })}</span>
+            <span className="text-slate-600">·</span>
+            <span>{t('shell.escrow', { amount: unexportedCost })}</span>
+            <span className="text-slate-600">·</span>
+            <span>{activeDomain}</span>
+          </div>
+          {userType && <StatusPill label={userType === 'ai' ? 'AI Agent' : 'Human'} tone="blue" />}
+          {overview && (
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={overviewLoading}
+              className="hidden h-9 items-center gap-2 rounded-lg border border-slate-700 px-3 text-xs font-semibold text-slate-300 transition hover:border-blue-400/60 hover:text-blue-200 disabled:opacity-60 sm:inline-flex"
+            >
+              <RefreshCw className={`h-3.5 w-3.5 ${overviewLoading ? 'animate-spin' : ''}`} />
+              {formatDate(overview.generated_at)}
+            </button>
+          )}
+          <div className="inline-flex h-9 items-center rounded-lg border border-slate-700 bg-slate-950/40 p-1">
+            <button
+              type="button"
+              onClick={() => setLocale('zh')}
+              className={`h-7 rounded-md px-2 text-xs font-bold transition ${
+                locale === 'zh' ? 'bg-slate-100 text-slate-950' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              中文
+            </button>
+            <button
+              type="button"
+              onClick={() => setLocale('en')}
+              className={`h-7 rounded-md px-2 text-xs font-bold transition ${
+                locale === 'en' ? 'bg-slate-100 text-slate-950' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              EN
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={() => setThemeMode(themeMode === 'dark' ? 'light' : 'dark')}
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-700 px-3 text-xs font-bold uppercase text-slate-300 transition hover:border-blue-400/60 hover:text-blue-200"
+          >
+            {themeMode === 'dark' ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
+            <span className="hidden sm:inline">{themeMode === 'dark' ? t('shell.theme.dark') : t('shell.theme.light')}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:border-blue-400/60 hover:text-blue-200"
+          >
+            <LogOut className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+    </header>
   )
 }
 
@@ -666,39 +926,27 @@ function NavigationSidebar({
 }) {
   const { t } = useI18n()
   return (
-    <aside className="h-fit rounded-lg border border-slate-200 bg-white p-3 shadow-sm">
-      <div className="flex items-center justify-between gap-2 px-1">
-        <div className="flex items-center gap-2">
-          <PanelLeft className="h-4 w-4 text-slate-500" />
-          <p className="text-sm font-semibold text-slate-900">{t('nav.menu')}</p>
+    <aside className="studio-sidebar flex h-full min-h-screen flex-col px-3 py-4">
+      <div className="flex items-center gap-3 px-2 pb-6">
+        <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[#DF6A24]/25 bg-[#DF6A24]/10">
+          <Sparkles className="h-6 w-6 text-[#F6A66A]" />
         </div>
-        <button
-          type="button"
-          onClick={onReset}
-          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-600 hover:bg-slate-100"
-        >
-          <SlidersHorizontal className="h-3.5 w-3.5" />
-          {t('nav.reset')}
-        </button>
+        <div className="min-w-0">
+          <p className="text-xl font-extrabold leading-none tracking-normal text-white">META-ORG</p>
+          <p className="mt-1 text-[9px] font-bold uppercase tracking-[0.18em] text-[#F6A66A]">AI Operating System</p>
+        </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => onViewChange('overview')}
-        className={`mt-3 flex h-11 w-full items-center justify-between rounded-lg px-3 text-left text-sm font-semibold transition ${
-          workspaceView === 'overview'
-            ? 'bg-slate-950 text-white'
-            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
-        }`}
-      >
-        <span className="inline-flex items-center gap-2">
-          <Gauge className="h-4 w-4" />
-          {t('nav.overview')}
-        </span>
-        <span className="text-xs opacity-70">Overview</span>
-      </button>
+      <div className="space-y-1">
+        <SidebarButton
+          active={workspaceView === 'overview'}
+          icon={HomeIcon}
+          label={t('nav.item.home')}
+          onClick={() => onViewChange('overview')}
+        />
+      </div>
 
-      <div className="mt-4 space-y-2 border-t border-slate-100 pt-4">
+      <div className="mt-6 flex-1 space-y-5 overflow-y-auto pr-1">
         {groups.map((group) => {
           const expanded = expandedGroups[group.id] ?? true
           const groupOperations = group.domains.reduce(
@@ -709,60 +957,105 @@ function NavigationSidebar({
           return (
             <div
               key={group.id}
-              className={`rounded-lg border transition ${
-                expanded ? 'border-slate-200 bg-white' : 'border-slate-100 bg-slate-50'
-              }`}
+              className="space-y-1"
               onDragOver={(event) => event.preventDefault()}
               onDrop={(event) => onDropDomain(event, group.id)}
             >
               <button
                 type="button"
                 onClick={() => onToggleGroup(group.id)}
-                className="flex h-10 w-full items-center justify-between px-3 text-left text-sm font-semibold text-slate-700 hover:text-slate-950"
+                className="flex h-7 w-full items-center justify-between px-2 text-left text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500"
               >
                 <span className="inline-flex min-w-0 items-center gap-2">
-                  {expanded ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
-                  <FolderKanban className="h-4 w-4 shrink-0 text-slate-500" />
-                  <span className="truncate">{t(group.label)}</span>
+                  {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+                  <span className="truncate">{t(`nav.group.${group.id}`)}</span>
                 </span>
-                <span className="text-xs font-medium text-slate-400">{groupOperations}</span>
+                <span>{groupOperations}</span>
               </button>
 
               {expanded && (
-                <div className="space-y-1 px-2 pb-2">
+                <div className="space-y-1">
                   {group.domains.map((domain) => {
                     const menuKey = `domain:${domain}` as const
                     const count = apiOperations.filter((operation) => operation.domain === domain).length
+                    const Icon = domainIcons[domain] ?? FolderKanban
 
                     return (
-                      <button
+                      <SidebarButton
                         key={domain}
-                        type="button"
+                        active={workspaceView === menuKey}
+                        icon={Icon}
+                        label={t(domainLabels[domain] ?? domain)}
+                        count={count}
+                        onClick={() => onViewChange(menuKey)}
                         draggable
                         onDragStart={(event) => onDragStart(event, domain)}
-                        onClick={() => onViewChange(menuKey)}
-                        className={`group flex h-10 w-full items-center justify-between gap-2 rounded-lg px-2.5 text-left text-sm font-medium transition ${
-                          workspaceView === menuKey
-                            ? 'bg-slate-950 text-white'
-                            : 'text-slate-600 hover:bg-slate-100 hover:text-slate-950'
-                        }`}
-                      >
-                        <span className="inline-flex min-w-0 items-center gap-2">
-                          <GripVertical className="h-4 w-4 shrink-0 opacity-50" />
-                          <span className="truncate">{t(domainLabels[domain] ?? domain)}</span>
-                        </span>
-                        <span className="shrink-0 text-xs opacity-70">{count}</span>
-                      </button>
+                      />
                     )
                   })}
-                  {group.domains.length === 0 && <p className="px-3 py-2 text-sm text-slate-400">{t('nav.empty')}</p>}
+                  {group.domains.length === 0 && <p className="px-3 py-2 text-sm text-slate-500">{t('nav.empty')}</p>}
                 </div>
               )}
             </div>
           )
         })}
       </div>
+
+      <div className="mt-5 border-t border-slate-800 pt-3">
+        <button
+          type="button"
+          onClick={onReset}
+          className="inline-flex h-9 w-full items-center justify-center gap-2 rounded-lg border border-slate-800 text-xs font-bold text-slate-400 transition hover:border-blue-400/50 hover:text-blue-200"
+        >
+          <SlidersHorizontal className="h-3.5 w-3.5" />
+          {t('nav.reset')}
+        </button>
+      </div>
     </aside>
+  )
+}
+
+function SidebarButton({
+  active,
+  icon: Icon,
+  label,
+  badge,
+  count,
+  onClick,
+  draggable,
+  onDragStart,
+}: {
+  active: boolean
+  icon: typeof Gauge
+  label: string
+  badge?: string
+  count?: number
+  onClick: () => void
+  draggable?: boolean
+  onDragStart?: (event: DragEvent<HTMLButtonElement>) => void
+}) {
+  return (
+    <button
+      type="button"
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onClick={onClick}
+      className={`studio-nav-item flex h-10 w-full items-center justify-between gap-2 rounded-lg border border-transparent px-3 text-left text-sm font-semibold transition ${
+        active ? 'studio-nav-item-active' : ''
+      }`}
+    >
+      <span className="inline-flex min-w-0 items-center gap-3">
+        <Icon className={`h-4 w-4 shrink-0 ${active ? 'text-[#F6A66A]' : 'text-slate-500'}`} />
+        <span className="truncate">{label}</span>
+      </span>
+      {badge ? (
+        <span className="rounded-full border border-emerald-400/40 bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300">
+          {badge}
+        </span>
+      ) : count !== undefined ? (
+        <span className="text-[11px] text-slate-500">{count}</span>
+      ) : null}
+    </button>
   )
 }
 
@@ -771,87 +1064,147 @@ function WorkspaceHeader({
   domain,
   groupLabel,
   operationCount,
+  operations,
   dedicated,
+  onOperationSelect,
+  onAssistantOpen,
 }: {
   title: string
   domain: string
   groupLabel: string
   operationCount: number
+  operations: ApiOperation[]
   dedicated: boolean
+  onOperationSelect: (operation: ApiOperation) => void
+  onAssistantOpen: () => void
 }) {
   const { t } = useI18n()
+  const [moreOpen, setMoreOpen] = useState(false)
+  const prioritizedOperations = [...operations].sort((left, right) => {
+    const order = { direct: 0, contextual: 1, agent_assisted: 2, admin: 3 }
+    return order[getOperationProfile(left).kind] - order[getOperationProfile(right).kind]
+  })
+  const primaryOperations = prioritizedOperations.slice(0, 4)
+  const overflowOperations = prioritizedOperations.slice(4)
   return (
-    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="studio-panel rounded-lg p-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-normal text-slate-400">{t(groupLabel)}</p>
-          <h2 className="mt-1 truncate text-xl font-semibold text-slate-950">{t(title)}</h2>
+          <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t(groupLabel)}</p>
+          <h2 className="mt-1 truncate text-xl font-semibold text-white">{t(title)}</h2>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <span className="inline-flex h-8 items-center rounded-md border border-slate-200 bg-slate-50 px-2.5 text-xs font-semibold text-slate-600">
+          <span className="studio-badge inline-flex h-8 items-center rounded-md px-2.5 text-xs font-semibold">
             {domain}
           </span>
           {operationCount > 0 && (
-            <span className="inline-flex h-8 items-center rounded-md border border-slate-200 bg-white px-2.5 text-xs font-semibold text-slate-600">
-              {operationCount} API
+            <span className="inline-flex h-8 items-center rounded-md border border-slate-700 bg-slate-950/30 px-2.5 text-xs font-semibold text-slate-300">
+              {operationCount} {t('agent.actions')}
             </span>
           )}
           <span
             className={`inline-flex h-8 items-center rounded-md border px-2.5 text-xs font-semibold ${
-              dedicated ? 'border-emerald-200 bg-emerald-50 text-emerald-700' : 'border-blue-200 bg-blue-50 text-blue-700'
+              dedicated
+                ? 'border-emerald-400/40 bg-emerald-500/15 text-emerald-300'
+                : 'border-[#DF6A24]/25 bg-[#DF6A24]/10 text-[#F6A66A]'
             }`}
           >
             {dedicated ? t('workspace.workspace') : t('workspace.api')}
           </span>
+          {primaryOperations.map((operation) => (
+            <OperationButton key={operation.id} operation={operation} onClick={() => onOperationSelect(operation)} />
+          ))}
+          {overflowOperations.length > 0 && (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setMoreOpen((current) => !current)}
+                className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-700 bg-slate-950/30 px-2.5 text-xs font-semibold text-slate-200 transition hover:border-[#DF6A24]/50 hover:text-[#F6A66A]"
+              >
+                <MoreHorizontal className="h-3.5 w-3.5" />
+                {t('operation.more')}
+              </button>
+              {moreOpen && (
+                <div className="absolute right-0 z-20 mt-2 w-64 rounded-lg border border-slate-700 bg-slate-950 p-2 shadow-xl">
+                  {overflowOperations.map((operation) => (
+                    <button
+                      key={operation.id}
+                      type="button"
+                      onClick={() => {
+                        setMoreOpen(false)
+                        onOperationSelect(operation)
+                      }}
+                      className="flex h-10 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-xs font-semibold text-slate-300 transition hover:bg-[#DF6A24]/10 hover:text-[#F6A66A]"
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate">{t(operation.title)}</span>
+                        <span className="block truncate text-[10px] font-medium text-slate-500">{t(`operation.kind.${getOperationProfile(operation).kind}`)}</span>
+                      </span>
+                      <span className="text-[10px] text-slate-500">{t('agent.delegate')}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={onAssistantOpen}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md bg-[#AD4714] px-2.5 text-xs font-bold text-[#fffaf5] transition hover:bg-[#B84F18]"
+          >
+            <Bot className="h-3.5 w-3.5" />
+            {t('assistant.title')}
+          </button>
         </div>
       </div>
     </section>
   )
 }
 
-type AssistantContextType =
-  | 'meta_org'
-  | 'business_process'
-  | 'requirement'
-  | 'project'
-  | 'organization'
-  | 'governance'
-  | 'model_settings'
-  | 'self_evolution'
-
-const assistantContexts: Array<{ type: AssistantContextType; label: string }> = [
-  { type: 'meta_org', label: 'Meta-Org' },
-  { type: 'business_process', label: 'assistant.context.businessProcess' },
-  { type: 'requirement', label: '需求' },
-  { type: 'project', label: '项目' },
-  { type: 'organization', label: '组织' },
-  { type: 'governance', label: '治理' },
-  { type: 'model_settings', label: '模型设置' },
-  { type: 'self_evolution', label: 'assistant.context.selfEvolution' },
-]
-
-function AIAssistantWorkspace({ token }: { token: string }) {
+function OperationButton({ operation, onClick }: { operation: ApiOperation; onClick: () => void }) {
   const { t } = useI18n()
-  const [contextType, setContextType] = useState<AssistantContextType>('meta_org')
+  const profile = getOperationProfile(operation)
+  const toneClass = {
+    direct: 'border-blue-400/35 bg-blue-500/10 text-blue-100 hover:border-blue-300/60',
+    contextual: 'border-amber-400/35 bg-amber-500/10 text-amber-100 hover:border-amber-300/60',
+    agent_assisted: 'border-violet-400/35 bg-violet-500/10 text-violet-100 hover:border-violet-300/60',
+    admin: 'border-slate-700 bg-slate-950/30 text-slate-200 hover:border-[#DF6A24]/50 hover:text-[#F6A66A]',
+  }[profile.kind]
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-wrap gap-2 rounded-lg border border-slate-200 bg-white p-2 shadow-sm">
-        {assistantContexts.map((context) => (
-          <button
-            key={context.type}
-            type="button"
-            onClick={() => setContextType(context.type)}
-            className={`h-9 rounded-md px-3 text-sm font-semibold transition ${
-              contextType === context.type ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100'
-            }`}
-          >
-            {t(context.label)}
-          </button>
-        ))}
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex h-8 max-w-[190px] items-center gap-1.5 rounded-md border px-2.5 text-xs font-semibold transition ${toneClass}`}
+      title={`${t('agent.delegate')} · ${t(operation.title)} · ${t(`operation.kind.${profile.kind}`)}`}
+    >
+      <Bot className="h-3.5 w-3.5 shrink-0" />
+      <span className="truncate">{t(operation.title)}</span>
+      {profile.requiresEntityContext && <span className="text-[10px] opacity-70">*</span>}
+    </button>
+  )
+}
+
+function AgentOnlyWorkspace({ domain, onAssistantOpen }: { domain: string; onAssistantOpen: () => void }) {
+  const { t } = useI18n()
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-500">{domain}</p>
+          <h2 className="mt-1 text-base font-semibold text-slate-950">{t('agent.consoleTitle')}</h2>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{t('agent.consoleHint')}</p>
+        </div>
+        <button
+          type="button"
+          onClick={onAssistantOpen}
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-lg bg-[#AD4714] px-3 text-sm font-semibold text-[#fffaf5] transition hover:bg-[#B84F18]"
+        >
+          <Bot className="h-4 w-4" />
+          {t('assistant.title')}
+        </button>
       </div>
-      <AIAssistant key={contextType} token={token} contextType={contextType} className="max-w-5xl" />
-    </div>
+    </section>
   )
 }
 
@@ -859,16 +1212,95 @@ function Dashboard({
   overview,
   inbox,
   healthRatio,
+  onReviewApproval,
 }: {
   overview: MetaOrgOverview
   inbox: InboxItem[]
   healthRatio: number
+  onReviewApproval: (id: string, decision: 'approve' | 'reject') => void
 }) {
   const { t } = useI18n()
   const agentCoverage = overview.agents.total > 0 ? overview.agents.active / overview.agents.total : 0
+  const quickActions = [
+    t('shell.quick.fixPipeline'),
+    t('shell.quick.gateway'),
+    t('shell.quick.optimizeCost'),
+    t('shell.quick.pricing'),
+  ]
+  const filters = [
+    ['shell.filter.all', Sparkles],
+    ['shell.filter.business', BriefcaseBusiness],
+    ['shell.filter.organization', Users],
+    ['shell.filter.governance', ShieldCheck],
+    ['shell.filter.aiOps', Bot],
+    ['shell.filter.finance', WalletCards],
+  ] as const
 
   return (
     <div className="space-y-5">
+        <section className="px-2 py-6 text-center sm:py-10">
+          <div className="mx-auto inline-flex items-center gap-2 text-xs font-bold uppercase tracking-[0.16em] text-slate-500">
+            <span className="h-2 w-2 rounded-full bg-emerald-400 shadow-[0_0_14px_rgba(52,211,153,0.75)]" />
+            {t('nav.badge.live')} - Meta-Org
+          </div>
+          <h1 className="mx-auto mt-5 max-w-4xl text-balance text-4xl font-extrabold tracking-normal text-white sm:text-5xl">
+            {t('shell.commandTitle').replace('?', '')}
+            <span className="text-[#DF6A24]">?</span>
+          </h1>
+          <p className="mx-auto mt-4 max-w-2xl text-base font-medium text-slate-400">{t('shell.commandSubtitle')}</p>
+
+          <div className="studio-command mx-auto mt-8 flex max-w-3xl items-center gap-3 rounded-[8px] p-2 text-left">
+            <Search className="ml-3 h-5 w-5 shrink-0 text-[#DF6A24]" />
+            <input
+              readOnly
+              value=""
+              placeholder={t('shell.commandPlaceholder')}
+              className="h-12 min-w-0 flex-1 border-0 bg-transparent text-sm font-medium text-slate-200 outline-none"
+            />
+            <button
+              type="button"
+              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[#AD4714] text-[#fffaf5] transition hover:bg-[#B84F18]"
+            >
+              <ArrowUp className="h-5 w-5" />
+            </button>
+          </div>
+
+          <div className="mx-auto mt-4 flex max-w-3xl flex-wrap justify-center gap-2">
+            {quickActions.map((action) => (
+              <span
+                key={action}
+                className="rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1.5 text-xs font-bold text-slate-300"
+              >
+                {action}
+              </span>
+            ))}
+          </div>
+
+          <div className="mt-8 flex flex-wrap justify-center gap-2">
+            {filters.map(([label, Icon], index) => (
+              <button
+                key={label}
+                type="button"
+                className={`inline-flex h-9 items-center gap-2 rounded-full border px-4 text-sm font-bold transition ${
+                  index === 0
+                    ? 'border-[#DF6A24] bg-[#DF6A24]/10 text-[#F6A66A]'
+                    : 'border-slate-700 bg-slate-950/30 text-slate-300 hover:border-[#DF6A24]/35'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {t(label)}
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <div className="flex items-center justify-between gap-3 px-1">
+          <h2 className="text-sm font-bold uppercase tracking-normal text-slate-400">{t('shell.openWork')}</h2>
+          <span className="text-xs font-bold text-slate-500">
+            {t('shell.results', { count: overview.activity.length + inbox.length })}
+          </span>
+        </div>
+
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           <MetricCard
             icon={Users}
@@ -1011,9 +1443,27 @@ function Dashboard({
                       {item.type} · {item.source || t('common.none')} · {formatDate(item.created_at)}
                     </p>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex flex-wrap justify-end gap-2">
                     <StatusPill label={item.priority} tone={item.priority === 'high' || item.priority === 'critical' ? 'amber' : 'blue'} />
                     <StatusPill label={item.status} tone="green" />
+                    {item.type === 'tool_approval' && item.status === 'pending' && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onReviewApproval(item.id, 'approve')}
+                          className="inline-flex h-7 items-center rounded-md bg-emerald-600 px-2.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
+                        >
+                          {t('agent.approve')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onReviewApproval(item.id, 'reject')}
+                          className="inline-flex h-7 items-center rounded-md border border-red-200 bg-red-50 px-2.5 text-xs font-semibold text-red-700 transition hover:bg-red-100"
+                        >
+                          {t('agent.reject')}
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               ))

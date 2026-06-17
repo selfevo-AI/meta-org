@@ -591,8 +591,14 @@ export function DeveloperToolsWorkspace({ token }: DeveloperToolsWorkspaceProps)
       {activeTab === 'tools' && (
         <Panel title="developer.toolRuntime">
           <Table
-            headers={['developer.tool', 'developer.policy', 'developer.risk', 'developer.status']}
-            rows={tools.map((tool) => [tool.name, t(tool.default_policy), t(tool.risk_level), t(tool.status)])}
+            headers={['developer.tool', 'developer.category', 'developer.approvalTier', 'developer.policy', 'developer.risk']}
+            rows={tools.map((tool) => [
+              tool.name,
+              t(tool.tool_category || 'execution_operation'),
+              t(tool.approval_tier_required || 'executor'),
+              t(tool.default_policy),
+              t(tool.risk_level),
+            ])}
           />
           <div className="mt-5">
             <p className="text-sm font-semibold text-slate-950">{t('developer.recentExecutions')}</p>

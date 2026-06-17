@@ -107,6 +107,7 @@ interface OrganizationMembership {
   member_name?: string
   member_email?: string
   title?: string
+  authority_tier?: string
   status: string
 }
 
@@ -1461,7 +1462,7 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
                 <div>
                   <p className="text-sm font-semibold text-slate-950">{member.member_name || member.member_type}</p>
                   <p className="text-sm text-slate-500">
-                    {member.title || t('未设置职责')} · {member.member_type} · {member.status}
+                    {member.title || t('未设置职责')} · {t(member.authority_tier || 'executor')} · {member.member_type} · {member.status}
                   </p>
                 </div>
                 <button

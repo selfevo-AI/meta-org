@@ -15,6 +15,7 @@ import (
 var (
 	ErrValidation = errors.New("validation error")
 	ErrNotFound   = errors.New("not found")
+	ErrForbidden  = errors.New("forbidden")
 )
 
 type ToolAdapter func(context.Context, ExecuteToolInput) (ToolResult, error)
@@ -30,6 +31,8 @@ type Repository interface {
 	CreateApproval(ctx context.Context, executionID uuid.UUID, requestedBy *uuid.UUID, reason string) (*ToolApproval, error)
 	ListExecutions(ctx context.Context, limit int) ([]ToolExecution, error)
 	GetExecution(ctx context.Context, id uuid.UUID) (*ToolExecution, error)
+	GetApproval(ctx context.Context, id uuid.UUID) (*ToolApproval, error)
+	GetHumanAuthorityTier(ctx context.Context, userID uuid.UUID, organizationID *uuid.UUID) (string, error)
 	UpdateApproval(ctx context.Context, id uuid.UUID, status string, reviewedBy *uuid.UUID, reason string) (*ToolApproval, error)
 }
 
@@ -83,6 +86,7 @@ type CreateExecutionInput struct {
 	IdempotencyKey     string
 	Policy             string
 	GovernanceDecision string
+	RequestedByHumanID *uuid.UUID
 	Status             string
 	Arguments          map[string]any
 }
@@ -112,6 +116,8 @@ func (s *Service) CreateTool(ctx context.Context, input CreateToolInput) (*ToolD
 	if input.Name == "" {
 		return nil, fmt.Errorf("%w: name is required", ErrValidation)
 	}
+	input.ToolCategory = normalizeToolCategory(input.ToolCategory)
+	input.ApprovalTierRequired = normalizeApprovalTier(input.ApprovalTierRequired, approvalTierForCategory(input.ToolCategory))
 	return s.repo.CreateTool(ctx, input)
 }
 
@@ -120,6 +126,17 @@ func (s *Service) ListTools(ctx context.Context, limit int) ([]ToolDefinition, e
 }
 
 func (s *Service) UpdateTool(ctx context.Context, id uuid.UUID, input UpdateToolInput) (*ToolDefinition, error) {
+	if input.ToolCategory != nil {
+		category := normalizeToolCategory(*input.ToolCategory)
+		input.ToolCategory = &category
+	}
+	if input.ApprovalTierRequired != nil {
+		tier := normalizeApprovalTier(*input.ApprovalTierRequired, "")
+		if tier == "" {
+			return nil, fmt.Errorf("%w: invalid approval tier", ErrValidation)
+		}
+		input.ApprovalTierRequired = &tier
+	}
 	return s.repo.UpdateTool(ctx, id, input)
 }
 
@@ -139,6 +156,7 @@ func (s *Service) ExecuteTool(ctx context.Context, input ExecuteToolInput) (*Exe
 		return nil, err
 	}
 	policy := EffectivePolicy(tool.DefaultPolicy, governanceResult)
+	requestedByHumanID := requestedByHuman(input)
 	status := ExecutionRequested
 	switch policy {
 	case PolicyApprove:
@@ -161,6 +179,7 @@ func (s *Service) ExecuteTool(ctx context.Context, input ExecuteToolInput) (*Exe
 		IdempotencyKey:     input.IdempotencyKey,
 		Policy:             policy,
 		GovernanceDecision: governanceResult.Decision,
+		RequestedByHumanID: requestedByHumanID,
 		Status:             status,
 		Arguments:          input.Arguments,
 	})
@@ -214,11 +233,47 @@ func (s *Service) GetExecution(ctx context.Context, id uuid.UUID) (*ToolExecutio
 }
 
 func (s *Service) Approve(ctx context.Context, id uuid.UUID, reviewedBy *uuid.UUID, reason string) (*ToolApproval, error) {
+	if err := s.authorizeApprovalReview(ctx, id, reviewedBy); err != nil {
+		return nil, err
+	}
 	return s.repo.UpdateApproval(ctx, id, ApprovalApproved, reviewedBy, reason)
 }
 
 func (s *Service) Reject(ctx context.Context, id uuid.UUID, reviewedBy *uuid.UUID, reason string) (*ToolApproval, error) {
+	if err := s.authorizeApprovalReview(ctx, id, reviewedBy); err != nil {
+		return nil, err
+	}
 	return s.repo.UpdateApproval(ctx, id, ApprovalRejected, reviewedBy, reason)
+}
+
+func (s *Service) authorizeApprovalReview(ctx context.Context, approvalID uuid.UUID, reviewedBy *uuid.UUID) error {
+	if reviewedBy == nil || *reviewedBy == uuid.Nil {
+		return fmt.Errorf("%w: reviewed_by human is required", ErrValidation)
+	}
+	approval, err := s.repo.GetApproval(ctx, approvalID)
+	if err != nil {
+		return err
+	}
+	if approval.Status != ApprovalPending {
+		return fmt.Errorf("%w: approval is not pending", ErrValidation)
+	}
+	execution, err := s.repo.GetExecution(ctx, approval.ExecutionID)
+	if err != nil {
+		return err
+	}
+	tool, err := s.repo.GetToolByID(ctx, execution.ToolID)
+	if err != nil {
+		return err
+	}
+	requiredTier := normalizeApprovalTier(tool.ApprovalTierRequired, approvalTierForCategory(tool.ToolCategory))
+	actualTier, err := s.repo.GetHumanAuthorityTier(ctx, *reviewedBy, execution.OrganizationID)
+	if err != nil {
+		return err
+	}
+	if !authorityTierAllows(actualTier, requiredTier) {
+		return fmt.Errorf("%w: %s approval requires %s authority", ErrForbidden, normalizeToolCategory(tool.ToolCategory), requiredTier)
+	}
+	return nil
 }
 
 func (s *Service) runAdapter(ctx context.Context, tool *ToolDefinition, execution *ToolExecution, input ExecuteToolInput, trace *observability.Trace) (*ExecuteToolOutput, error) {
@@ -404,4 +459,67 @@ func sensitiveKey(key string) bool {
 		strings.Contains(normalized, "password") ||
 		strings.Contains(normalized, "api_key") ||
 		strings.Contains(normalized, "authorization")
+}
+
+func requestedByHuman(input ExecuteToolInput) *uuid.UUID {
+	if strings.EqualFold(input.ActorType, "human") || strings.EqualFold(input.ActorType, "internal_human") {
+		return &input.ActorID
+	}
+	return nil
+}
+
+func normalizeToolCategory(category string) string {
+	switch strings.TrimSpace(category) {
+	case ToolCategoryCoreData:
+		return ToolCategoryCoreData
+	case ToolCategoryBusinessApproval:
+		return ToolCategoryBusinessApproval
+	case ToolCategoryExecutionOperation, "":
+		return ToolCategoryExecutionOperation
+	default:
+		return ToolCategoryExecutionOperation
+	}
+}
+
+func approvalTierForCategory(category string) string {
+	switch normalizeToolCategory(category) {
+	case ToolCategoryCoreData:
+		return ApprovalTierOrganizationCreator
+	case ToolCategoryBusinessApproval:
+		return ApprovalTierReviewer
+	default:
+		return ApprovalTierExecutor
+	}
+}
+
+func normalizeApprovalTier(tier string, fallback string) string {
+	switch strings.TrimSpace(tier) {
+	case ApprovalTierOrganizationCreator:
+		return ApprovalTierOrganizationCreator
+	case ApprovalTierReviewer:
+		return ApprovalTierReviewer
+	case ApprovalTierExecutor:
+		return ApprovalTierExecutor
+	case "":
+		return fallback
+	default:
+		return ""
+	}
+}
+
+func authorityTierAllows(actual string, required string) bool {
+	return authorityTierWeight(actual) >= authorityTierWeight(required) && authorityTierWeight(required) > 0
+}
+
+func authorityTierWeight(tier string) int {
+	switch tier {
+	case ApprovalTierOrganizationCreator:
+		return 3
+	case ApprovalTierReviewer:
+		return 2
+	case ApprovalTierExecutor:
+		return 1
+	default:
+		return 0
+	}
 }

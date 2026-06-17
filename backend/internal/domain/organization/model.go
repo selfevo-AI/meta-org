@@ -7,6 +7,7 @@ import (
 )
 
 type MVRUStatus string
+type AuthorityTier string
 
 const (
 	MVRUDesigning  MVRUStatus = "designing"
@@ -14,14 +15,19 @@ const (
 	MVRUEvaluating MVRUStatus = "evaluating"
 	MVRUEvolving   MVRUStatus = "evolving"
 	MVRUDissolved  MVRUStatus = "dissolved"
+
+	AuthorityOrganizationCreator AuthorityTier = "organization_creator"
+	AuthorityReviewer            AuthorityTier = "reviewer"
+	AuthorityExecutor            AuthorityTier = "executor"
 )
 
 type Organization struct {
-	ID          uuid.UUID `json:"id"`
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          uuid.UUID  `json:"id"`
+	Name        string     `json:"name"`
+	Description string     `json:"description,omitempty"`
+	CreatedBy   *uuid.UUID `json:"created_by,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 type MVRU struct {
@@ -145,6 +151,7 @@ type OrganizationMembership struct {
 	Title            string         `json:"title,omitempty"`
 	RoleID           *uuid.UUID     `json:"role_id,omitempty"`
 	RoleName         string         `json:"role_name,omitempty"`
+	AuthorityTier    AuthorityTier  `json:"authority_tier"`
 	Status           string         `json:"status"`
 	JoinedAt         time.Time      `json:"joined_at"`
 	Metadata         map[string]any `json:"metadata"`
@@ -195,8 +202,9 @@ type CapabilityMatchBridge struct {
 }
 
 type CreateOrganizationInput struct {
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
+	Name        string     `json:"name"`
+	Description string     `json:"description,omitempty"`
+	CreatedBy   *uuid.UUID `json:"created_by,omitempty"`
 }
 
 type UpdateOrganizationInput struct {
@@ -304,15 +312,17 @@ type AddOrganizationMemberInput struct {
 	AgentID          *uuid.UUID     `json:"agent_id,omitempty"`
 	Title            string         `json:"title,omitempty"`
 	RoleID           *uuid.UUID     `json:"role_id,omitempty"`
+	AuthorityTier    AuthorityTier  `json:"authority_tier,omitempty"`
 	Status           string         `json:"status,omitempty"`
 	Metadata         map[string]any `json:"metadata,omitempty"`
 }
 
 type UpdateOrganizationMembershipInput struct {
-	Title    string         `json:"title,omitempty"`
-	RoleID   *uuid.UUID     `json:"role_id,omitempty"`
-	Status   string         `json:"status,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	Title         string         `json:"title,omitempty"`
+	RoleID        *uuid.UUID     `json:"role_id,omitempty"`
+	AuthorityTier AuthorityTier  `json:"authority_tier,omitempty"`
+	Status        string         `json:"status,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
 }
 
 type LinkDepartmentMVRUInput struct {

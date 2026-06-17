@@ -119,6 +119,7 @@ func main() {
 		project.WithEvolutionService(evoSvc),
 		project.WithOrganizationService(orgSvc),
 		project.WithWorkflowService(wfSvc),
+		project.WithMetaResourceService(metaResourceSvc),
 		project.WithCostRecorder(costSvc),
 	)
 	projectHandler := project.NewHandler(projectSvc)
@@ -132,7 +133,7 @@ func main() {
 	toolHandler := toolruntime.NewHandler(toolSvc)
 
 	assistantRepo := assistant.NewRepository(db)
-	assistantSvc := assistant.NewService(assistantRepo, aiSvc, toolSvc)
+	assistantSvc := assistant.NewService(assistantRepo, aiSvc, toolSvc, assistant.WithContextResolver(assistant.NewDBContextResolver(db)))
 	assistantHandler := assistant.NewHandler(assistantSvc)
 
 	verRepo := verification.NewRepository(db)

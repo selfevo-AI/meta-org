@@ -33,6 +33,7 @@ interface WorkspaceProps {
   token: string
   currentUserId?: string | null
   mode: LifecycleMode
+  onOperationContextChange?: (context: Record<string, string>) => void
 }
 
 interface Organization {
@@ -191,6 +192,18 @@ interface ProjectOverview {
   deliverables: Deliverable[] | null
   cost_summary: CostSummary
   evaluations: ProjectEvaluation[] | null
+  lifecycle?: ProjectLifecycle
+}
+
+interface ProjectLifecycle {
+  stage: string
+  pdca_stage: string
+  requirement_id?: string
+  demand_profile_id?: string
+  pdca_cycle_id?: string
+  allowed_actions: string[]
+  blockers: string[]
+  next_action: string
 }
 
 interface MatchCandidate {
@@ -329,7 +342,17 @@ function flattenDepartments(nodes: Department[] | null | undefined): Department[
   return asArray(nodes).flatMap((node) => [node, ...flattenDepartments(node.children)])
 }
 
-export function ProjectLifecycleWorkspace({ token, currentUserId, mode }: WorkspaceProps) {
+function actionForStatus(status: string): string {
+  const actions: Record<string, string> = {
+    active: 'activate_project',
+    delivering: 'start_delivery',
+    completed: 'complete_project',
+    closed: 'close_feedback',
+  }
+  return actions[status] ?? status
+}
+
+export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperationContextChange }: WorkspaceProps) {
   const { t } = useI18n()
   const [requirements, setRequirements] = useState<Requirement[]>([])
   const [requirementDocuments, setRequirementDocuments] = useState<RequirementDocument[]>([])
@@ -366,6 +389,13 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode }: Worksp
     () => requirements.find((requirement) => requirement.id === selectedRequirementId) ?? overview?.requirement ?? null,
     [overview, requirements, selectedRequirementId],
   )
+
+  useEffect(() => {
+    onOperationContextChange?.({
+      requirement_id: selectedRequirementId,
+      project_id: selectedProjectId,
+    })
+  }, [onOperationContextChange, selectedProjectId, selectedRequirementId])
 
   useEffect(() => {
     let cancelled = false
@@ -1267,6 +1297,8 @@ function ProjectView({
   onBindWorkflow: (event: FormEvent<HTMLFormElement>) => void
   onMatchActors: () => void
 }) {
+  const lifecycle = overview?.lifecycle
+  const allowedActions = new Set(lifecycle?.allowed_actions ?? [])
   return (
     <div className="space-y-5">
       <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
@@ -1316,9 +1348,10 @@ function ProjectView({
                 <Metric label="交付" value={String(asArray(overview?.deliverables).length)} />
                 <Metric label="评估" value={String(asArray(overview?.evaluations).length)} />
               </div>
+              {lifecycle && <LifecycleSummary lifecycle={lifecycle} />}
               <div className="flex flex-wrap gap-2">
                 {['active', 'delivering', 'completed', 'closed'].map((status) => (
-                  <ActionButton key={status} icon={CheckCircle2} loading={loading} onClick={() => onStatus(status)} label={status} variant="secondary" />
+                  <ActionButton key={status} icon={CheckCircle2} loading={loading} disabled={!allowedActions.has(actionForStatus(status))} onClick={() => onStatus(status)} label={`lifecycle.status.${status}`} variant="secondary" />
                 ))}
               </div>
             </div>
@@ -1439,9 +1472,9 @@ function DeliveryView({
             <div key={deliverable.id} className="grid gap-3 border-t border-slate-100 py-3 first:border-t-0 first:pt-0">
               <ListRow title={deliverable.name} detail={`${deliverable.deliverable_type} · ${deliverable.version} · ${formatDate(deliverable.created_at)}`} badge={deliverable.status} />
               <div className="flex flex-wrap gap-2">
-                <ActionButton icon={Send} loading={loading} onClick={() => onAction(deliverable.id, 'submit')} label="提交" variant="secondary" />
-                <ActionButton icon={CheckCircle2} loading={loading} onClick={() => onAction(deliverable.id, 'accept')} label="验收" variant="secondary" />
-                <ActionButton icon={ClipboardCheck} loading={loading} onClick={() => onAction(deliverable.id, 'reject')} label="退回" variant="secondary" />
+                <ActionButton icon={Send} loading={loading} disabled={deliverable.status !== 'draft' && deliverable.status !== 'rejected'} onClick={() => onAction(deliverable.id, 'submit')} label="提交" variant="secondary" />
+                <ActionButton icon={CheckCircle2} loading={loading} disabled={deliverable.status !== 'submitted'} onClick={() => onAction(deliverable.id, 'accept')} label="验收" variant="secondary" />
+                <ActionButton icon={ClipboardCheck} loading={loading} disabled={deliverable.status !== 'submitted'} onClick={() => onAction(deliverable.id, 'reject')} label="退回" variant="secondary" />
               </div>
             </div>
           ))}
@@ -1601,6 +1634,34 @@ function Panel({ icon: Icon, title, children }: { icon: typeof ClipboardList; ti
       </div>
       {children}
     </section>
+  )
+}
+
+function LifecycleSummary({ lifecycle }: { lifecycle: ProjectLifecycle }) {
+  const { t } = useI18n()
+  return (
+    <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <StatusBadge label={t(`metaresource.stage.${lifecycle.pdca_stage}`)} tone="green" />
+        <span className="font-semibold text-slate-900">{t('lifecycle.nextAction')}</span>
+        <span className="text-slate-600">{t(`lifecycle.action.${lifecycle.next_action}`)}</span>
+      </div>
+      {lifecycle.pdca_cycle_id && (
+        <p className="break-all text-xs text-slate-500">
+          {t('lifecycle.pdcaCycle')}: {lifecycle.pdca_cycle_id}
+        </p>
+      )}
+      {lifecycle.blockers.length > 0 && (
+        <div className="space-y-1">
+          <p className="font-semibold text-amber-700">{t('lifecycle.blockers')}</p>
+          <ul className="grid gap-1 text-slate-600">
+            {lifecycle.blockers.map((blocker) => (
+              <li key={blocker}>- {t(`lifecycle.blocker.${blocker}`)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
   )
 }
 

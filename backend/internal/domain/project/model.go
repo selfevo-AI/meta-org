@@ -184,6 +184,18 @@ type ProjectOverview struct {
 	Deliverables []Deliverable       `json:"deliverables"`
 	CostSummary  *CostSummary        `json:"cost_summary"`
 	Evaluations  []ProjectEvaluation `json:"evaluations"`
+	Lifecycle    ProjectLifecycle    `json:"lifecycle"`
+}
+
+type ProjectLifecycle struct {
+	Stage           string   `json:"stage"`
+	PDCAStage       string   `json:"pdca_stage"`
+	RequirementID   string   `json:"requirement_id,omitempty"`
+	DemandProfileID string   `json:"demand_profile_id,omitempty"`
+	PDCACycleID     string   `json:"pdca_cycle_id,omitempty"`
+	AllowedActions  []string `json:"allowed_actions"`
+	Blockers        []string `json:"blockers"`
+	NextAction      string   `json:"next_action"`
 }
 
 type ActorInput struct {

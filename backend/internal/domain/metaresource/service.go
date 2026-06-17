@@ -20,6 +20,7 @@ type Store interface {
 	ListDemandProfiles(ctx context.Context, limit int) ([]DemandProfile, error)
 	CreateCycle(ctx context.Context, input CreatePDCACycleInput) (*PDCACycle, error)
 	ListCycles(ctx context.Context, limit int) ([]PDCACycle, error)
+	CompleteCycle(ctx context.Context, id uuid.UUID, outcomeScore float64, summary string) error
 	CreateEvent(ctx context.Context, input CreatePDCAEventInput) (*PDCAEvent, error)
 	ListEvents(ctx context.Context, filter ListFilter) ([]PDCAEvent, error)
 	SyncExistingResources(ctx context.Context) (map[string]int, error)
@@ -101,6 +102,19 @@ func (s *Service) CreateCycle(ctx context.Context, input CreatePDCACycleInput) (
 
 func (s *Service) ListCycles(ctx context.Context, limit int) ([]PDCACycle, error) {
 	return s.store.ListCycles(ctx, limit)
+}
+
+func (s *Service) CompleteCycle(ctx context.Context, id uuid.UUID, outcomeScore float64, summary string) error {
+	if id == uuid.Nil {
+		return fmt.Errorf("%w: id is required", ErrValidation)
+	}
+	if outcomeScore < 0 {
+		outcomeScore = 0
+	}
+	if outcomeScore > 1 {
+		outcomeScore = 1
+	}
+	return s.store.CompleteCycle(ctx, id, outcomeScore, summary)
 }
 
 func (s *Service) CreateEvent(ctx context.Context, input CreatePDCAEventInput) (*PDCAEvent, error) {

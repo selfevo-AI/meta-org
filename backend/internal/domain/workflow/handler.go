@@ -143,7 +143,11 @@ func (h *Handler) completeTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.service.CompleteTask(r.Context(), id, req.Output); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if errors.Is(err, ErrValidation) {
+			status = http.StatusBadRequest
+		}
+		writeJSON(w, status, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "task completed"})
