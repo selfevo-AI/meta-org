@@ -386,3 +386,216 @@ type AllocatePaymentInput struct {
 	Currency  string         `json:"currency,omitempty"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
+
+type SettlementOrder struct {
+	ID               uuid.UUID        `json:"id"`
+	SettlementNumber string           `json:"settlement_number"`
+	ProjectID        *uuid.UUID       `json:"project_id,omitempty"`
+	RequirementID    *uuid.UUID       `json:"requirement_id,omitempty"`
+	DeliverableID    *uuid.UUID       `json:"deliverable_id,omitempty"`
+	CustomerID       string           `json:"customer_id"`
+	CustomerName     string           `json:"customer_name"`
+	Title            string           `json:"title"`
+	Description      string           `json:"description"`
+	Subtotal         float64          `json:"subtotal"`
+	TaxAmount        float64          `json:"tax_amount"`
+	TotalAmount      float64          `json:"total_amount"`
+	Currency         string           `json:"currency"`
+	SettlementDate   *time.Time       `json:"settlement_date,omitempty"`
+	DueDate          *time.Time       `json:"due_date,omitempty"`
+	Status           string           `json:"status"`
+	ReceivableID     *uuid.UUID       `json:"receivable_id,omitempty"`
+	Metadata         map[string]any   `json:"metadata"`
+	Lines            []SettlementLine `json:"lines,omitempty"`
+	CreatedAt        time.Time        `json:"created_at"`
+	UpdatedAt        time.Time        `json:"updated_at"`
+}
+
+type SettlementLine struct {
+	ID                uuid.UUID      `json:"id"`
+	SettlementOrderID uuid.UUID      `json:"settlement_order_id"`
+	LineType          string         `json:"line_type"`
+	SourceType        string         `json:"source_type"`
+	SourceID          *uuid.UUID     `json:"source_id,omitempty"`
+	DeliverableID     *uuid.UUID     `json:"deliverable_id,omitempty"`
+	Description       string         `json:"description"`
+	Quantity          float64        `json:"quantity"`
+	UnitPrice         float64        `json:"unit_price"`
+	Amount            float64        `json:"amount"`
+	TaxAmount         float64        `json:"tax_amount"`
+	TotalAmount       float64        `json:"total_amount"`
+	Metadata          map[string]any `json:"metadata"`
+	CreatedAt         time.Time      `json:"created_at"`
+}
+
+type CreateSettlementOrderInput struct {
+	SettlementNumber string                      `json:"settlement_number,omitempty"`
+	ProjectID        *uuid.UUID                  `json:"project_id,omitempty"`
+	RequirementID    *uuid.UUID                  `json:"requirement_id,omitempty"`
+	DeliverableID    *uuid.UUID                  `json:"deliverable_id,omitempty"`
+	CustomerID       string                      `json:"customer_id,omitempty"`
+	CustomerName     string                      `json:"customer_name,omitempty"`
+	Title            string                      `json:"title,omitempty"`
+	Description      string                      `json:"description,omitempty"`
+	Currency         string                      `json:"currency,omitempty"`
+	SettlementDate   string                      `json:"settlement_date,omitempty"`
+	DueDate          string                      `json:"due_date,omitempty"`
+	Status           string                      `json:"status,omitempty"`
+	Metadata         map[string]any              `json:"metadata,omitempty"`
+	Lines            []CreateSettlementLineInput `json:"lines,omitempty"`
+}
+
+type CreateSettlementLineInput struct {
+	LineType      string         `json:"line_type,omitempty"`
+	SourceType    string         `json:"source_type,omitempty"`
+	SourceID      *uuid.UUID     `json:"source_id,omitempty"`
+	DeliverableID *uuid.UUID     `json:"deliverable_id,omitempty"`
+	Description   string         `json:"description,omitempty"`
+	Quantity      float64        `json:"quantity,omitempty"`
+	UnitPrice     float64        `json:"unit_price,omitempty"`
+	Amount        float64        `json:"amount"`
+	TaxAmount     float64        `json:"tax_amount,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
+}
+
+type UpdateSettlementOrderInput struct {
+	SettlementNumber *string                     `json:"settlement_number,omitempty"`
+	ProjectID        *uuid.UUID                  `json:"project_id,omitempty"`
+	RequirementID    *uuid.UUID                  `json:"requirement_id,omitempty"`
+	DeliverableID    *uuid.UUID                  `json:"deliverable_id,omitempty"`
+	CustomerID       *string                     `json:"customer_id,omitempty"`
+	CustomerName     *string                     `json:"customer_name,omitempty"`
+	Title            *string                     `json:"title,omitempty"`
+	Description      *string                     `json:"description,omitempty"`
+	Currency         *string                     `json:"currency,omitempty"`
+	SettlementDate   *string                     `json:"settlement_date,omitempty"`
+	DueDate          *string                     `json:"due_date,omitempty"`
+	Status           *string                     `json:"status,omitempty"`
+	Metadata         map[string]any              `json:"metadata,omitempty"`
+	Lines            []CreateSettlementLineInput `json:"lines,omitempty"`
+}
+
+type Receivable struct {
+	ID                   uuid.UUID        `json:"id"`
+	ReceivableType       string           `json:"receivable_type"`
+	SettlementOrderID    *uuid.UUID       `json:"settlement_order_id,omitempty"`
+	SourceType           string           `json:"source_type"`
+	SourceID             *uuid.UUID       `json:"source_id,omitempty"`
+	ExternalReceivableID string           `json:"external_receivable_id"`
+	InvoiceNumber        string           `json:"invoice_number"`
+	CustomerID           string           `json:"customer_id"`
+	CustomerName         string           `json:"customer_name"`
+	ProjectID            *uuid.UUID       `json:"project_id,omitempty"`
+	RequirementID        *uuid.UUID       `json:"requirement_id,omitempty"`
+	OrganizationID       *uuid.UUID       `json:"organization_id,omitempty"`
+	DepartmentID         *uuid.UUID       `json:"department_id,omitempty"`
+	AccountCode          string           `json:"account_code"`
+	AccountName          string           `json:"account_name"`
+	Amount               float64          `json:"amount"`
+	TaxAmount            float64          `json:"tax_amount"`
+	Currency             string           `json:"currency"`
+	PeriodStart          *time.Time       `json:"period_start,omitempty"`
+	PeriodEnd            *time.Time       `json:"period_end,omitempty"`
+	InvoiceDate          *time.Time       `json:"invoice_date,omitempty"`
+	DueDate              *time.Time       `json:"due_date,omitempty"`
+	Status               string           `json:"status"`
+	ReceivedAmount       float64          `json:"received_amount"`
+	Metadata             map[string]any   `json:"metadata"`
+	Lines                []ReceivableLine `json:"lines,omitempty"`
+	CreatedAt            time.Time        `json:"created_at"`
+	UpdatedAt            time.Time        `json:"updated_at"`
+}
+
+type ReceivableLine struct {
+	ID               uuid.UUID      `json:"id"`
+	ReceivableID     uuid.UUID      `json:"receivable_id"`
+	SettlementLineID *uuid.UUID     `json:"settlement_line_id,omitempty"`
+	LineType         string         `json:"line_type"`
+	Description      string         `json:"description"`
+	Amount           float64        `json:"amount"`
+	TaxAmount        float64        `json:"tax_amount"`
+	TotalAmount      float64        `json:"total_amount"`
+	Metadata         map[string]any `json:"metadata"`
+	CreatedAt        time.Time      `json:"created_at"`
+}
+
+type CreateReceivableInput struct {
+	ReceivableType       string         `json:"receivable_type,omitempty"`
+	SettlementOrderID    *uuid.UUID     `json:"settlement_order_id,omitempty"`
+	SourceType           string         `json:"source_type,omitempty"`
+	SourceID             *uuid.UUID     `json:"source_id,omitempty"`
+	ExternalReceivableID string         `json:"external_receivable_id,omitempty"`
+	InvoiceNumber        string         `json:"invoice_number,omitempty"`
+	CustomerID           string         `json:"customer_id,omitempty"`
+	CustomerName         string         `json:"customer_name,omitempty"`
+	ProjectID            *uuid.UUID     `json:"project_id,omitempty"`
+	RequirementID        *uuid.UUID     `json:"requirement_id,omitempty"`
+	OrganizationID       *uuid.UUID     `json:"organization_id,omitempty"`
+	DepartmentID         *uuid.UUID     `json:"department_id,omitempty"`
+	AccountCode          string         `json:"account_code,omitempty"`
+	AccountName          string         `json:"account_name,omitempty"`
+	Amount               float64        `json:"amount"`
+	TaxAmount            float64        `json:"tax_amount,omitempty"`
+	Currency             string         `json:"currency,omitempty"`
+	PeriodStart          string         `json:"period_start,omitempty"`
+	PeriodEnd            string         `json:"period_end,omitempty"`
+	InvoiceDate          string         `json:"invoice_date,omitempty"`
+	DueDate              string         `json:"due_date,omitempty"`
+	Status               string         `json:"status,omitempty"`
+	Metadata             map[string]any `json:"metadata,omitempty"`
+}
+
+type UpdateReceivableInput CreateReceivableInput
+
+type Receipt struct {
+	ID                uuid.UUID      `json:"id"`
+	ReceiptNumber     string         `json:"receipt_number"`
+	ExternalReceiptID string         `json:"external_receipt_id"`
+	PaymentMethod     string         `json:"payment_method"`
+	PayerAccount      string         `json:"payer_account"`
+	ReceiverAccount   string         `json:"receiver_account"`
+	CustomerID        string         `json:"customer_id"`
+	CustomerName      string         `json:"customer_name"`
+	Amount            float64        `json:"amount"`
+	Currency          string         `json:"currency"`
+	ReceivedAt        *time.Time     `json:"received_at,omitempty"`
+	Status            string         `json:"status"`
+	Metadata          map[string]any `json:"metadata"`
+	CreatedAt         time.Time      `json:"created_at"`
+	UpdatedAt         time.Time      `json:"updated_at"`
+}
+
+type CreateReceiptInput struct {
+	ReceiptNumber     string         `json:"receipt_number,omitempty"`
+	ExternalReceiptID string         `json:"external_receipt_id,omitempty"`
+	PaymentMethod     string         `json:"payment_method,omitempty"`
+	PayerAccount      string         `json:"payer_account,omitempty"`
+	ReceiverAccount   string         `json:"receiver_account,omitempty"`
+	CustomerID        string         `json:"customer_id,omitempty"`
+	CustomerName      string         `json:"customer_name,omitempty"`
+	Amount            float64        `json:"amount"`
+	Currency          string         `json:"currency,omitempty"`
+	ReceivedAt        string         `json:"received_at,omitempty"`
+	Status            string         `json:"status,omitempty"`
+	Metadata          map[string]any `json:"metadata,omitempty"`
+}
+
+type ReceiptAllocation struct {
+	ID           uuid.UUID      `json:"id"`
+	ReceiptID    uuid.UUID      `json:"receipt_id"`
+	ReceivableID uuid.UUID      `json:"receivable_id"`
+	Amount       float64        `json:"amount"`
+	Currency     string         `json:"currency"`
+	Metadata     map[string]any `json:"metadata"`
+	CreatedAt    time.Time      `json:"created_at"`
+}
+
+type AllocateReceiptInput struct {
+	ReceivableID uuid.UUID      `json:"receivable_id"`
+	Amount       float64        `json:"amount"`
+	Currency     string         `json:"currency,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+}
+
+type UpdatePayableInput CreatePayableInput
+type UpdatePaymentInput CreatePaymentInput

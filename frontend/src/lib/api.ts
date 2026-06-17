@@ -283,19 +283,19 @@ export async function createFinanceExportBatch(
   token: string,
   input: CreateFinanceExportBatchInput,
 ): Promise<FinanceExportBatch> {
-  return apiRequest<FinanceExportBatch>('/finance/export-batches', { method: 'POST', token, body: input })
+  return apiRequest<FinanceExportBatch>('/finance/accounting-batches', { method: 'POST', token, body: input })
 }
 
 export async function listFinanceExportBatches(token: string): Promise<FinanceExportBatch[]> {
-  return apiRequest<FinanceExportBatch[]>('/finance/export-batches', { token })
+  return apiRequest<FinanceExportBatch[]>('/finance/accounting-batches', { token })
 }
 
 export async function getFinanceExportBatch(token: string, id: string): Promise<FinanceExportBatch> {
-  return apiRequest<FinanceExportBatch>(`/finance/export-batches/${id}`, { token })
+  return apiRequest<FinanceExportBatch>(`/finance/accounting-batches/${id}`, { token })
 }
 
 export async function submitFinanceExportBatch(token: string, id: string): Promise<FinanceExportBatch> {
-  return apiRequest<FinanceExportBatch>(`/finance/export-batches/${id}/submit`, { method: 'POST', token })
+  return apiRequest<FinanceExportBatch>(`/finance/accounting-batches/${id}/submit`, { method: 'POST', token })
 }
 
 export async function listFinanceReconciliation(token: string): Promise<FinanceReconciliationItem[]> {
@@ -325,6 +325,54 @@ export async function listFinanceImportRecords(token: string): Promise<FinanceIm
   return apiRequest<FinanceImportRecord[]>('/finance/import-records', { token })
 }
 
+export async function createFinanceSettlementOrder(token: string, input: CreateFinanceSettlementOrderInput): Promise<FinanceSettlementOrder> {
+  return apiRequest<FinanceSettlementOrder>('/finance/settlement-orders', { method: 'POST', token, body: input })
+}
+
+export async function listFinanceSettlementOrders(token: string): Promise<FinanceSettlementOrder[]> {
+  return apiRequest<FinanceSettlementOrder[]>('/finance/settlement-orders', { token })
+}
+
+export async function updateFinanceSettlementOrder(token: string, id: string, input: CreateFinanceSettlementOrderInput): Promise<FinanceSettlementOrder> {
+  return apiRequest<FinanceSettlementOrder>(`/finance/settlement-orders/${id}`, { method: 'PATCH', token, body: input })
+}
+
+export async function postFinanceSettlementOrder(token: string, id: string): Promise<FinanceReceivable> {
+  return apiRequest<FinanceReceivable>(`/finance/settlement-orders/${id}/post`, { method: 'POST', token })
+}
+
+export async function voidFinanceSettlementOrder(token: string, id: string, reason: string): Promise<FinanceSettlementOrder> {
+  return apiRequest<FinanceSettlementOrder>(`/finance/settlement-orders/${id}/void`, { method: 'POST', token, body: { reason } })
+}
+
+export async function createFinanceReceivable(token: string, input: CreateFinanceReceivableInput): Promise<FinanceReceivable> {
+  return apiRequest<FinanceReceivable>('/finance/receivables', { method: 'POST', token, body: input })
+}
+
+export async function listFinanceReceivables(token: string): Promise<FinanceReceivable[]> {
+  return apiRequest<FinanceReceivable[]>('/finance/receivables', { token })
+}
+
+export async function updateFinanceReceivable(token: string, id: string, input: CreateFinanceReceivableInput): Promise<FinanceReceivable> {
+  return apiRequest<FinanceReceivable>(`/finance/receivables/${id}`, { method: 'PATCH', token, body: input })
+}
+
+export async function voidFinanceReceivable(token: string, id: string, reason: string): Promise<FinanceReceivable> {
+  return apiRequest<FinanceReceivable>(`/finance/receivables/${id}/void`, { method: 'POST', token, body: { reason } })
+}
+
+export async function createFinanceReceipt(token: string, input: CreateFinanceReceiptInput): Promise<FinanceReceipt> {
+  return apiRequest<FinanceReceipt>('/finance/receipts', { method: 'POST', token, body: input })
+}
+
+export async function listFinanceReceipts(token: string): Promise<FinanceReceipt[]> {
+  return apiRequest<FinanceReceipt[]>('/finance/receipts', { token })
+}
+
+export async function allocateFinanceReceipt(token: string, receiptID: string, input: AllocateFinanceReceiptInput): Promise<FinanceReceiptAllocation> {
+  return apiRequest<FinanceReceiptAllocation>(`/finance/receipts/${receiptID}/allocate`, { method: 'POST', token, body: input })
+}
+
 export async function createFinancePayable(token: string, input: CreateFinancePayableInput): Promise<FinancePayable> {
   return apiRequest<FinancePayable>('/finance/payables', { method: 'POST', token, body: input })
 }
@@ -333,12 +381,28 @@ export async function listFinancePayables(token: string): Promise<FinancePayable
   return apiRequest<FinancePayable[]>('/finance/payables', { token })
 }
 
+export async function updateFinancePayable(token: string, id: string, input: CreateFinancePayableInput): Promise<FinancePayable> {
+  return apiRequest<FinancePayable>(`/finance/payables/${id}`, { method: 'PATCH', token, body: input })
+}
+
+export async function voidFinancePayable(token: string, id: string, reason: string): Promise<FinancePayable> {
+  return apiRequest<FinancePayable>(`/finance/payables/${id}/void`, { method: 'POST', token, body: { reason } })
+}
+
 export async function createFinancePayment(token: string, input: CreateFinancePaymentInput): Promise<FinancePayment> {
   return apiRequest<FinancePayment>('/finance/payments', { method: 'POST', token, body: input })
 }
 
 export async function listFinancePayments(token: string): Promise<FinancePayment[]> {
   return apiRequest<FinancePayment[]>('/finance/payments', { token })
+}
+
+export async function updateFinancePayment(token: string, id: string, input: CreateFinancePaymentInput): Promise<FinancePayment> {
+  return apiRequest<FinancePayment>(`/finance/payments/${id}`, { method: 'PATCH', token, body: input })
+}
+
+export async function voidFinancePayment(token: string, id: string, reason: string): Promise<FinancePayment> {
+  return apiRequest<FinancePayment>(`/finance/payments/${id}/void`, { method: 'POST', token, body: { reason } })
 }
 
 export async function allocateFinancePayment(token: string, paymentID: string, input: AllocateFinancePaymentInput): Promise<FinancePaymentAllocation> {
@@ -353,12 +417,24 @@ export async function upsertCurrency(token: string, input: CreateCurrencyInput):
   return apiRequest<Currency>('/costing/currencies', { method: 'POST', token, body: input })
 }
 
+export async function voidCurrency(token: string, code: string): Promise<Currency> {
+  return apiRequest<Currency>(`/costing/currencies/${encodeURIComponent(code)}/void`, { method: 'POST', token })
+}
+
 export async function listExchangeRates(token: string): Promise<ExchangeRateVersion[]> {
   return apiRequest<ExchangeRateVersion[]>('/costing/exchange-rates', { token })
 }
 
 export async function createExchangeRate(token: string, input: CreateExchangeRateInput): Promise<ExchangeRateVersion> {
   return apiRequest<ExchangeRateVersion>('/costing/exchange-rates', { method: 'POST', token, body: input })
+}
+
+export async function updateExchangeRate(token: string, id: string, input: CreateExchangeRateInput): Promise<ExchangeRateVersion> {
+  return apiRequest<ExchangeRateVersion>(`/costing/exchange-rates/${id}`, { method: 'PATCH', token, body: input })
+}
+
+export async function voidExchangeRate(token: string, id: string): Promise<ExchangeRateVersion> {
+  return apiRequest<ExchangeRateVersion>(`/costing/exchange-rates/${id}/void`, { method: 'POST', token })
 }
 
 export async function convertCostAmount(token: string, input: ConvertCostInput): Promise<ConversionResult> {
@@ -373,6 +449,14 @@ export async function createCostRateCard(token: string, input: CreateCostRateCar
   return apiRequest<CostRateCard>('/costing/rate-cards', { method: 'POST', token, body: input })
 }
 
+export async function updateCostRateCard(token: string, id: string, input: CreateCostRateCardInput): Promise<CostRateCard> {
+  return apiRequest<CostRateCard>(`/costing/rate-cards/${id}`, { method: 'PATCH', token, body: input })
+}
+
+export async function voidCostRateCard(token: string, id: string): Promise<CostRateCard> {
+  return apiRequest<CostRateCard>(`/costing/rate-cards/${id}/void`, { method: 'POST', token })
+}
+
 export async function listCostBudgets(token: string): Promise<CostBudget[]> {
   return apiRequest<CostBudget[]>('/costing/budgets', { token })
 }
@@ -381,12 +465,28 @@ export async function createCostBudget(token: string, input: CreateCostBudgetInp
   return apiRequest<CostBudget>('/costing/budgets', { method: 'POST', token, body: input })
 }
 
+export async function updateCostBudget(token: string, id: string, input: CreateCostBudgetInput): Promise<CostBudget> {
+  return apiRequest<CostBudget>(`/costing/budgets/${id}`, { method: 'PATCH', token, body: input })
+}
+
+export async function voidCostBudget(token: string, id: string): Promise<CostBudget> {
+  return apiRequest<CostBudget>(`/costing/budgets/${id}/void`, { method: 'POST', token })
+}
+
 export async function listCostLedgerEntries(token: string): Promise<CostLedgerEntry[]> {
   return apiRequest<CostLedgerEntry[]>('/costing/ledger-entries', { token })
 }
 
 export async function createCostLedgerEntry(token: string, input: CreateCostLedgerEntryInput): Promise<CostLedgerEntry> {
   return apiRequest<CostLedgerEntry>('/costing/ledger-entries', { method: 'POST', token, body: input })
+}
+
+export async function updateCostLedgerEntry(token: string, id: string, input: CreateCostLedgerEntryInput): Promise<CostLedgerEntry> {
+  return apiRequest<CostLedgerEntry>(`/costing/ledger-entries/${id}`, { method: 'PATCH', token, body: input })
+}
+
+export async function voidCostLedgerEntry(token: string, id: string): Promise<CostLedgerEntry> {
+  return apiRequest<CostLedgerEntry>(`/costing/ledger-entries/${id}/void`, { method: 'POST', token })
 }
 
 export async function getCostSummary(token: string): Promise<CostSummary> {
@@ -1262,6 +1362,175 @@ export interface FinanceImportRecord {
 export interface FinanceImportResult {
   batch: FinanceImportBatch
   records: FinanceImportRecord[]
+}
+
+export interface FinanceSettlementLine {
+  id: string
+  settlement_order_id: string
+  line_type: string
+  source_type: string
+  source_id?: string
+  deliverable_id?: string
+  description: string
+  quantity: number
+  unit_price: number
+  amount: number
+  tax_amount: number
+  total_amount: number
+  metadata: Record<string, unknown>
+  created_at: string
+}
+
+export interface FinanceSettlementOrder {
+  id: string
+  settlement_number: string
+  project_id?: string
+  requirement_id?: string
+  deliverable_id?: string
+  customer_id: string
+  customer_name: string
+  title: string
+  description: string
+  subtotal: number
+  tax_amount: number
+  total_amount: number
+  currency: string
+  settlement_date?: string
+  due_date?: string
+  status: string
+  receivable_id?: string
+  metadata: Record<string, unknown>
+  lines?: FinanceSettlementLine[]
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateFinanceSettlementOrderInput {
+  settlement_number?: string
+  project_id?: string
+  requirement_id?: string
+  deliverable_id?: string
+  customer_id?: string
+  customer_name?: string
+  title?: string
+  description?: string
+  currency?: string
+  settlement_date?: string
+  due_date?: string
+  status?: string
+  metadata?: Record<string, unknown>
+  lines?: Array<{
+    line_type?: string
+    source_type?: string
+    source_id?: string
+    deliverable_id?: string
+    description?: string
+    quantity?: number
+    unit_price?: number
+    amount: number
+    tax_amount?: number
+    metadata?: Record<string, unknown>
+  }>
+}
+
+export interface FinanceReceivable {
+  id: string
+  receivable_type: string
+  settlement_order_id?: string
+  source_type: string
+  source_id?: string
+  external_receivable_id: string
+  invoice_number: string
+  customer_id: string
+  customer_name: string
+  project_id?: string
+  requirement_id?: string
+  organization_id?: string
+  department_id?: string
+  account_code: string
+  account_name: string
+  amount: number
+  tax_amount: number
+  currency: string
+  period_start?: string
+  period_end?: string
+  invoice_date?: string
+  due_date?: string
+  status: string
+  received_amount: number
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateFinanceReceivableInput {
+  receivable_type?: string
+  settlement_order_id?: string
+  source_type?: string
+  source_id?: string
+  external_receivable_id?: string
+  invoice_number?: string
+  customer_id?: string
+  customer_name?: string
+  project_id?: string
+  requirement_id?: string
+  amount: number
+  tax_amount?: number
+  currency?: string
+  invoice_date?: string
+  due_date?: string
+  status?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface FinanceReceipt {
+  id: string
+  receipt_number: string
+  external_receipt_id: string
+  payment_method: string
+  payer_account: string
+  receiver_account: string
+  customer_id: string
+  customer_name: string
+  amount: number
+  currency: string
+  received_at?: string
+  status: string
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateFinanceReceiptInput {
+  receipt_number?: string
+  external_receipt_id?: string
+  payment_method?: string
+  payer_account?: string
+  receiver_account?: string
+  customer_id?: string
+  customer_name?: string
+  amount: number
+  currency?: string
+  received_at?: string
+  status?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface AllocateFinanceReceiptInput {
+  receivable_id: string
+  amount: number
+  currency?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface FinanceReceiptAllocation {
+  id: string
+  receipt_id: string
+  receivable_id: string
+  amount: number
+  currency: string
+  metadata: Record<string, unknown>
+  created_at: string
 }
 
 export interface FinancePayable {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -711,6 +712,541 @@ func (r *PostgresRepository) AllocatePayment(ctx context.Context, paymentID uuid
 	return allocation, nil
 }
 
+func (r *PostgresRepository) CreateSettlementOrder(ctx context.Context, input CreateSettlementOrderInput) (*SettlementOrder, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin finance settlement order: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
+	subtotal, taxAmount := settlementTotals(input.Lines)
+	order := &SettlementOrder{}
+	err = scanSettlementOrder(tx.QueryRow(ctx, `
+		INSERT INTO finance_settlement_orders (
+			settlement_number, project_id, requirement_id, deliverable_id, customer_id, customer_name,
+			title, description, subtotal, tax_amount, total_amount, currency, settlement_date,
+			due_date, status, metadata
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		RETURNING id, settlement_number, project_id, requirement_id, deliverable_id, customer_id,
+		          customer_name, title, description, subtotal::float8, tax_amount::float8,
+		          total_amount::float8, currency, settlement_date, due_date, status, receivable_id,
+		          metadata, created_at, updated_at
+	`, input.SettlementNumber, input.ProjectID, input.RequirementID, input.DeliverableID, input.CustomerID,
+		input.CustomerName, input.Title, input.Description, subtotal, taxAmount, subtotal+taxAmount,
+		input.Currency, parseDateForSQL(input.SettlementDate), parseDateForSQL(input.DueDate), input.Status,
+		mustJSON(input.Metadata)), order)
+	if err != nil {
+		return nil, fmt.Errorf("create finance settlement order: %w", err)
+	}
+	lines, err := r.replaceSettlementLines(ctx, tx, order.ID, input.Lines)
+	if err != nil {
+		return nil, err
+	}
+	order.Lines = lines
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit finance settlement order: %w", err)
+	}
+	return order, nil
+}
+
+func (r *PostgresRepository) ListSettlementOrders(ctx context.Context, limit int) ([]SettlementOrder, error) {
+	rows, err := r.db.Query(ctx, settlementOrderSelectSQL()+` ORDER BY created_at DESC LIMIT $1`, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list finance settlement orders: %w", err)
+	}
+	defer rows.Close()
+	items := []SettlementOrder{}
+	for rows.Next() {
+		var item SettlementOrder
+		if err := scanSettlementOrder(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan finance settlement order: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) GetSettlementOrder(ctx context.Context, id uuid.UUID) (*SettlementOrder, error) {
+	order := &SettlementOrder{}
+	if err := scanSettlementOrder(r.db.QueryRow(ctx, settlementOrderSelectSQL()+` WHERE id = $1`, id), order); err != nil {
+		return nil, fmt.Errorf("get finance settlement order: %w", err)
+	}
+	lines, err := r.listSettlementLines(ctx, r.db, id)
+	if err != nil {
+		return nil, err
+	}
+	order.Lines = lines
+	return order, nil
+}
+
+func (r *PostgresRepository) UpdateSettlementOrder(ctx context.Context, id uuid.UUID, input UpdateSettlementOrderInput) (*SettlementOrder, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin update finance settlement order: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	subtotal, taxAmount := settlementTotals(input.Lines)
+	var total any
+	if len(input.Lines) > 0 {
+		total = subtotal + taxAmount
+	}
+	order := &SettlementOrder{}
+	err = scanSettlementOrder(tx.QueryRow(ctx, `
+		UPDATE finance_settlement_orders
+		SET settlement_number = COALESCE($2, settlement_number),
+		    project_id = COALESCE($3, project_id),
+		    requirement_id = COALESCE($4, requirement_id),
+		    deliverable_id = COALESCE($5, deliverable_id),
+		    customer_id = COALESCE($6, customer_id),
+		    customer_name = COALESCE($7, customer_name),
+		    title = COALESCE($8, title),
+		    description = COALESCE($9, description),
+		    subtotal = COALESCE($10, subtotal),
+		    tax_amount = COALESCE($11, tax_amount),
+		    total_amount = COALESCE($12, total_amount),
+		    currency = COALESCE($13, currency),
+		    settlement_date = COALESCE($14, settlement_date),
+		    due_date = COALESCE($15, due_date),
+		    status = COALESCE($16, status),
+		    metadata = CASE WHEN $17::jsonb IS NULL THEN metadata ELSE $17::jsonb END,
+		    updated_at = NOW()
+		WHERE id = $1 AND status <> 'posted'
+		RETURNING id, settlement_number, project_id, requirement_id, deliverable_id, customer_id,
+		          customer_name, title, description, subtotal::float8, tax_amount::float8,
+		          total_amount::float8, currency, settlement_date, due_date, status, receivable_id,
+		          metadata, created_at, updated_at
+	`, id, input.SettlementNumber, input.ProjectID, input.RequirementID, input.DeliverableID,
+		input.CustomerID, input.CustomerName, input.Title, input.Description, nullableFloat(len(input.Lines), subtotal),
+		nullableFloat(len(input.Lines), taxAmount), total, input.Currency, parseOptionalDateForSQL(input.SettlementDate),
+		parseOptionalDateForSQL(input.DueDate), input.Status, nullableJSON(input.Metadata)), order)
+	if err != nil {
+		return nil, fmt.Errorf("update finance settlement order: %w", err)
+	}
+	if len(input.Lines) > 0 {
+		lines, err := r.replaceSettlementLines(ctx, tx, id, input.Lines)
+		if err != nil {
+			return nil, err
+		}
+		order.Lines = lines
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit update finance settlement order: %w", err)
+	}
+	return order, nil
+}
+
+func (r *PostgresRepository) VoidSettlementOrder(ctx context.Context, id uuid.UUID, reason string) (*SettlementOrder, error) {
+	order := &SettlementOrder{}
+	err := scanSettlementOrder(r.db.QueryRow(ctx, settlementOrderSelectSQL()+`
+		WHERE id = $1 AND status <> 'posted'
+	`, id), order)
+	if err != nil {
+		return nil, fmt.Errorf("void finance settlement order read: %w", err)
+	}
+	err = scanSettlementOrder(r.db.QueryRow(ctx, `
+		UPDATE finance_settlement_orders
+		SET status = 'void',
+		    metadata = metadata || $2::jsonb,
+		    updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, settlement_number, project_id, requirement_id, deliverable_id, customer_id,
+		          customer_name, title, description, subtotal::float8, tax_amount::float8,
+		          total_amount::float8, currency, settlement_date, due_date, status, receivable_id,
+		          metadata, created_at, updated_at
+	`, id, mustJSON(map[string]any{"void_reason": reason})), order)
+	if err != nil {
+		return nil, fmt.Errorf("void finance settlement order: %w", err)
+	}
+	return order, nil
+}
+
+func (r *PostgresRepository) PostSettlementOrder(ctx context.Context, id uuid.UUID) (*Receivable, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin post finance settlement order: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	order := &SettlementOrder{}
+	if err := scanSettlementOrder(tx.QueryRow(ctx, settlementOrderSelectSQL()+` WHERE id = $1 FOR UPDATE`, id), order); err != nil {
+		return nil, fmt.Errorf("get finance settlement order for posting: %w", err)
+	}
+	if order.ReceivableID != nil {
+		receivable := &Receivable{}
+		if err := scanReceivable(tx.QueryRow(ctx, receivableSelectSQL()+` WHERE id = $1`, *order.ReceivableID), receivable); err != nil {
+			return nil, fmt.Errorf("get existing finance receivable: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return nil, fmt.Errorf("commit idempotent settlement post: %w", err)
+		}
+		return receivable, nil
+	}
+	lines, err := r.listSettlementLines(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	receivable := &Receivable{}
+	err = scanReceivable(tx.QueryRow(ctx, `
+		INSERT INTO finance_receivables (
+			receivable_type, settlement_order_id, source_type, source_id, customer_id, customer_name,
+			project_id, requirement_id, amount, tax_amount, currency, due_date, status, metadata
+		)
+		VALUES ('project', $1, 'settlement_order', $1, $2, $3, $4, $5, $6, $7, $8, $9, 'unpaid', $10)
+		RETURNING id, receivable_type, settlement_order_id, source_type, source_id,
+		          external_receivable_id, invoice_number, customer_id, customer_name, project_id,
+		          requirement_id, organization_id, department_id, account_code, account_name,
+		          amount::float8, tax_amount::float8, currency, period_start, period_end,
+		          invoice_date, due_date, status, received_amount::float8, metadata, created_at, updated_at
+	`, order.ID, order.CustomerID, order.CustomerName, order.ProjectID, order.RequirementID,
+		order.TotalAmount, order.TaxAmount, order.Currency, order.DueDate,
+		mustJSON(map[string]any{"posted_from": "settlement_order"})), receivable)
+	if err != nil {
+		return nil, fmt.Errorf("create receivable from settlement: %w", err)
+	}
+	for _, line := range lines {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO finance_receivable_lines (
+				receivable_id, settlement_line_id, line_type, description, amount, tax_amount, total_amount, metadata
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`, receivable.ID, line.ID, line.LineType, line.Description, line.Amount, line.TaxAmount, line.TotalAmount, mustJSON(line.Metadata)); err != nil {
+			return nil, fmt.Errorf("create receivable line from settlement: %w", err)
+		}
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE finance_settlement_orders
+		SET status = 'posted', receivable_id = $2, updated_at = NOW()
+		WHERE id = $1
+	`, order.ID, receivable.ID); err != nil {
+		return nil, fmt.Errorf("mark settlement posted: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit settlement posting: %w", err)
+	}
+	return receivable, nil
+}
+
+func (r *PostgresRepository) CreateReceivable(ctx context.Context, input CreateReceivableInput, dates financeExpenseDates) (*Receivable, error) {
+	receivable := &Receivable{}
+	err := scanReceivable(r.db.QueryRow(ctx, receivableInsertSQL()+`
+		RETURNING id, receivable_type, settlement_order_id, source_type, source_id,
+		          external_receivable_id, invoice_number, customer_id, customer_name, project_id,
+		          requirement_id, organization_id, department_id, account_code, account_name,
+		          amount::float8, tax_amount::float8, currency, period_start, period_end,
+		          invoice_date, due_date, status, received_amount::float8, metadata, created_at, updated_at
+	`, receivableInsertArgs(input, dates)...), receivable)
+	if err != nil {
+		return nil, fmt.Errorf("create finance receivable: %w", err)
+	}
+	return receivable, nil
+}
+
+func (r *PostgresRepository) ListReceivables(ctx context.Context, limit int) ([]Receivable, error) {
+	rows, err := r.db.Query(ctx, receivableSelectSQL()+` ORDER BY created_at DESC LIMIT $1`, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list finance receivables: %w", err)
+	}
+	defer rows.Close()
+	items := []Receivable{}
+	for rows.Next() {
+		var item Receivable
+		if err := scanReceivable(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan finance receivable: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) GetReceivable(ctx context.Context, id uuid.UUID) (*Receivable, error) {
+	receivable := &Receivable{}
+	if err := scanReceivable(r.db.QueryRow(ctx, receivableSelectSQL()+` WHERE id = $1`, id), receivable); err != nil {
+		return nil, fmt.Errorf("get finance receivable: %w", err)
+	}
+	return receivable, nil
+}
+
+func (r *PostgresRepository) UpdateReceivable(ctx context.Context, id uuid.UUID, input UpdateReceivableInput, dates financeExpenseDates) (*Receivable, error) {
+	update := CreateReceivableInput(input)
+	receivable := &Receivable{}
+	err := scanReceivable(r.db.QueryRow(ctx, `
+		UPDATE finance_receivables
+		SET receivable_type = COALESCE(NULLIF($2, ''), receivable_type),
+		    external_receivable_id = COALESCE(NULLIF($3, ''), external_receivable_id),
+		    invoice_number = COALESCE(NULLIF($4, ''), invoice_number),
+		    customer_id = COALESCE(NULLIF($5, ''), customer_id),
+		    customer_name = COALESCE(NULLIF($6, ''), customer_name),
+		    amount = CASE WHEN $7::numeric = 0 THEN amount ELSE $7 END,
+		    tax_amount = $8,
+		    currency = COALESCE(NULLIF($9, ''), currency),
+		    period_start = COALESCE($10, period_start),
+		    period_end = COALESCE($11, period_end),
+		    invoice_date = COALESCE($12, invoice_date),
+		    due_date = COALESCE($13, due_date),
+		    status = COALESCE(NULLIF($14, ''), status),
+		    metadata = CASE WHEN $15::jsonb IS NULL THEN metadata ELSE $15::jsonb END,
+		    updated_at = NOW()
+		WHERE id = $1 AND status <> 'paid'
+		RETURNING id, receivable_type, settlement_order_id, source_type, source_id,
+		          external_receivable_id, invoice_number, customer_id, customer_name, project_id,
+		          requirement_id, organization_id, department_id, account_code, account_name,
+		          amount::float8, tax_amount::float8, currency, period_start, period_end,
+		          invoice_date, due_date, status, received_amount::float8, metadata, created_at, updated_at
+	`, id, update.ReceivableType, update.ExternalReceivableID, update.InvoiceNumber, update.CustomerID,
+		update.CustomerName, update.Amount, update.TaxAmount, update.Currency, dates.PeriodStart,
+		dates.PeriodEnd, dates.InvoiceDate, dates.PaymentDueDate, update.Status, nullableJSON(update.Metadata)), receivable)
+	if err != nil {
+		return nil, fmt.Errorf("update finance receivable: %w", err)
+	}
+	return receivable, nil
+}
+
+func (r *PostgresRepository) UpdateReceivableStatus(ctx context.Context, id uuid.UUID, status string) (*Receivable, error) {
+	receivable := &Receivable{}
+	err := scanReceivable(r.db.QueryRow(ctx, `
+		UPDATE finance_receivables
+		SET status = $2, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, receivable_type, settlement_order_id, source_type, source_id,
+		          external_receivable_id, invoice_number, customer_id, customer_name, project_id,
+		          requirement_id, organization_id, department_id, account_code, account_name,
+		          amount::float8, tax_amount::float8, currency, period_start, period_end,
+		          invoice_date, due_date, status, received_amount::float8, metadata, created_at, updated_at
+	`, id, status), receivable)
+	if err != nil {
+		return nil, fmt.Errorf("update finance receivable status: %w", err)
+	}
+	return receivable, nil
+}
+
+func (r *PostgresRepository) VoidReceivable(ctx context.Context, id uuid.UUID, reason string) (*Receivable, error) {
+	receivable := &Receivable{}
+	err := scanReceivable(r.db.QueryRow(ctx, `
+		UPDATE finance_receivables
+		SET status = 'void',
+		    metadata = metadata || $2::jsonb,
+		    updated_at = NOW()
+		WHERE id = $1 AND received_amount = 0
+		RETURNING id, receivable_type, settlement_order_id, source_type, source_id,
+		          external_receivable_id, invoice_number, customer_id, customer_name, project_id,
+		          requirement_id, organization_id, department_id, account_code, account_name,
+		          amount::float8, tax_amount::float8, currency, period_start, period_end,
+		          invoice_date, due_date, status, received_amount::float8, metadata, created_at, updated_at
+	`, id, mustJSON(map[string]any{"void_reason": reason})), receivable)
+	if err != nil {
+		return nil, fmt.Errorf("void finance receivable: %w", err)
+	}
+	return receivable, nil
+}
+
+func (r *PostgresRepository) CreateReceipt(ctx context.Context, input CreateReceiptInput, receivedAt *time.Time) (*Receipt, error) {
+	receipt := &Receipt{}
+	err := scanReceipt(r.db.QueryRow(ctx, `
+		INSERT INTO finance_receipts (
+			receipt_number, external_receipt_id, payment_method, payer_account, receiver_account,
+			customer_id, customer_name, amount, currency, received_at, status, metadata
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id, receipt_number, external_receipt_id, payment_method, payer_account,
+		          receiver_account, customer_id, customer_name, amount::float8, currency,
+		          received_at, status, metadata, created_at, updated_at
+	`, input.ReceiptNumber, input.ExternalReceiptID, input.PaymentMethod, input.PayerAccount,
+		input.ReceiverAccount, input.CustomerID, input.CustomerName, input.Amount, input.Currency,
+		receivedAt, input.Status, mustJSON(input.Metadata)), receipt)
+	if err != nil {
+		return nil, fmt.Errorf("create finance receipt: %w", err)
+	}
+	return receipt, nil
+}
+
+func (r *PostgresRepository) ListReceipts(ctx context.Context, limit int) ([]Receipt, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, receipt_number, external_receipt_id, payment_method, payer_account,
+		       receiver_account, customer_id, customer_name, amount::float8, currency,
+		       received_at, status, metadata, created_at, updated_at
+		FROM finance_receipts
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list finance receipts: %w", err)
+	}
+	defer rows.Close()
+	items := []Receipt{}
+	for rows.Next() {
+		var item Receipt
+		if err := scanReceipt(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan finance receipt: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) AllocateReceipt(ctx context.Context, receiptID uuid.UUID, input AllocateReceiptInput) (*ReceiptAllocation, error) {
+	tx, err := r.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin finance receipt allocation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+	allocation := &ReceiptAllocation{}
+	err = scanReceiptAllocation(tx.QueryRow(ctx, `
+		INSERT INTO finance_receipt_allocations(receipt_id, receivable_id, amount, currency, metadata)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, receipt_id, receivable_id, amount::float8, currency, metadata, created_at
+	`, receiptID, input.ReceivableID, input.Amount, input.Currency, mustJSON(input.Metadata)), allocation)
+	if err != nil {
+		return nil, fmt.Errorf("create finance receipt allocation: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE finance_receivables
+		SET received_amount = received_amount + $2,
+		    status = CASE
+		        WHEN received_amount + $2 >= amount THEN 'paid'
+		        WHEN received_amount + $2 > 0 THEN 'partially_received'
+		        ELSE status
+		    END,
+		    updated_at = NOW()
+		WHERE id = $1
+	`, input.ReceivableID, input.Amount); err != nil {
+		return nil, fmt.Errorf("update receivable received amount: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE finance_receipts
+		SET status = 'allocated', updated_at = NOW()
+		WHERE id = $1
+	`, receiptID); err != nil {
+		return nil, fmt.Errorf("mark receipt allocated: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit finance receipt allocation: %w", err)
+	}
+	return allocation, nil
+}
+
+func (r *PostgresRepository) GetPayable(ctx context.Context, id uuid.UUID) (*Payable, error) {
+	payable := &Payable{}
+	if err := scanPayable(r.db.QueryRow(ctx, payableSelectSQL()+` WHERE id = $1`, id), payable); err != nil {
+		return nil, fmt.Errorf("get finance payable: %w", err)
+	}
+	return payable, nil
+}
+
+func (r *PostgresRepository) UpdatePayable(ctx context.Context, id uuid.UUID, input UpdatePayableInput, dates financeExpenseDates) (*Payable, error) {
+	update := CreatePayableInput(input)
+	payable := &Payable{}
+	err := scanPayable(r.db.QueryRow(ctx, `
+		UPDATE finance_payables
+		SET payable_type = COALESCE(NULLIF($2, ''), payable_type),
+		    external_payable_id = COALESCE(NULLIF($3, ''), external_payable_id),
+		    invoice_number = COALESCE(NULLIF($4, ''), invoice_number),
+		    vendor_id = COALESCE(NULLIF($5, ''), vendor_id),
+		    vendor_name = COALESCE(NULLIF($6, ''), vendor_name),
+		    employee_id = COALESCE(NULLIF($7, ''), employee_id),
+		    employee_name = COALESCE(NULLIF($8, ''), employee_name),
+		    amount = CASE WHEN $9::numeric = 0 THEN amount ELSE $9 END,
+		    tax_amount = $10,
+		    currency = COALESCE(NULLIF($11, ''), currency),
+		    period_start = COALESCE($12, period_start),
+		    period_end = COALESCE($13, period_end),
+		    invoice_date = COALESCE($14, invoice_date),
+		    due_date = COALESCE($15, due_date),
+		    status = COALESCE(NULLIF($16, ''), status),
+		    metadata = CASE WHEN $17::jsonb IS NULL THEN metadata ELSE $17::jsonb END,
+		    updated_at = NOW()
+		WHERE id = $1 AND paid_amount = 0
+		RETURNING id, payable_type, source_type, source_id, external_payable_id, invoice_number,
+		          vendor_id, vendor_name, employee_id, employee_name, agent_id, project_id,
+		          organization_id, department_id, account_code, account_name, cost_center_code,
+		          cost_center_name, amount::float8, tax_amount::float8, currency, period_start,
+		          period_end, invoice_date, due_date, status, paid_amount::float8, metadata,
+		          created_at, updated_at
+	`, id, update.PayableType, update.ExternalPayableID, update.InvoiceNumber, update.VendorID,
+		update.VendorName, update.EmployeeID, update.EmployeeName, update.Amount, update.TaxAmount,
+		update.Currency, dates.PeriodStart, dates.PeriodEnd, dates.InvoiceDate, dates.PaymentDueDate,
+		update.Status, nullableJSON(update.Metadata)), payable)
+	if err != nil {
+		return nil, fmt.Errorf("update finance payable: %w", err)
+	}
+	return payable, nil
+}
+
+func (r *PostgresRepository) VoidPayable(ctx context.Context, id uuid.UUID, reason string) (*Payable, error) {
+	payable := &Payable{}
+	err := scanPayable(r.db.QueryRow(ctx, `
+		UPDATE finance_payables
+		SET status = 'void', void_reason = $2, updated_at = NOW()
+		WHERE id = $1 AND paid_amount = 0
+		RETURNING id, payable_type, source_type, source_id, external_payable_id, invoice_number,
+		          vendor_id, vendor_name, employee_id, employee_name, agent_id, project_id,
+		          organization_id, department_id, account_code, account_name, cost_center_code,
+		          cost_center_name, amount::float8, tax_amount::float8, currency, period_start,
+		          period_end, invoice_date, due_date, status, paid_amount::float8, metadata,
+		          created_at, updated_at
+	`, id, reason), payable)
+	if err != nil {
+		return nil, fmt.Errorf("void finance payable: %w", err)
+	}
+	return payable, nil
+}
+
+func (r *PostgresRepository) GetPayment(ctx context.Context, id uuid.UUID) (*Payment, error) {
+	payment := &Payment{}
+	if err := scanPayment(r.db.QueryRow(ctx, paymentSelectSQL()+` WHERE id = $1`, id), payment); err != nil {
+		return nil, fmt.Errorf("get finance payment: %w", err)
+	}
+	return payment, nil
+}
+
+func (r *PostgresRepository) UpdatePayment(ctx context.Context, id uuid.UUID, input UpdatePaymentInput, paidAt *time.Time) (*Payment, error) {
+	update := CreatePaymentInput(input)
+	payment := &Payment{}
+	err := scanPayment(r.db.QueryRow(ctx, `
+		UPDATE finance_payments
+		SET payment_number = COALESCE(NULLIF($2, ''), payment_number),
+		    external_payment_id = COALESCE(NULLIF($3, ''), external_payment_id),
+		    payment_method = COALESCE(NULLIF($4, ''), payment_method),
+		    payer_account = COALESCE(NULLIF($5, ''), payer_account),
+		    payee_account = COALESCE(NULLIF($6, ''), payee_account),
+		    vendor_id = COALESCE(NULLIF($7, ''), vendor_id),
+		    vendor_name = COALESCE(NULLIF($8, ''), vendor_name),
+		    employee_id = COALESCE(NULLIF($9, ''), employee_id),
+		    employee_name = COALESCE(NULLIF($10, ''), employee_name),
+		    amount = CASE WHEN $11::numeric = 0 THEN amount ELSE $11 END,
+		    currency = COALESCE(NULLIF($12, ''), currency),
+		    paid_at = COALESCE($13, paid_at),
+		    status = COALESCE(NULLIF($14, ''), status),
+		    metadata = CASE WHEN $15::jsonb IS NULL THEN metadata ELSE $15::jsonb END,
+		    updated_at = NOW()
+		WHERE id = $1 AND status <> 'allocated'
+		RETURNING id, payment_number, external_payment_id, payment_method, payer_account, payee_account,
+		          vendor_id, vendor_name, employee_id, employee_name, amount::float8, currency,
+		          paid_at, status, metadata, created_at, updated_at
+	`, id, update.PaymentNumber, update.ExternalPaymentID, update.PaymentMethod, update.PayerAccount,
+		update.PayeeAccount, update.VendorID, update.VendorName, update.EmployeeID, update.EmployeeName,
+		update.Amount, update.Currency, paidAt, update.Status, nullableJSON(update.Metadata)), payment)
+	if err != nil {
+		return nil, fmt.Errorf("update finance payment: %w", err)
+	}
+	return payment, nil
+}
+
+func (r *PostgresRepository) VoidPayment(ctx context.Context, id uuid.UUID, reason string) (*Payment, error) {
+	payment := &Payment{}
+	err := scanPayment(r.db.QueryRow(ctx, `
+		UPDATE finance_payments
+		SET status = 'void', void_reason = $2, updated_at = NOW()
+		WHERE id = $1 AND status <> 'allocated'
+		RETURNING id, payment_number, external_payment_id, payment_method, payer_account, payee_account,
+		          vendor_id, vendor_name, employee_id, employee_name, amount::float8, currency,
+		          paid_at, status, metadata, created_at, updated_at
+	`, id, reason), payment)
+	if err != nil {
+		return nil, fmt.Errorf("void finance payment: %w", err)
+	}
+	return payment, nil
+}
+
 type batchStore interface {
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -833,6 +1369,110 @@ func payableSelectSQL() string {
 	        FROM finance_payables`
 }
 
+func paymentSelectSQL() string {
+	return `SELECT id, payment_number, external_payment_id, payment_method, payer_account, payee_account,
+		          vendor_id, vendor_name, employee_id, employee_name, amount::float8, currency,
+		          paid_at, status, metadata, created_at, updated_at
+	        FROM finance_payments`
+}
+
+func settlementOrderSelectSQL() string {
+	return `SELECT id, settlement_number, project_id, requirement_id, deliverable_id, customer_id,
+		          customer_name, title, description, subtotal::float8, tax_amount::float8,
+		          total_amount::float8, currency, settlement_date, due_date, status, receivable_id,
+		          metadata, created_at, updated_at
+	        FROM finance_settlement_orders`
+}
+
+func receivableSelectSQL() string {
+	return `SELECT id, receivable_type, settlement_order_id, source_type, source_id,
+		          external_receivable_id, invoice_number, customer_id, customer_name, project_id,
+		          requirement_id, organization_id, department_id, account_code, account_name,
+		          amount::float8, tax_amount::float8, currency, period_start, period_end,
+		          invoice_date, due_date, status, received_amount::float8, metadata, created_at, updated_at
+	        FROM finance_receivables`
+}
+
+func receivableInsertSQL() string {
+	return `INSERT INTO finance_receivables (
+			receivable_type, settlement_order_id, source_type, source_id, external_receivable_id,
+			invoice_number, customer_id, customer_name, project_id, requirement_id, organization_id,
+			department_id, account_code, account_name, amount, tax_amount, currency, period_start,
+			period_end, invoice_date, due_date, status, metadata
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+		        $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)`
+}
+
+func receivableInsertArgs(input CreateReceivableInput, dates financeExpenseDates) []any {
+	return []any{
+		input.ReceivableType, input.SettlementOrderID, input.SourceType, input.SourceID,
+		input.ExternalReceivableID, input.InvoiceNumber, input.CustomerID, input.CustomerName,
+		input.ProjectID, input.RequirementID, input.OrganizationID, input.DepartmentID,
+		input.AccountCode, input.AccountName, input.Amount, input.TaxAmount, input.Currency,
+		dates.PeriodStart, dates.PeriodEnd, dates.InvoiceDate, dates.PaymentDueDate,
+		input.Status, mustJSON(input.Metadata),
+	}
+}
+
+type settlementStore interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+func (r *PostgresRepository) replaceSettlementLines(ctx context.Context, store settlementStore, orderID uuid.UUID, inputs []CreateSettlementLineInput) ([]SettlementLine, error) {
+	if _, err := store.Exec(ctx, `DELETE FROM finance_settlement_lines WHERE settlement_order_id = $1`, orderID); err != nil {
+		return nil, fmt.Errorf("clear finance settlement lines: %w", err)
+	}
+	lines := []SettlementLine{}
+	for _, input := range inputs {
+		total := input.Amount + input.TaxAmount
+		line := SettlementLine{}
+		err := scanSettlementLine(store.QueryRow(ctx, `
+			INSERT INTO finance_settlement_lines (
+				settlement_order_id, line_type, source_type, source_id, deliverable_id, description,
+				quantity, unit_price, amount, tax_amount, total_amount, metadata
+			)
+			VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+			RETURNING id, settlement_order_id, line_type, source_type, source_id, deliverable_id,
+			          description, quantity::float8, unit_price::float8, amount::float8,
+			          tax_amount::float8, total_amount::float8, metadata, created_at
+		`, orderID, input.LineType, input.SourceType, input.SourceID, input.DeliverableID,
+			input.Description, input.Quantity, input.UnitPrice, input.Amount, input.TaxAmount,
+			total, mustJSON(input.Metadata)), &line)
+		if err != nil {
+			return nil, fmt.Errorf("create finance settlement line: %w", err)
+		}
+		lines = append(lines, line)
+	}
+	return lines, nil
+}
+
+func (r *PostgresRepository) listSettlementLines(ctx context.Context, store batchStore, orderID uuid.UUID) ([]SettlementLine, error) {
+	rows, err := store.Query(ctx, `
+		SELECT id, settlement_order_id, line_type, source_type, source_id, deliverable_id,
+		       description, quantity::float8, unit_price::float8, amount::float8,
+		       tax_amount::float8, total_amount::float8, metadata, created_at
+		FROM finance_settlement_lines
+		WHERE settlement_order_id = $1
+		ORDER BY created_at ASC
+	`, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("list finance settlement lines: %w", err)
+	}
+	defer rows.Close()
+	lines := []SettlementLine{}
+	for rows.Next() {
+		var line SettlementLine
+		if err := scanSettlementLine(rows, &line); err != nil {
+			return nil, fmt.Errorf("scan finance settlement line: %w", err)
+		}
+		lines = append(lines, line)
+	}
+	return lines, rows.Err()
+}
+
 type exportableCostRow struct {
 	UsageLedgerID      *uuid.UUID
 	CostLedgerEntryID  uuid.UUID
@@ -930,6 +1570,57 @@ func scanImportRecord(row scanner, record *ImportRecord) error {
 	return json.Unmarshal(metadataJSON, &record.Metadata)
 }
 
+func scanSettlementOrder(row scanner, order *SettlementOrder) error {
+	var metadataJSON []byte
+	var projectID, requirementID, deliverableID, receivableID pgtype.UUID
+	if err := row.Scan(&order.ID, &order.SettlementNumber, &projectID, &requirementID,
+		&deliverableID, &order.CustomerID, &order.CustomerName, &order.Title, &order.Description,
+		&order.Subtotal, &order.TaxAmount, &order.TotalAmount, &order.Currency,
+		&order.SettlementDate, &order.DueDate, &order.Status, &receivableID, &metadataJSON,
+		&order.CreatedAt, &order.UpdatedAt); err != nil {
+		return err
+	}
+	order.ProjectID = uuidPtr(projectID)
+	order.RequirementID = uuidPtr(requirementID)
+	order.DeliverableID = uuidPtr(deliverableID)
+	order.ReceivableID = uuidPtr(receivableID)
+	return json.Unmarshal(metadataJSON, &order.Metadata)
+}
+
+func scanSettlementLine(row scanner, line *SettlementLine) error {
+	var metadataJSON []byte
+	var sourceID, deliverableID pgtype.UUID
+	if err := row.Scan(&line.ID, &line.SettlementOrderID, &line.LineType, &line.SourceType,
+		&sourceID, &deliverableID, &line.Description, &line.Quantity, &line.UnitPrice,
+		&line.Amount, &line.TaxAmount, &line.TotalAmount, &metadataJSON, &line.CreatedAt); err != nil {
+		return err
+	}
+	line.SourceID = uuidPtr(sourceID)
+	line.DeliverableID = uuidPtr(deliverableID)
+	return json.Unmarshal(metadataJSON, &line.Metadata)
+}
+
+func scanReceivable(row scanner, receivable *Receivable) error {
+	var metadataJSON []byte
+	var settlementOrderID, sourceID, projectID, requirementID, organizationID, departmentID pgtype.UUID
+	if err := row.Scan(&receivable.ID, &receivable.ReceivableType, &settlementOrderID,
+		&receivable.SourceType, &sourceID, &receivable.ExternalReceivableID, &receivable.InvoiceNumber,
+		&receivable.CustomerID, &receivable.CustomerName, &projectID, &requirementID, &organizationID,
+		&departmentID, &receivable.AccountCode, &receivable.AccountName, &receivable.Amount,
+		&receivable.TaxAmount, &receivable.Currency, &receivable.PeriodStart, &receivable.PeriodEnd,
+		&receivable.InvoiceDate, &receivable.DueDate, &receivable.Status, &receivable.ReceivedAmount,
+		&metadataJSON, &receivable.CreatedAt, &receivable.UpdatedAt); err != nil {
+		return err
+	}
+	receivable.SettlementOrderID = uuidPtr(settlementOrderID)
+	receivable.SourceID = uuidPtr(sourceID)
+	receivable.ProjectID = uuidPtr(projectID)
+	receivable.RequirementID = uuidPtr(requirementID)
+	receivable.OrganizationID = uuidPtr(organizationID)
+	receivable.DepartmentID = uuidPtr(departmentID)
+	return json.Unmarshal(metadataJSON, &receivable.Metadata)
+}
+
 func scanPayable(row scanner, payable *Payable) error {
 	var metadataJSON []byte
 	var sourceID, agentID, projectID, organizationID, departmentID pgtype.UUID
@@ -962,9 +1653,30 @@ func scanPayment(row scanner, payment *Payment) error {
 	return json.Unmarshal(metadataJSON, &payment.Metadata)
 }
 
+func scanReceipt(row scanner, receipt *Receipt) error {
+	var metadataJSON []byte
+	if err := row.Scan(&receipt.ID, &receipt.ReceiptNumber, &receipt.ExternalReceiptID,
+		&receipt.PaymentMethod, &receipt.PayerAccount, &receipt.ReceiverAccount,
+		&receipt.CustomerID, &receipt.CustomerName, &receipt.Amount, &receipt.Currency,
+		&receipt.ReceivedAt, &receipt.Status, &metadataJSON, &receipt.CreatedAt,
+		&receipt.UpdatedAt); err != nil {
+		return err
+	}
+	return json.Unmarshal(metadataJSON, &receipt.Metadata)
+}
+
 func scanPaymentAllocation(row scanner, allocation *PaymentAllocation) error {
 	var metadataJSON []byte
 	if err := row.Scan(&allocation.ID, &allocation.PaymentID, &allocation.PayableID,
+		&allocation.Amount, &allocation.Currency, &metadataJSON, &allocation.CreatedAt); err != nil {
+		return err
+	}
+	return json.Unmarshal(metadataJSON, &allocation.Metadata)
+}
+
+func scanReceiptAllocation(row scanner, allocation *ReceiptAllocation) error {
+	var metadataJSON []byte
+	if err := row.Scan(&allocation.ID, &allocation.ReceiptID, &allocation.ReceivableID,
 		&allocation.Amount, &allocation.Currency, &metadataJSON, &allocation.CreatedAt); err != nil {
 		return err
 	}
@@ -1119,6 +1831,38 @@ func expensePayload(input FinanceExpenseInput) map[string]any {
 		"period_end":         input.PeriodEnd,
 		"metadata":           input.Metadata,
 	}
+}
+
+func settlementTotals(lines []CreateSettlementLineInput) (float64, float64) {
+	var subtotal float64
+	var taxAmount float64
+	for _, line := range lines {
+		subtotal += line.Amount
+		taxAmount += line.TaxAmount
+	}
+	return subtotal, taxAmount
+}
+
+func parseDateForSQL(value string) any {
+	parsed, err := time.Parse("2006-01-02", value)
+	if err != nil {
+		return nil
+	}
+	return parsed
+}
+
+func parseOptionalDateForSQL(value *string) any {
+	if value == nil {
+		return nil
+	}
+	return parseDateForSQL(*value)
+}
+
+func nullableFloat(count int, value float64) any {
+	if count == 0 {
+		return nil
+	}
+	return value
 }
 
 func uuidPtr(value pgtype.UUID) *uuid.UUID {

@@ -41,10 +41,31 @@ type Repository interface {
 	ListImportBatches(ctx context.Context, limit int) ([]ImportBatch, error)
 	ListImportRecords(ctx context.Context, limit int) ([]ImportRecord, error)
 	CreateImportedExpense(ctx context.Context, batchID uuid.UUID, adapterID uuid.UUID, raw map[string]any, input FinanceExpenseInput, occurredAt time.Time, dates financeExpenseDates) (*ImportRecord, error)
+	CreateSettlementOrder(ctx context.Context, input CreateSettlementOrderInput) (*SettlementOrder, error)
+	ListSettlementOrders(ctx context.Context, limit int) ([]SettlementOrder, error)
+	GetSettlementOrder(ctx context.Context, id uuid.UUID) (*SettlementOrder, error)
+	UpdateSettlementOrder(ctx context.Context, id uuid.UUID, input UpdateSettlementOrderInput) (*SettlementOrder, error)
+	VoidSettlementOrder(ctx context.Context, id uuid.UUID, reason string) (*SettlementOrder, error)
+	PostSettlementOrder(ctx context.Context, id uuid.UUID) (*Receivable, error)
+	CreateReceivable(ctx context.Context, input CreateReceivableInput, dates financeExpenseDates) (*Receivable, error)
+	ListReceivables(ctx context.Context, limit int) ([]Receivable, error)
+	GetReceivable(ctx context.Context, id uuid.UUID) (*Receivable, error)
+	UpdateReceivable(ctx context.Context, id uuid.UUID, input UpdateReceivableInput, dates financeExpenseDates) (*Receivable, error)
+	UpdateReceivableStatus(ctx context.Context, id uuid.UUID, status string) (*Receivable, error)
+	VoidReceivable(ctx context.Context, id uuid.UUID, reason string) (*Receivable, error)
+	CreateReceipt(ctx context.Context, input CreateReceiptInput, receivedAt *time.Time) (*Receipt, error)
+	ListReceipts(ctx context.Context, limit int) ([]Receipt, error)
+	AllocateReceipt(ctx context.Context, receiptID uuid.UUID, input AllocateReceiptInput) (*ReceiptAllocation, error)
 	CreatePayable(ctx context.Context, input CreatePayableInput, dates financeExpenseDates) (*Payable, error)
 	ListPayables(ctx context.Context, limit int) ([]Payable, error)
+	GetPayable(ctx context.Context, id uuid.UUID) (*Payable, error)
+	UpdatePayable(ctx context.Context, id uuid.UUID, input UpdatePayableInput, dates financeExpenseDates) (*Payable, error)
+	VoidPayable(ctx context.Context, id uuid.UUID, reason string) (*Payable, error)
 	CreatePayment(ctx context.Context, input CreatePaymentInput, paidAt *time.Time) (*Payment, error)
 	ListPayments(ctx context.Context, limit int) ([]Payment, error)
+	GetPayment(ctx context.Context, id uuid.UUID) (*Payment, error)
+	UpdatePayment(ctx context.Context, id uuid.UUID, input UpdatePaymentInput, paidAt *time.Time) (*Payment, error)
+	VoidPayment(ctx context.Context, id uuid.UUID, reason string) (*Payment, error)
 	AllocatePayment(ctx context.Context, paymentID uuid.UUID, input AllocatePaymentInput) (*PaymentAllocation, error)
 }
 
@@ -550,6 +571,163 @@ func (s *Service) ListImportRecords(ctx context.Context, limit int) ([]ImportRec
 	return items, err
 }
 
+func (s *Service) CreateSettlementOrder(ctx context.Context, input CreateSettlementOrderInput) (*SettlementOrder, error) {
+	normalizeSettlementOrderInput(&input)
+	if len(input.Lines) == 0 {
+		return nil, fmt.Errorf("%w: settlement lines are required", ErrValidation)
+	}
+	for i := range input.Lines {
+		normalizeSettlementLineInput(&input.Lines[i])
+		if input.Lines[i].Amount <= 0 {
+			return nil, fmt.Errorf("%w: settlement line amount must be greater than zero", ErrValidation)
+		}
+	}
+	return s.repo.CreateSettlementOrder(ctx, input)
+}
+
+func (s *Service) ListSettlementOrders(ctx context.Context, limit int) ([]SettlementOrder, error) {
+	items, err := s.repo.ListSettlementOrders(ctx, normalizeLimit(limit))
+	if items == nil {
+		items = []SettlementOrder{}
+	}
+	return items, err
+}
+
+func (s *Service) GetSettlementOrder(ctx context.Context, id uuid.UUID) (*SettlementOrder, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: settlement_order_id is required", ErrValidation)
+	}
+	return s.repo.GetSettlementOrder(ctx, id)
+}
+
+func (s *Service) UpdateSettlementOrder(ctx context.Context, id uuid.UUID, input UpdateSettlementOrderInput) (*SettlementOrder, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: settlement_order_id is required", ErrValidation)
+	}
+	for i := range input.Lines {
+		normalizeSettlementLineInput(&input.Lines[i])
+		if input.Lines[i].Amount <= 0 {
+			return nil, fmt.Errorf("%w: settlement line amount must be greater than zero", ErrValidation)
+		}
+	}
+	return s.repo.UpdateSettlementOrder(ctx, id, input)
+}
+
+func (s *Service) VoidSettlementOrder(ctx context.Context, id uuid.UUID, reason string) (*SettlementOrder, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: settlement_order_id is required", ErrValidation)
+	}
+	return s.repo.VoidSettlementOrder(ctx, id, strings.TrimSpace(reason))
+}
+
+func (s *Service) PostSettlementOrder(ctx context.Context, id uuid.UUID) (*Receivable, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: settlement_order_id is required", ErrValidation)
+	}
+	return s.repo.PostSettlementOrder(ctx, id)
+}
+
+func (s *Service) CreateReceivable(ctx context.Context, input CreateReceivableInput) (*Receivable, error) {
+	normalizeReceivableInput(&input)
+	if input.Amount <= 0 {
+		return nil, fmt.Errorf("%w: amount must be greater than zero", ErrValidation)
+	}
+	dates, err := datesFromReceivable(input)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.CreateReceivable(ctx, input, dates)
+}
+
+func (s *Service) ListReceivables(ctx context.Context, limit int) ([]Receivable, error) {
+	items, err := s.repo.ListReceivables(ctx, normalizeLimit(limit))
+	if items == nil {
+		items = []Receivable{}
+	}
+	return items, err
+}
+
+func (s *Service) UpdateReceivable(ctx context.Context, id uuid.UUID, input UpdateReceivableInput) (*Receivable, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: receivable_id is required", ErrValidation)
+	}
+	createInput := CreateReceivableInput(input)
+	normalizeReceivableInput(&createInput)
+	dates, err := datesFromReceivable(createInput)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.UpdateReceivable(ctx, id, input, dates)
+}
+
+func (s *Service) VoidReceivable(ctx context.Context, id uuid.UUID, reason string) (*Receivable, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: receivable_id is required", ErrValidation)
+	}
+	receivable, err := s.repo.GetReceivable(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if receivable.ReceivedAmount > 0 || receivable.Status == "paid" || receivable.Status == "partially_received" {
+		return nil, fmt.Errorf("%w: allocated receivable cannot be voided", ErrValidation)
+	}
+	return s.repo.VoidReceivable(ctx, id, strings.TrimSpace(reason))
+}
+
+func (s *Service) CreateReceipt(ctx context.Context, input CreateReceiptInput) (*Receipt, error) {
+	normalizeReceiptInput(&input)
+	if input.Amount <= 0 {
+		return nil, fmt.Errorf("%w: amount must be greater than zero", ErrValidation)
+	}
+	receivedAt, err := parseOptionalTime(input.ReceivedAt)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.CreateReceipt(ctx, input, receivedAt)
+}
+
+func (s *Service) ListReceipts(ctx context.Context, limit int) ([]Receipt, error) {
+	items, err := s.repo.ListReceipts(ctx, normalizeLimit(limit))
+	if items == nil {
+		items = []Receipt{}
+	}
+	return items, err
+}
+
+func (s *Service) AllocateReceipt(ctx context.Context, receiptID uuid.UUID, input AllocateReceiptInput) (*ReceiptAllocation, error) {
+	if receiptID == uuid.Nil || input.ReceivableID == uuid.Nil {
+		return nil, fmt.Errorf("%w: receipt_id and receivable_id are required", ErrValidation)
+	}
+	if input.Amount <= 0 {
+		return nil, fmt.Errorf("%w: amount must be greater than zero", ErrValidation)
+	}
+	if input.Currency == "" {
+		input.Currency = "CNY"
+	} else {
+		input.Currency = strings.ToUpper(strings.TrimSpace(input.Currency))
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+	receivable, err := s.repo.GetReceivable(ctx, input.ReceivableID)
+	if err != nil {
+		return nil, err
+	}
+	received := receivable.ReceivedAmount + input.Amount
+	status := "partially_received"
+	if received >= receivable.Amount {
+		status = "paid"
+	}
+	allocation, err := s.repo.AllocateReceipt(ctx, receiptID, input)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.repo.UpdateReceivableStatus(ctx, input.ReceivableID, status); err != nil {
+		return nil, err
+	}
+	return allocation, nil
+}
+
 func (s *Service) CreatePayable(ctx context.Context, input CreatePayableInput) (*Payable, error) {
 	normalizePayableInput(&input)
 	if input.Amount <= 0 {
@@ -570,6 +748,33 @@ func (s *Service) ListPayables(ctx context.Context, limit int) ([]Payable, error
 	return items, err
 }
 
+func (s *Service) UpdatePayable(ctx context.Context, id uuid.UUID, input UpdatePayableInput) (*Payable, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: payable_id is required", ErrValidation)
+	}
+	createInput := CreatePayableInput(input)
+	normalizePayableInput(&createInput)
+	dates, err := datesFromPayable(createInput)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.UpdatePayable(ctx, id, input, dates)
+}
+
+func (s *Service) VoidPayable(ctx context.Context, id uuid.UUID, reason string) (*Payable, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: payable_id is required", ErrValidation)
+	}
+	payable, err := s.repo.GetPayable(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if payable.PaidAmount > 0 || payable.Status == "paid" || payable.Status == "partially_paid" {
+		return nil, fmt.Errorf("%w: allocated payable cannot be voided", ErrValidation)
+	}
+	return s.repo.VoidPayable(ctx, id, strings.TrimSpace(reason))
+}
+
 func (s *Service) CreatePayment(ctx context.Context, input CreatePaymentInput) (*Payment, error) {
 	normalizePaymentInput(&input)
 	if input.Amount <= 0 {
@@ -588,6 +793,26 @@ func (s *Service) ListPayments(ctx context.Context, limit int) ([]Payment, error
 		items = []Payment{}
 	}
 	return items, err
+}
+
+func (s *Service) UpdatePayment(ctx context.Context, id uuid.UUID, input UpdatePaymentInput) (*Payment, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: payment_id is required", ErrValidation)
+	}
+	createInput := CreatePaymentInput(input)
+	normalizePaymentInput(&createInput)
+	paidAt, err := parseOptionalTime(createInput.PaidAt)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.UpdatePayment(ctx, id, input, paidAt)
+}
+
+func (s *Service) VoidPayment(ctx context.Context, id uuid.UUID, reason string) (*Payment, error) {
+	if id == uuid.Nil {
+		return nil, fmt.Errorf("%w: payment_id is required", ErrValidation)
+	}
+	return s.repo.VoidPayment(ctx, id, strings.TrimSpace(reason))
 }
 
 func (s *Service) AllocatePayment(ctx context.Context, paymentID uuid.UUID, input AllocatePaymentInput) (*PaymentAllocation, error) {
@@ -974,6 +1199,26 @@ func datesFromPayable(input CreatePayableInput) (financeExpenseDates, error) {
 	return financeExpenseDates{InvoiceDate: invoiceDate, PaymentDueDate: dueDate, PeriodStart: periodStart, PeriodEnd: periodEnd}, nil
 }
 
+func datesFromReceivable(input CreateReceivableInput) (financeExpenseDates, error) {
+	invoiceDate, err := parseOptionalDate(input.InvoiceDate)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	dueDate, err := parseOptionalDate(input.DueDate)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	periodStart, err := parseOptionalDate(input.PeriodStart)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	periodEnd, err := parseOptionalDate(input.PeriodEnd)
+	if err != nil {
+		return financeExpenseDates{}, err
+	}
+	return financeExpenseDates{InvoiceDate: invoiceDate, PaymentDueDate: dueDate, PeriodStart: periodStart, PeriodEnd: periodEnd}, nil
+}
+
 func expenseOccurredAt(dates financeExpenseDates) time.Time {
 	if dates.OccurredAt != nil {
 		return *dates.OccurredAt
@@ -1022,6 +1267,32 @@ func costCategoryForExpense(expenseType string) string {
 	}
 }
 
+func normalizeSettlementOrderInput(input *CreateSettlementOrderInput) {
+	input.Currency = defaultCurrency(input.Currency)
+	if input.Status == "" {
+		input.Status = "draft"
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+}
+
+func normalizeSettlementLineInput(input *CreateSettlementLineInput) {
+	input.LineType = strings.TrimSpace(input.LineType)
+	if input.LineType == "" {
+		input.LineType = "manual"
+	}
+	if input.Quantity == 0 {
+		input.Quantity = 1
+	}
+	if input.Amount == 0 && input.UnitPrice != 0 {
+		input.Amount = input.Quantity * input.UnitPrice
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+}
+
 func normalizePayableInput(input *CreatePayableInput) {
 	if input.PayableType == "" {
 		input.PayableType = "expense"
@@ -1040,6 +1311,22 @@ func normalizePayableInput(input *CreatePayableInput) {
 	}
 }
 
+func normalizeReceivableInput(input *CreateReceivableInput) {
+	if input.ReceivableType == "" {
+		input.ReceivableType = "project"
+	}
+	if input.SourceType == "" {
+		input.SourceType = "manual"
+	}
+	input.Currency = defaultCurrency(input.Currency)
+	if input.Status == "" {
+		input.Status = "unpaid"
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+}
+
 func normalizePaymentInput(input *CreatePaymentInput) {
 	if input.Currency == "" {
 		input.Currency = "CNY"
@@ -1050,6 +1337,24 @@ func normalizePaymentInput(input *CreatePaymentInput) {
 	if input.Metadata == nil {
 		input.Metadata = map[string]any{}
 	}
+}
+
+func normalizeReceiptInput(input *CreateReceiptInput) {
+	input.Currency = defaultCurrency(input.Currency)
+	if input.Status == "" {
+		input.Status = "received"
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+}
+
+func defaultCurrency(value string) string {
+	value = strings.ToUpper(strings.TrimSpace(value))
+	if value == "" {
+		return "CNY"
+	}
+	return value
 }
 
 func stringAny(value any) string {

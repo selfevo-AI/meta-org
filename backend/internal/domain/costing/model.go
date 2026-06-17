@@ -219,6 +219,11 @@ type CreateLedgerEntryInput struct {
 	Metadata       map[string]any `json:"metadata,omitempty"`
 }
 
+type UpdateExchangeRateInput CreateExchangeRateInput
+type UpdateRateCardInput CreateRateCardInput
+type UpdateBudgetInput CreateBudgetInput
+type UpdateLedgerEntryInput CreateLedgerEntryInput
+
 type SummaryFilter struct {
 	ScopeType string
 	ScopeID   *uuid.UUID

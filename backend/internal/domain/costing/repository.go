@@ -72,6 +72,21 @@ func (r *Repository) ListCurrencies(ctx context.Context) ([]Currency, error) {
 	return items, rows.Err()
 }
 
+func (r *Repository) VoidCurrency(ctx context.Context, code string) (*Currency, error) {
+	currency := &Currency{}
+	err := scanCurrency(r.db.QueryRow(ctx, `
+		UPDATE currencies
+		SET is_active = FALSE, updated_at = NOW()
+		WHERE code = $1
+		RETURNING code, name, currency_type, symbol, precision_digits, chain_id,
+			contract_address, external_source, is_active, metadata, created_at, updated_at
+	`, code), currency)
+	if err != nil {
+		return nil, fmt.Errorf("void currency: %w", err)
+	}
+	return currency, nil
+}
+
 func (r *Repository) CreateExchangeRate(ctx context.Context, input CreateExchangeRateInput) (*ExchangeRateVersion, error) {
 	rate := &ExchangeRateVersion{}
 	effectiveFrom := time.Now().UTC()
@@ -115,6 +130,46 @@ func (r *Repository) ListExchangeRates(ctx context.Context, limit int) ([]Exchan
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *Repository) UpdateExchangeRate(ctx context.Context, id uuid.UUID, input CreateExchangeRateInput) (*ExchangeRateVersion, error) {
+	rate := &ExchangeRateVersion{}
+	err := scanExchangeRate(r.db.QueryRow(ctx, `
+		UPDATE exchange_rate_versions
+		SET from_currency = COALESCE(NULLIF($2, ''), from_currency),
+		    to_currency = COALESCE(NULLIF($3, ''), to_currency),
+		    rate = $4,
+		    source = COALESCE(NULLIF($5, ''), source),
+		    provider = $6,
+		    external_rate_id = $7,
+		    effective_from = COALESCE($8, effective_from),
+		    effective_to = $9,
+		    metadata = CASE WHEN $10::jsonb IS NULL THEN metadata ELSE $10::jsonb END
+		WHERE id = $1
+		RETURNING id, from_currency, to_currency, rate::float8, source, provider,
+			external_rate_id, effective_from, effective_to, metadata, created_at
+	`, id, input.FromCurrency, input.ToCurrency, input.Rate, input.Source, input.Provider,
+		input.ExternalRateID, input.EffectiveFrom, input.EffectiveTo, nullableJSON(input.Metadata)), rate)
+	if err != nil {
+		return nil, fmt.Errorf("update exchange rate: %w", err)
+	}
+	return rate, nil
+}
+
+func (r *Repository) VoidExchangeRate(ctx context.Context, id uuid.UUID) (*ExchangeRateVersion, error) {
+	now := time.Now().UTC()
+	rate := &ExchangeRateVersion{}
+	err := scanExchangeRate(r.db.QueryRow(ctx, `
+		UPDATE exchange_rate_versions
+		SET effective_to = $2
+		WHERE id = $1
+		RETURNING id, from_currency, to_currency, rate::float8, source, provider,
+			external_rate_id, effective_from, effective_to, metadata, created_at
+	`, id, now), rate)
+	if err != nil {
+		return nil, fmt.Errorf("void exchange rate: %w", err)
+	}
+	return rate, nil
 }
 
 func (r *Repository) FindExchangeRate(ctx context.Context, fromCurrency, toCurrency string, at time.Time) (*ExchangeRateVersion, error) {
@@ -185,6 +240,57 @@ func (r *Repository) ListRateCards(ctx context.Context, limit int) ([]CostRateCa
 	return items, rows.Err()
 }
 
+func (r *Repository) UpdateRateCard(ctx context.Context, id uuid.UUID, input CreateRateCardInput, conversion ConversionResult) (*CostRateCard, error) {
+	card := &CostRateCard{}
+	effectiveFrom := time.Now().UTC()
+	if input.EffectiveFrom != nil {
+		effectiveFrom = *input.EffectiveFrom
+	}
+	err := scanRateCard(r.db.QueryRow(ctx, `
+		UPDATE cost_rate_cards
+		SET subject_type = COALESCE(NULLIF($2, ''), subject_type),
+		    subject_id = COALESCE($3, subject_id),
+		    scope_type = $4,
+		    scope_id = $5,
+		    rate_type = COALESCE(NULLIF($6, ''), rate_type),
+		    amount = $7,
+		    currency = COALESCE(NULLIF($8, ''), currency),
+		    base_amount = $9,
+		    base_currency = $10,
+		    exchange_rate_version_id = $11,
+		    effective_from = $12,
+		    effective_to = $13,
+		    status = COALESCE(NULLIF($14, ''), status),
+		    metadata = CASE WHEN $15::jsonb IS NULL THEN metadata ELSE $15::jsonb END
+		WHERE id = $1
+		RETURNING id, subject_type, subject_id, scope_type, scope_id, rate_type,
+			amount::float8, currency, base_amount::float8, base_currency,
+			exchange_rate_version_id, effective_from, effective_to, status, metadata, created_at
+	`, id, input.SubjectType, input.SubjectID, input.ScopeType, input.ScopeID, input.RateType,
+		input.Amount, input.Currency, conversion.ConvertedAmount, conversion.ToCurrency,
+		conversion.ExchangeRateVersionID, effectiveFrom, input.EffectiveTo, input.Status, nullableJSON(input.Metadata)), card)
+	if err != nil {
+		return nil, fmt.Errorf("update rate card: %w", err)
+	}
+	return card, nil
+}
+
+func (r *Repository) VoidRateCard(ctx context.Context, id uuid.UUID) (*CostRateCard, error) {
+	card := &CostRateCard{}
+	err := scanRateCard(r.db.QueryRow(ctx, `
+		UPDATE cost_rate_cards
+		SET status = 'inactive', effective_to = NOW()
+		WHERE id = $1
+		RETURNING id, subject_type, subject_id, scope_type, scope_id, rate_type,
+			amount::float8, currency, base_amount::float8, base_currency,
+			exchange_rate_version_id, effective_from, effective_to, status, metadata, created_at
+	`, id), card)
+	if err != nil {
+		return nil, fmt.Errorf("void rate card: %w", err)
+	}
+	return card, nil
+}
+
 func (r *Repository) CreateBudget(ctx context.Context, input CreateBudgetInput, conversion ConversionResult) (*CostBudget, error) {
 	budget := &CostBudget{}
 	err := scanBudget(r.db.QueryRow(ctx, `
@@ -227,6 +333,51 @@ func (r *Repository) ListBudgets(ctx context.Context, limit int) ([]CostBudget, 
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *Repository) UpdateBudget(ctx context.Context, id uuid.UUID, input CreateBudgetInput, conversion ConversionResult) (*CostBudget, error) {
+	budget := &CostBudget{}
+	err := scanBudget(r.db.QueryRow(ctx, `
+		UPDATE cost_budgets
+		SET scope_type = COALESCE(NULLIF($2, ''), scope_type),
+		    scope_id = COALESCE($3, scope_id),
+		    amount = $4,
+		    currency = COALESCE(NULLIF($5, ''), currency),
+		    base_amount = $6,
+		    base_currency = $7,
+		    exchange_rate_version_id = $8,
+		    period_start = $9,
+		    period_end = $10,
+		    status = COALESCE(NULLIF($11, ''), status),
+		    metadata = CASE WHEN $12::jsonb IS NULL THEN metadata ELSE $12::jsonb END,
+		    updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, scope_type, scope_id, amount::float8, currency, base_amount::float8,
+			base_currency, exchange_rate_version_id, period_start, period_end, status,
+			metadata, created_at, updated_at
+	`, id, input.ScopeType, input.ScopeID, input.Amount, input.Currency, conversion.ConvertedAmount,
+		conversion.ToCurrency, conversion.ExchangeRateVersionID, input.PeriodStart, input.PeriodEnd,
+		input.Status, nullableJSON(input.Metadata)), budget)
+	if err != nil {
+		return nil, fmt.Errorf("update budget: %w", err)
+	}
+	return budget, nil
+}
+
+func (r *Repository) VoidBudget(ctx context.Context, id uuid.UUID) (*CostBudget, error) {
+	budget := &CostBudget{}
+	err := scanBudget(r.db.QueryRow(ctx, `
+		UPDATE cost_budgets
+		SET status = 'void', updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, scope_type, scope_id, amount::float8, currency, base_amount::float8,
+			base_currency, exchange_rate_version_id, period_start, period_end, status,
+			metadata, created_at, updated_at
+	`, id), budget)
+	if err != nil {
+		return nil, fmt.Errorf("void budget: %w", err)
+	}
+	return budget, nil
 }
 
 func (r *Repository) CreateLedgerEntry(ctx context.Context, input CreateLedgerEntryInput, conversion ConversionResult) (*CostLedgerEntry, error) {
@@ -310,6 +461,61 @@ func (r *Repository) ListLedgerEntries(ctx context.Context, filter SummaryFilter
 		items = append(items, item)
 	}
 	return items, rows.Err()
+}
+
+func (r *Repository) UpdateLedgerEntry(ctx context.Context, id uuid.UUID, input CreateLedgerEntryInput, conversion ConversionResult) (*CostLedgerEntry, error) {
+	entry := &CostLedgerEntry{}
+	occurredAt := time.Now().UTC()
+	if input.OccurredAt != nil {
+		occurredAt = *input.OccurredAt
+	}
+	err := scanLedgerEntry(r.db.QueryRow(ctx, `
+		UPDATE cost_ledger_entries
+		SET ledger_type = COALESCE(NULLIF($2, ''), ledger_type),
+		    cost_category = COALESCE(NULLIF($3, ''), cost_category),
+		    source_type = COALESCE(NULLIF($4, ''), source_type),
+		    amount = $5,
+		    currency = COALESCE(NULLIF($6, ''), currency),
+		    base_amount = $7,
+		    base_currency = $8,
+		    exchange_rate_version_id = $9,
+		    occurred_at = $10,
+		    status = COALESCE(NULLIF($11, ''), status),
+		    description = $12,
+		    metadata = CASE WHEN $13::jsonb IS NULL THEN metadata ELSE $13::jsonb END
+		WHERE id = $1 AND finance_export_line_id IS NULL
+		RETURNING id, ledger_type, cost_category, source_type, source_id,
+			organization_id, department_id, requirement_id, project_id, workflow_id,
+			task_id, capability_id, actor_id, actor_type, resource_type,
+			amount::float8, currency, base_amount::float8, base_currency,
+			exchange_rate_version_id, occurred_at, status, finance_export_line_id,
+			description, metadata, created_at
+	`, id, input.LedgerType, input.CostCategory, input.SourceType, input.Amount, input.Currency,
+		conversion.ConvertedAmount, conversion.ToCurrency, conversion.ExchangeRateVersionID,
+		occurredAt, input.Status, input.Description, nullableJSON(input.Metadata)), entry)
+	if err != nil {
+		return nil, fmt.Errorf("update ledger entry: %w", err)
+	}
+	return entry, nil
+}
+
+func (r *Repository) VoidLedgerEntry(ctx context.Context, id uuid.UUID) (*CostLedgerEntry, error) {
+	entry := &CostLedgerEntry{}
+	err := scanLedgerEntry(r.db.QueryRow(ctx, `
+		UPDATE cost_ledger_entries
+		SET status = 'void'
+		WHERE id = $1 AND finance_export_line_id IS NULL
+		RETURNING id, ledger_type, cost_category, source_type, source_id,
+			organization_id, department_id, requirement_id, project_id, workflow_id,
+			task_id, capability_id, actor_id, actor_type, resource_type,
+			amount::float8, currency, base_amount::float8, base_currency,
+			exchange_rate_version_id, occurred_at, status, finance_export_line_id,
+			description, metadata, created_at
+	`, id), entry)
+	if err != nil {
+		return nil, fmt.Errorf("void ledger entry: %w", err)
+	}
+	return entry, nil
 }
 
 func (r *Repository) Summary(ctx context.Context, filter SummaryFilter) (*CostSummary, error) {
@@ -536,6 +742,13 @@ func mustJSON(value map[string]any) []byte {
 	}
 	data, _ := json.Marshal(value)
 	return data
+}
+
+func nullableJSON(value map[string]any) any {
+	if value == nil {
+		return nil
+	}
+	return mustJSON(value)
 }
 
 func unmarshalMap(data []byte) map[string]any {

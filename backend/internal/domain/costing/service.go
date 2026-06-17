@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 var (
@@ -43,6 +45,14 @@ func (s *Service) ListCurrencies(ctx context.Context) ([]Currency, error) {
 	return s.repo.ListCurrencies(ctx)
 }
 
+func (s *Service) VoidCurrency(ctx context.Context, code string) (*Currency, error) {
+	code = normalizeCurrency(code)
+	if code == "" {
+		return nil, fmt.Errorf("%w: code is required", ErrValidation)
+	}
+	return s.repo.VoidCurrency(ctx, code)
+}
+
 func (s *Service) CreateExchangeRate(ctx context.Context, input CreateExchangeRateInput) (*ExchangeRateVersion, error) {
 	input.FromCurrency = normalizeCurrency(input.FromCurrency)
 	input.ToCurrency = normalizeCurrency(input.ToCurrency)
@@ -63,6 +73,28 @@ func (s *Service) CreateExchangeRate(ctx context.Context, input CreateExchangeRa
 
 func (s *Service) ListExchangeRates(ctx context.Context, limit int) ([]ExchangeRateVersion, error) {
 	return s.repo.ListExchangeRates(ctx, limit)
+}
+
+func (s *Service) UpdateExchangeRate(ctx context.Context, id string, input UpdateExchangeRateInput) (*ExchangeRateVersion, error) {
+	rateID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid rate id", ErrValidation)
+	}
+	createInput := CreateExchangeRateInput(input)
+	createInput.FromCurrency = normalizeCurrency(createInput.FromCurrency)
+	createInput.ToCurrency = normalizeCurrency(createInput.ToCurrency)
+	if createInput.Rate <= 0 {
+		return nil, fmt.Errorf("%w: rate must be positive", ErrValidation)
+	}
+	return s.repo.UpdateExchangeRate(ctx, rateID, createInput)
+}
+
+func (s *Service) VoidExchangeRate(ctx context.Context, id string) (*ExchangeRateVersion, error) {
+	rateID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid rate id", ErrValidation)
+	}
+	return s.repo.VoidExchangeRate(ctx, rateID)
 }
 
 func (s *Service) Convert(ctx context.Context, input ConvertInput) (*ConversionResult, error) {
@@ -108,6 +140,31 @@ func (s *Service) ListRateCards(ctx context.Context, limit int) ([]CostRateCard,
 	return s.repo.ListRateCards(ctx, limit)
 }
 
+func (s *Service) UpdateRateCard(ctx context.Context, id string, input UpdateRateCardInput) (*CostRateCard, error) {
+	cardID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid rate card id", ErrValidation)
+	}
+	createInput := CreateRateCardInput(input)
+	if createInput.Status == "" {
+		createInput.Status = "active"
+	}
+	createInput.Currency = defaultCurrency(createInput.Currency)
+	conversion, err := s.convert(ctx, createInput.Amount, createInput.Currency, BaseCurrency, effectiveTime(createInput.EffectiveFrom))
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.UpdateRateCard(ctx, cardID, createInput, conversion)
+}
+
+func (s *Service) VoidRateCard(ctx context.Context, id string) (*CostRateCard, error) {
+	cardID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid rate card id", ErrValidation)
+	}
+	return s.repo.VoidRateCard(ctx, cardID)
+}
+
 func (s *Service) CreateBudget(ctx context.Context, input CreateBudgetInput) (*CostBudget, error) {
 	input.ScopeType = strings.TrimSpace(input.ScopeType)
 	if input.ScopeType == "" {
@@ -128,6 +185,31 @@ func (s *Service) ListBudgets(ctx context.Context, limit int) ([]CostBudget, err
 	return s.repo.ListBudgets(ctx, limit)
 }
 
+func (s *Service) UpdateBudget(ctx context.Context, id string, input UpdateBudgetInput) (*CostBudget, error) {
+	budgetID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid budget id", ErrValidation)
+	}
+	createInput := CreateBudgetInput(input)
+	if createInput.Status == "" {
+		createInput.Status = "active"
+	}
+	createInput.Currency = defaultCurrency(createInput.Currency)
+	conversion, err := s.convert(ctx, createInput.Amount, createInput.Currency, BaseCurrency, time.Now().UTC())
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.UpdateBudget(ctx, budgetID, createInput, conversion)
+}
+
+func (s *Service) VoidBudget(ctx context.Context, id string) (*CostBudget, error) {
+	budgetID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid budget id", ErrValidation)
+	}
+	return s.repo.VoidBudget(ctx, budgetID)
+}
+
 func (s *Service) CreateLedgerEntry(ctx context.Context, input CreateLedgerEntryInput) (*CostLedgerEntry, error) {
 	normalizeLedgerEntryInput(&input)
 	if input.Amount == 0 {
@@ -142,6 +224,31 @@ func (s *Service) CreateLedgerEntry(ctx context.Context, input CreateLedgerEntry
 
 func (s *Service) ListLedgerEntries(ctx context.Context, filter SummaryFilter) ([]CostLedgerEntry, error) {
 	return s.repo.ListLedgerEntries(ctx, filter)
+}
+
+func (s *Service) UpdateLedgerEntry(ctx context.Context, id string, input UpdateLedgerEntryInput) (*CostLedgerEntry, error) {
+	entryID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid ledger entry id", ErrValidation)
+	}
+	createInput := CreateLedgerEntryInput(input)
+	normalizeLedgerEntryInput(&createInput)
+	if createInput.Amount == 0 {
+		return nil, fmt.Errorf("%w: amount must not be zero", ErrValidation)
+	}
+	conversion, err := s.convert(ctx, createInput.Amount, createInput.Currency, BaseCurrency, effectiveTime(createInput.OccurredAt))
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.UpdateLedgerEntry(ctx, entryID, createInput, conversion)
+}
+
+func (s *Service) VoidLedgerEntry(ctx context.Context, id string) (*CostLedgerEntry, error) {
+	entryID, err := uuid.Parse(id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid ledger entry id", ErrValidation)
+	}
+	return s.repo.VoidLedgerEntry(ctx, entryID)
 }
 
 func (s *Service) Summary(ctx context.Context, filter SummaryFilter) (*CostSummary, error) {

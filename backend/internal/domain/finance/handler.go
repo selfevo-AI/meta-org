@@ -37,16 +37,37 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Get("/finance/export-batches", h.listExportBatches)
 	r.Get("/finance/export-batches/{id}", h.getExportBatch)
 	r.Post("/finance/export-batches/{id}/submit", h.submitExportBatch)
+	r.Post("/finance/accounting-batches", h.createExportBatch)
+	r.Get("/finance/accounting-batches", h.listExportBatches)
+	r.Get("/finance/accounting-batches/{id}", h.getExportBatch)
+	r.Post("/finance/accounting-batches/{id}/submit", h.submitExportBatch)
 	r.Get("/finance/reconciliation", h.listReconciliation)
 	r.Post("/finance/imports", h.importExpenses)
 	r.Post("/finance/imports/files", h.importExpenseFile)
 	r.Post("/finance/imports/{adapterID}/pull", h.pullExpenses)
 	r.Get("/finance/import-batches", h.listImportBatches)
 	r.Get("/finance/import-records", h.listImportRecords)
+	r.Post("/finance/settlement-orders", h.createSettlementOrder)
+	r.Get("/finance/settlement-orders", h.listSettlementOrders)
+	r.Get("/finance/settlement-orders/{id}", h.getSettlementOrder)
+	r.Patch("/finance/settlement-orders/{id}", h.updateSettlementOrder)
+	r.Post("/finance/settlement-orders/{id}/post", h.postSettlementOrder)
+	r.Post("/finance/settlement-orders/{id}/void", h.voidSettlementOrder)
+	r.Post("/finance/receivables", h.createReceivable)
+	r.Get("/finance/receivables", h.listReceivables)
+	r.Patch("/finance/receivables/{id}", h.updateReceivable)
+	r.Post("/finance/receivables/{id}/void", h.voidReceivable)
+	r.Post("/finance/receipts", h.createReceipt)
+	r.Get("/finance/receipts", h.listReceipts)
+	r.Post("/finance/receipts/{id}/allocate", h.allocateReceipt)
 	r.Post("/finance/payables", h.createPayable)
 	r.Get("/finance/payables", h.listPayables)
+	r.Patch("/finance/payables/{id}", h.updatePayable)
+	r.Post("/finance/payables/{id}/void", h.voidPayable)
 	r.Post("/finance/payments", h.createPayment)
 	r.Get("/finance/payments", h.listPayments)
+	r.Patch("/finance/payments/{id}", h.updatePayment)
+	r.Post("/finance/payments/{id}/void", h.voidPayment)
 	r.Post("/finance/payments/{id}/allocate", h.allocatePayment)
 }
 
@@ -222,6 +243,123 @@ func (h *Handler) listImportRecords(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, http.StatusOK, result, err)
 }
 
+func (h *Handler) createSettlementOrder(w http.ResponseWriter, r *http.Request) {
+	var input CreateSettlementOrderInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.CreateSettlementOrder(r.Context(), input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) listSettlementOrders(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ListSettlementOrders(r.Context(), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) getSettlementOrder(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.GetSettlementOrder(r.Context(), id)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) updateSettlementOrder(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input UpdateSettlementOrderInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.UpdateSettlementOrder(r.Context(), id, input)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) postSettlementOrder(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.PostSettlementOrder(r.Context(), id)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) voidSettlementOrder(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.VoidSettlementOrder(r.Context(), id, reasonFromBody(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) createReceivable(w http.ResponseWriter, r *http.Request) {
+	var input CreateReceivableInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.CreateReceivable(r.Context(), input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) listReceivables(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ListReceivables(r.Context(), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) updateReceivable(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input UpdateReceivableInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.UpdateReceivable(r.Context(), id, input)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) voidReceivable(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.VoidReceivable(r.Context(), id, reasonFromBody(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) createReceipt(w http.ResponseWriter, r *http.Request) {
+	var input CreateReceiptInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.CreateReceipt(r.Context(), input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) listReceipts(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ListReceipts(r.Context(), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) allocateReceipt(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input AllocateReceiptInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.AllocateReceipt(r.Context(), id, input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
 func (h *Handler) createPayable(w http.ResponseWriter, r *http.Request) {
 	var input CreatePayableInput
 	if !decodeJSON(w, r, &input) {
@@ -233,6 +371,28 @@ func (h *Handler) createPayable(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) listPayables(w http.ResponseWriter, r *http.Request) {
 	result, err := h.service.ListPayables(r.Context(), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) updatePayable(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input UpdatePayableInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.UpdatePayable(r.Context(), id, input)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) voidPayable(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.VoidPayable(r.Context(), id, reasonFromBody(r))
 	writeResult(w, http.StatusOK, result, err)
 }
 
@@ -250,6 +410,28 @@ func (h *Handler) listPayments(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, http.StatusOK, result, err)
 }
 
+func (h *Handler) updatePayment(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input UpdatePaymentInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.UpdatePayment(r.Context(), id, input)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) voidPayment(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.VoidPayment(r.Context(), id, reasonFromBody(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
 func (h *Handler) allocatePayment(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseID(w, r, "id")
 	if !ok {
@@ -261,6 +443,14 @@ func (h *Handler) allocatePayment(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.service.AllocatePayment(r.Context(), id, input)
 	writeResult(w, http.StatusCreated, result, err)
+}
+
+func reasonFromBody(r *http.Request) string {
+	var input struct {
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&input)
+	return input.Reason
 }
 
 func csvRecords(reader io.Reader) ([]map[string]any, error) {

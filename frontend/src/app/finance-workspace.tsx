@@ -5,10 +5,14 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   allocateFinancePayment,
+  allocateFinanceReceipt,
   createFinanceAdapter,
   createFinanceExportBatch,
   createFinancePayable,
   createFinancePayment,
+  createFinanceReceipt,
+  createFinanceReceivable,
+  createFinanceSettlementOrder,
   getFinanceExportBatch,
   importFinanceExpenseFile,
   importFinanceExpenses,
@@ -18,36 +22,61 @@ import {
   listFinanceImportRecords,
   listFinancePayables,
   listFinancePayments,
+  listFinanceReceipts,
+  listFinanceReceivables,
   listFinanceReconciliation,
+  listFinanceSettlementOrders,
+  postFinanceSettlementOrder,
   pullFinanceExpenses,
   submitFinanceExportBatch,
   testFinanceAdapter,
+  updateFinancePayable,
+  updateFinancePayment,
+  updateFinanceReceivable,
+  updateFinanceSettlementOrder,
+  voidFinancePayable,
+  voidFinancePayment,
+  voidFinanceReceivable,
+  voidFinanceSettlementOrder,
   type FinanceAdapter,
   type FinanceExportBatch,
   type FinanceImportBatch,
   type FinanceImportRecord,
   type FinancePayable,
   type FinancePayment,
+  type FinanceReceipt,
+  type FinanceReceivable,
   type FinanceReconciliationItem,
+  type FinanceSettlementOrder,
 } from '@/lib/api'
 import { useI18n } from '@/lib/i18n'
 
 interface FinanceWorkspaceProps {
   token: string
+  mode?: 'accounting' | 'receivables' | 'payables' | 'all'
 }
 
-type TabID = 'ingestion' | 'imports' | 'payables' | 'payments' | 'adapters' | 'batches' | 'reconciliation' | 'failed'
+type TabID = 'ingestion' | 'imports' | 'receivables' | 'receipts' | 'payables' | 'payments' | 'adapters' | 'batches' | 'reconciliation' | 'failed'
 
 const tabs: Array<{ id: TabID; label: string; icon: typeof ServerCog }> = [
   { id: 'ingestion', label: 'finance.ingestion', icon: TableProperties },
   { id: 'imports', label: 'finance.importRecords', icon: FileWarning },
+  { id: 'receivables', label: 'finance.receivables', icon: Banknote },
+  { id: 'receipts', label: 'finance.receipts', icon: Send },
   { id: 'payables', label: 'finance.payables', icon: Banknote },
   { id: 'payments', label: 'finance.payments', icon: Send },
   { id: 'adapters', label: 'finance.adapters', icon: ServerCog },
-  { id: 'batches', label: 'finance.exportBatches', icon: Banknote },
+  { id: 'batches', label: 'finance.accountingBatches', icon: Banknote },
   { id: 'reconciliation', label: 'finance.reconciliation', icon: TableProperties },
   { id: 'failed', label: 'finance.failedWebhooks', icon: FileWarning },
 ]
+
+const tabsByMode: Record<NonNullable<FinanceWorkspaceProps['mode']>, TabID[]> = {
+  accounting: ['ingestion', 'imports', 'adapters', 'batches', 'reconciliation', 'failed'],
+  receivables: ['receivables', 'receipts'],
+  payables: ['payables', 'payments'],
+  all: ['ingestion', 'imports', 'receivables', 'receipts', 'payables', 'payments', 'adapters', 'batches', 'reconciliation', 'failed'],
+}
 
 function money(value: number | undefined, currency = 'CNY'): string {
   return `${currency} ${Number(value ?? 0).toFixed(4)}`
@@ -72,15 +101,19 @@ function parseMapping(value: string): Record<string, string> {
   )
 }
 
-export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
+export function FinanceWorkspace({ token, mode = 'all' }: FinanceWorkspaceProps) {
   const { t } = useI18n()
-  const [activeTab, setActiveTab] = useState<TabID>('adapters')
+  const availableTabs = useMemo(() => tabs.filter((tab) => tabsByMode[mode].includes(tab.id)), [mode])
+  const [activeTab, setActiveTab] = useState<TabID>(tabsByMode[mode][0])
   const [adapters, setAdapters] = useState<FinanceAdapter[]>([])
   const [batches, setBatches] = useState<FinanceExportBatch[]>([])
   const [selectedBatch, setSelectedBatch] = useState<FinanceExportBatch | null>(null)
   const [reconciliation, setReconciliation] = useState<FinanceReconciliationItem[]>([])
   const [importBatches, setImportBatches] = useState<FinanceImportBatch[]>([])
   const [importRecords, setImportRecords] = useState<FinanceImportRecord[]>([])
+  const [settlementOrders, setSettlementOrders] = useState<FinanceSettlementOrder[]>([])
+  const [receivables, setReceivables] = useState<FinanceReceivable[]>([])
+  const [receipts, setReceipts] = useState<FinanceReceipt[]>([])
   const [payables, setPayables] = useState<FinancePayable[]>([])
   const [payments, setPayments] = useState<FinancePayment[]>([])
   const [loading, setLoading] = useState(false)
@@ -121,6 +154,7 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
   })
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const [payableForm, setPayableForm] = useState({
+    id: '',
     payable_type: 'expense',
     external_payable_id: '',
     invoice_number: '',
@@ -132,6 +166,7 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
     due_date: '',
   })
   const [paymentForm, setPaymentForm] = useState({
+    id: '',
     payment_number: '',
     external_payment_id: '',
     payment_method: '',
@@ -147,11 +182,47 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
     amount: '0',
     currency: 'CNY',
   })
+  const [settlementForm, setSettlementForm] = useState({
+    id: '',
+    settlement_number: '',
+    project_id: '',
+    customer_name: '',
+    title: '',
+    description: '',
+    amount: '0',
+    tax_amount: '0',
+    currency: 'CNY',
+    due_date: '',
+  })
+  const [receivableForm, setReceivableForm] = useState({
+    id: '',
+    customer_name: '',
+    invoice_number: '',
+    amount: '0',
+    tax_amount: '0',
+    currency: 'CNY',
+    due_date: '',
+  })
+  const [receiptForm, setReceiptForm] = useState({
+    receipt_number: '',
+    customer_name: '',
+    payment_method: '',
+    amount: '0',
+    currency: 'CNY',
+    received_at: new Date().toISOString().slice(0, 10),
+  })
+  const [receiptAllocationForm, setReceiptAllocationForm] = useState({
+    receipt_id: '',
+    receivable_id: '',
+    amount: '0',
+    currency: 'CNY',
+  })
 
   const failedItems = useMemo(
     () => batches.filter((batch) => batch.status === 'failed' || batch.error_message),
     [batches],
   )
+  const currentTab = tabsByMode[mode].includes(activeTab) ? activeTab : tabsByMode[mode][0]
 
   const loadFinance = useCallback(async () => {
     setLoading(true)
@@ -168,16 +239,25 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
         listFinancePayables(token),
         listFinancePayments(token),
       ])
+      const [settlementData, receivableData, receiptData] = await Promise.all([
+        listFinanceSettlementOrders(token),
+        listFinanceReceivables(token),
+        listFinanceReceipts(token),
+      ])
       setAdapters(adapterData)
       setBatches(batchData)
       setReconciliation(reconciliationData)
       setImportBatches(importBatchData)
       setImportRecords(importRecordData)
+      setSettlementOrders(settlementData)
+      setReceivables(receivableData)
+      setReceipts(receiptData)
       setPayables(payableData)
       setPayments(paymentData)
       setBatchForm((current) => ({ ...current, adapter_id: current.adapter_id || adapterData[0]?.id || '' }))
       setExpenseForm((current) => ({ ...current, adapter_id: current.adapter_id || adapterData[0]?.id || '' }))
       setAllocationForm((current) => ({ ...current, payment_id: current.payment_id || paymentData[0]?.id || '', payable_id: current.payable_id || payableData[0]?.id || '' }))
+      setReceiptAllocationForm((current) => ({ ...current, receipt_id: current.receipt_id || receiptData[0]?.id || '', receivable_id: current.receivable_id || receivableData[0]?.id || '' }))
     } catch (err) {
       setError(err instanceof Error ? err.message : t('finance.loadFailed'))
     } finally {
@@ -286,38 +366,44 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
 
   async function submitPayable(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const input = {
+      payable_type: payableForm.payable_type,
+      external_payable_id: payableForm.external_payable_id,
+      invoice_number: payableForm.invoice_number,
+      vendor_name: payableForm.vendor_name,
+      employee_name: payableForm.employee_name,
+      amount: Number(payableForm.amount || 0),
+      tax_amount: Number(payableForm.tax_amount || 0),
+      currency: payableForm.currency,
+      due_date: payableForm.due_date,
+    }
     await run(
       () =>
-        createFinancePayable(token, {
-          payable_type: payableForm.payable_type,
-          external_payable_id: payableForm.external_payable_id,
-          invoice_number: payableForm.invoice_number,
-          vendor_name: payableForm.vendor_name,
-          employee_name: payableForm.employee_name,
-          amount: Number(payableForm.amount || 0),
-          tax_amount: Number(payableForm.tax_amount || 0),
-          currency: payableForm.currency,
-          due_date: payableForm.due_date,
-        }).then(() => undefined),
+        (payableForm.id ? updateFinancePayable(token, payableForm.id, input) : createFinancePayable(token, input)).then(() =>
+          setPayableForm((current) => ({ ...current, id: '', amount: '0', tax_amount: '0' })),
+        ),
       'finance.payableCreated',
     )
   }
 
   async function submitPayment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const input = {
+      payment_number: paymentForm.payment_number,
+      external_payment_id: paymentForm.external_payment_id,
+      payment_method: paymentForm.payment_method,
+      vendor_name: paymentForm.vendor_name,
+      employee_name: paymentForm.employee_name,
+      amount: Number(paymentForm.amount || 0),
+      currency: paymentForm.currency,
+      paid_at: paymentForm.paid_at,
+      status: 'paid',
+    }
     await run(
       () =>
-        createFinancePayment(token, {
-          payment_number: paymentForm.payment_number,
-          external_payment_id: paymentForm.external_payment_id,
-          payment_method: paymentForm.payment_method,
-          vendor_name: paymentForm.vendor_name,
-          employee_name: paymentForm.employee_name,
-          amount: Number(paymentForm.amount || 0),
-          currency: paymentForm.currency,
-          paid_at: paymentForm.paid_at,
-          status: 'paid',
-        }).then(() => undefined),
+        (paymentForm.id ? updateFinancePayment(token, paymentForm.id, input) : createFinancePayment(token, input)).then(() =>
+          setPaymentForm((current) => ({ ...current, id: '', payment_number: '', amount: '0' })),
+        ),
       'finance.paymentCreated',
     )
   }
@@ -335,6 +421,164 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
     )
   }
 
+  async function submitSettlement(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const input = {
+      settlement_number: settlementForm.settlement_number,
+      project_id: settlementForm.project_id || undefined,
+      customer_name: settlementForm.customer_name,
+      title: settlementForm.title,
+      description: settlementForm.description,
+      currency: settlementForm.currency,
+      due_date: settlementForm.due_date,
+      lines: [
+        {
+          line_type: 'project_settlement',
+          description: settlementForm.description || settlementForm.title,
+          amount: Number(settlementForm.amount || 0),
+          tax_amount: Number(settlementForm.tax_amount || 0),
+        },
+      ],
+      metadata: {},
+    }
+    await run(
+      () =>
+        (settlementForm.id
+          ? updateFinanceSettlementOrder(token, settlementForm.id, input)
+          : createFinanceSettlementOrder(token, input)
+        ).then(() => setSettlementForm((current) => ({ ...current, id: '', amount: '0', tax_amount: '0' }))),
+      'finance.settlementSaved',
+    )
+  }
+
+  async function postSettlement(id: string) {
+    await run(() => postFinanceSettlementOrder(token, id).then(() => undefined), 'finance.settlementPosted')
+  }
+
+  async function voidSettlement(id: string) {
+    await run(() => voidFinanceSettlementOrder(token, id, 'voided by human finance user').then(() => undefined), 'finance.settlementVoided')
+  }
+
+  async function submitReceivable(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const input = {
+      customer_name: receivableForm.customer_name,
+      invoice_number: receivableForm.invoice_number,
+      amount: Number(receivableForm.amount || 0),
+      tax_amount: Number(receivableForm.tax_amount || 0),
+      currency: receivableForm.currency,
+      due_date: receivableForm.due_date,
+      metadata: {},
+    }
+    await run(
+      () =>
+        (receivableForm.id ? updateFinanceReceivable(token, receivableForm.id, input) : createFinanceReceivable(token, input)).then(() =>
+          setReceivableForm((current) => ({ ...current, id: '', amount: '0', tax_amount: '0' })),
+        ),
+      'finance.receivableSaved',
+    )
+  }
+
+  function editSettlement(order: FinanceSettlementOrder) {
+    const line = order.lines?.[0]
+    setSettlementForm({
+      id: order.id,
+      settlement_number: order.settlement_number,
+      project_id: order.project_id ?? '',
+      customer_name: order.customer_name,
+      title: order.title,
+      description: order.description,
+      amount: String(line?.amount ?? order.subtotal ?? order.total_amount),
+      tax_amount: String(line?.tax_amount ?? order.tax_amount),
+      currency: order.currency,
+      due_date: dateOnly(order.due_date),
+    })
+  }
+
+  function editReceivable(receivable: FinanceReceivable) {
+    setReceivableForm({
+      id: receivable.id,
+      customer_name: receivable.customer_name,
+      invoice_number: receivable.invoice_number,
+      amount: String(receivable.amount),
+      tax_amount: String(receivable.tax_amount),
+      currency: receivable.currency,
+      due_date: dateOnly(receivable.due_date),
+    })
+  }
+
+  function editPayable(payable: FinancePayable) {
+    setPayableForm({
+      id: payable.id,
+      payable_type: payable.payable_type,
+      external_payable_id: payable.external_payable_id,
+      invoice_number: payable.invoice_number,
+      vendor_name: payable.vendor_name,
+      employee_name: payable.employee_name,
+      amount: String(payable.amount),
+      tax_amount: String(payable.tax_amount),
+      currency: payable.currency,
+      due_date: dateOnly(payable.due_date),
+    })
+  }
+
+  function editPayment(payment: FinancePayment) {
+    setPaymentForm({
+      id: payment.id,
+      payment_number: payment.payment_number,
+      external_payment_id: payment.external_payment_id,
+      payment_method: payment.payment_method,
+      vendor_name: payment.vendor_name,
+      employee_name: payment.employee_name,
+      amount: String(payment.amount),
+      currency: payment.currency,
+      paid_at: dateOnly(payment.paid_at),
+    })
+  }
+
+  async function voidReceivable(id: string) {
+    await run(() => voidFinanceReceivable(token, id, 'voided by human finance user').then(() => undefined), 'finance.receivableVoided')
+  }
+
+  async function submitReceipt(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    await run(
+      () =>
+        createFinanceReceipt(token, {
+          receipt_number: receiptForm.receipt_number,
+          customer_name: receiptForm.customer_name,
+          payment_method: receiptForm.payment_method,
+          amount: Number(receiptForm.amount || 0),
+          currency: receiptForm.currency,
+          received_at: receiptForm.received_at,
+          status: 'received',
+          metadata: {},
+        }).then(() => setReceiptForm((current) => ({ ...current, receipt_number: '', amount: '0' }))),
+      'finance.receiptSaved',
+    )
+  }
+
+  async function submitReceiptAllocation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    await run(
+      () =>
+        allocateFinanceReceipt(token, receiptAllocationForm.receipt_id, {
+          receivable_id: receiptAllocationForm.receivable_id,
+          amount: Number(receiptAllocationForm.amount || 0),
+          currency: receiptAllocationForm.currency,
+        }).then(() => undefined),
+      'finance.receiptAllocated',
+    )
+  }
+
+  async function voidPayable(id: string) {
+    await run(() => voidFinancePayable(token, id, 'voided by human finance user').then(() => undefined), 'finance.payableVoided')
+  }
+
+  async function voidPayment(id: string) {
+    await run(() => voidFinancePayment(token, id, 'voided by human finance user').then(() => undefined), 'finance.paymentVoided')
+  }
+
   async function openBatch(id: string) {
     await run(() => getFinanceExportBatch(token, id).then((batch) => setSelectedBatch(batch)), 'finance.batchLoaded')
   }
@@ -346,7 +590,7 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap gap-2 rounded-lg border border-slate-200 bg-white p-2 shadow-sm">
-        {tabs.map((tab) => {
+        {availableTabs.map((tab) => {
           const Icon = tab.icon
           return (
             <button
@@ -354,7 +598,7 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
               type="button"
               onClick={() => setActiveTab(tab.id)}
               className={`inline-flex h-10 items-center gap-2 rounded-md px-3 text-sm font-semibold transition ${
-                activeTab === tab.id ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100'
+                currentTab === tab.id ? 'bg-slate-950 text-white' : 'text-slate-600 hover:bg-slate-100'
               }`}
             >
               <Icon className="h-4 w-4" />
@@ -383,7 +627,7 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
         </div>
       )}
 
-      {activeTab === 'ingestion' && (
+      {currentTab === 'ingestion' && (
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
           <Panel title="finance.ingestion">
             <form className="space-y-3" onSubmit={submitExpense}>
@@ -442,7 +686,7 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
         </div>
       )}
 
-      {activeTab === 'imports' && (
+      {currentTab === 'imports' && (
         <div className="grid gap-5 xl:grid-cols-2">
           <Panel title="finance.importBatches">
             <Table
@@ -464,12 +708,127 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
         </div>
       )}
 
-      {activeTab === 'payables' && (
+      {currentTab === 'receivables' && (
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+          <div className="space-y-5">
+            <Panel title="finance.settlementOrders">
+              <Table
+                headers={['finance.settlementNumber', 'finance.customer', 'finance.amount', 'developer.status']}
+                rows={settlementOrders.map((order) => [
+                  order.settlement_number || order.id,
+                  order.customer_name,
+                  money(order.total_amount, order.currency),
+                  t(order.status),
+                ])}
+                actions={settlementOrders.map((order) => (
+                  <div key={order.id} className="flex gap-2">
+                    <button type="button" onClick={() => editSettlement(order)} className="h-8 rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                      {t('common.edit')}
+                    </button>
+                    <button type="button" onClick={() => void postSettlement(order.id)} className="h-8 rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                      {t('finance.post')}
+                    </button>
+                    <button type="button" onClick={() => void voidSettlement(order.id)} className="h-8 rounded-md border border-red-200 px-2 text-xs font-semibold text-red-700 hover:bg-red-50">
+                      {t('finance.void')}
+                    </button>
+                  </div>
+                ))}
+              />
+            </Panel>
+            <Panel title="finance.receivables">
+              <Table
+                headers={['finance.invoiceNumber', 'finance.customer', 'finance.amount', 'finance.receivedAmount', 'developer.status']}
+                rows={receivables.map((receivable) => [
+                  receivable.invoice_number || receivable.external_receivable_id || receivable.id,
+                  receivable.customer_name,
+                  money(receivable.amount, receivable.currency),
+                  money(receivable.received_amount, receivable.currency),
+                  t(receivable.status),
+                ])}
+                actions={receivables.map((receivable) => (
+                  <div key={receivable.id} className="flex gap-2">
+                    <button type="button" onClick={() => editReceivable(receivable)} className="h-8 rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                      {t('common.edit')}
+                    </button>
+                    <button type="button" onClick={() => void voidReceivable(receivable.id)} className="h-8 rounded-md border border-red-200 px-2 text-xs font-semibold text-red-700 hover:bg-red-50">
+                      {t('finance.void')}
+                    </button>
+                  </div>
+                ))}
+              />
+            </Panel>
+          </div>
+          <div className="space-y-5">
+            <Panel title="finance.createSettlement">
+              <form className="space-y-3" onSubmit={submitSettlement}>
+                <TextInput label="finance.settlementNumber" value={settlementForm.settlement_number} onChange={(value) => setSettlementForm({ ...settlementForm, settlement_number: value })} />
+                <TextInput label="finance.project" value={settlementForm.project_id} onChange={(value) => setSettlementForm({ ...settlementForm, project_id: value })} />
+                <TextInput label="finance.customer" value={settlementForm.customer_name} onChange={(value) => setSettlementForm({ ...settlementForm, customer_name: value })} />
+                <TextInput label="finance.title" value={settlementForm.title} onChange={(value) => setSettlementForm({ ...settlementForm, title: value })} />
+                <TextInput label="finance.amount" value={settlementForm.amount} onChange={(value) => setSettlementForm({ ...settlementForm, amount: value })} />
+                <TextInput label="finance.taxAmount" value={settlementForm.tax_amount} onChange={(value) => setSettlementForm({ ...settlementForm, tax_amount: value })} />
+                <TextInput label="finance.dueDate" type="date" value={settlementForm.due_date} onChange={(value) => setSettlementForm({ ...settlementForm, due_date: value })} />
+                <TextInput label="costing.description" value={settlementForm.description} onChange={(value) => setSettlementForm({ ...settlementForm, description: value })} />
+                <SubmitButton loading={loading} label="finance.saveSettlement" />
+              </form>
+            </Panel>
+            <Panel title="finance.createReceivable">
+              <form className="space-y-3" onSubmit={submitReceivable}>
+                <TextInput label="finance.customer" value={receivableForm.customer_name} onChange={(value) => setReceivableForm({ ...receivableForm, customer_name: value })} />
+                <TextInput label="finance.invoiceNumber" value={receivableForm.invoice_number} onChange={(value) => setReceivableForm({ ...receivableForm, invoice_number: value })} />
+                <TextInput label="finance.amount" value={receivableForm.amount} onChange={(value) => setReceivableForm({ ...receivableForm, amount: value })} />
+                <TextInput label="finance.taxAmount" value={receivableForm.tax_amount} onChange={(value) => setReceivableForm({ ...receivableForm, tax_amount: value })} />
+                <TextInput label="finance.dueDate" type="date" value={receivableForm.due_date} onChange={(value) => setReceivableForm({ ...receivableForm, due_date: value })} />
+                <SubmitButton loading={loading} label="finance.saveReceivable" />
+              </form>
+            </Panel>
+          </div>
+        </div>
+      )}
+
+      {currentTab === 'receipts' && (
+        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+          <Panel title="finance.receipts">
+            <Table
+              headers={['finance.receiptNumber', 'finance.customer', 'finance.amount', 'developer.status']}
+              rows={receipts.map((receipt) => [receipt.receipt_number || receipt.id, receipt.customer_name, money(receipt.amount, receipt.currency), t(receipt.status)])}
+            />
+          </Panel>
+          <Panel title="finance.createReceipt">
+            <form className="space-y-3" onSubmit={submitReceipt}>
+              <TextInput label="finance.receiptNumber" value={receiptForm.receipt_number} onChange={(value) => setReceiptForm({ ...receiptForm, receipt_number: value })} />
+              <TextInput label="finance.customer" value={receiptForm.customer_name} onChange={(value) => setReceiptForm({ ...receiptForm, customer_name: value })} />
+              <TextInput label="finance.paymentMethod" value={receiptForm.payment_method} onChange={(value) => setReceiptForm({ ...receiptForm, payment_method: value })} />
+              <TextInput label="finance.amount" value={receiptForm.amount} onChange={(value) => setReceiptForm({ ...receiptForm, amount: value })} />
+              <TextInput label="finance.receivedAt" type="date" value={receiptForm.received_at} onChange={(value) => setReceiptForm({ ...receiptForm, received_at: value })} />
+              <SubmitButton loading={loading} label="finance.saveReceipt" />
+            </form>
+            <form className="mt-5 space-y-3 border-t border-slate-100 pt-4" onSubmit={submitReceiptAllocation}>
+              <SelectInput label="finance.receipt" value={receiptAllocationForm.receipt_id} onChange={(value) => setReceiptAllocationForm({ ...receiptAllocationForm, receipt_id: value })} options={receipts.map((receipt) => receipt.id)} labels={Object.fromEntries(receipts.map((receipt) => [receipt.id, receipt.receipt_number || receipt.id]))} />
+              <SelectInput label="finance.receivable" value={receiptAllocationForm.receivable_id} onChange={(value) => setReceiptAllocationForm({ ...receiptAllocationForm, receivable_id: value })} options={receivables.map((receivable) => receivable.id)} labels={Object.fromEntries(receivables.map((receivable) => [receivable.id, receivable.invoice_number || receivable.id]))} />
+              <TextInput label="finance.amount" value={receiptAllocationForm.amount} onChange={(value) => setReceiptAllocationForm({ ...receiptAllocationForm, amount: value })} />
+              <SubmitButton loading={loading || !receiptAllocationForm.receipt_id || !receiptAllocationForm.receivable_id} label="finance.allocateReceipt" />
+            </form>
+          </Panel>
+        </div>
+      )}
+
+      {currentTab === 'payables' && (
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
           <Panel title="finance.payables">
             <Table
               headers={['finance.invoiceNumber', 'finance.vendor', 'finance.employee', 'finance.amount', 'developer.status']}
               rows={payables.map((payable) => [payable.invoice_number || payable.external_payable_id, payable.vendor_name, payable.employee_name, money(payable.amount, payable.currency), t(payable.status)])}
+              actions={payables.map((payable) => (
+                <div key={payable.id} className="flex gap-2">
+                  <button type="button" onClick={() => editPayable(payable)} className="h-8 rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                    {t('common.edit')}
+                  </button>
+                  <button type="button" onClick={() => void voidPayable(payable.id)} className="h-8 rounded-md border border-red-200 px-2 text-xs font-semibold text-red-700 hover:bg-red-50">
+                    {t('finance.void')}
+                  </button>
+                </div>
+              ))}
             />
           </Panel>
           <Panel title="finance.createPayable">
@@ -484,18 +843,28 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
                 <TextInput label="finance.taxAmount" value={payableForm.tax_amount} onChange={(value) => setPayableForm({ ...payableForm, tax_amount: value })} />
               </div>
               <TextInput label="finance.dueDate" type="date" value={payableForm.due_date} onChange={(value) => setPayableForm({ ...payableForm, due_date: value })} />
-              <SubmitButton loading={loading} label="finance.createPayable" />
+              <SubmitButton loading={loading} label="finance.savePayable" />
             </form>
           </Panel>
         </div>
       )}
 
-      {activeTab === 'payments' && (
+      {currentTab === 'payments' && (
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
           <Panel title="finance.payments">
             <Table
               headers={['finance.paymentNumber', 'finance.vendor', 'finance.employee', 'finance.amount', 'developer.status']}
               rows={payments.map((payment) => [payment.payment_number || payment.external_payment_id, payment.vendor_name, payment.employee_name, money(payment.amount, payment.currency), t(payment.status)])}
+              actions={payments.map((payment) => (
+                <div key={payment.id} className="flex gap-2">
+                  <button type="button" onClick={() => editPayment(payment)} className="h-8 rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                    {t('common.edit')}
+                  </button>
+                  <button type="button" onClick={() => void voidPayment(payment.id)} className="h-8 rounded-md border border-red-200 px-2 text-xs font-semibold text-red-700 hover:bg-red-50">
+                    {t('finance.void')}
+                  </button>
+                </div>
+              ))}
             />
           </Panel>
           <Panel title="finance.createPayment">
@@ -506,7 +875,7 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
               <TextInput label="finance.vendor" value={paymentForm.vendor_name} onChange={(value) => setPaymentForm({ ...paymentForm, vendor_name: value })} />
               <TextInput label="finance.employee" value={paymentForm.employee_name} onChange={(value) => setPaymentForm({ ...paymentForm, employee_name: value })} />
               <TextInput label="finance.amount" value={paymentForm.amount} onChange={(value) => setPaymentForm({ ...paymentForm, amount: value })} />
-              <SubmitButton loading={loading} label="finance.createPayment" />
+              <SubmitButton loading={loading} label="finance.savePayment" />
             </form>
             <form className="mt-5 space-y-3 border-t border-slate-100 pt-4" onSubmit={submitAllocation}>
               <SelectInput label="finance.payment" value={allocationForm.payment_id} onChange={(value) => setAllocationForm({ ...allocationForm, payment_id: value })} options={payments.map((payment) => payment.id)} labels={Object.fromEntries(payments.map((payment) => [payment.id, payment.payment_number || payment.id]))} />
@@ -518,7 +887,7 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
         </div>
       )}
 
-      {activeTab === 'adapters' && (
+      {currentTab === 'adapters' && (
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
           <Panel title="finance.adapters">
             <Table
@@ -602,9 +971,9 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
         </div>
       )}
 
-      {activeTab === 'batches' && (
+      {currentTab === 'batches' && (
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
-          <Panel title="finance.exportBatches">
+          <Panel title="finance.accountingBatches">
             <Table
               headers={[
                 'finance.period',
@@ -689,7 +1058,7 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
         </div>
       )}
 
-      {activeTab === 'reconciliation' && (
+      {currentTab === 'reconciliation' && (
         <Panel title="finance.reconciliation">
           <Table
             headers={['finance.batch', 'developer.status', 'finance.amount', 'finance.difference']}
@@ -703,7 +1072,7 @@ export function FinanceWorkspace({ token }: FinanceWorkspaceProps) {
         </Panel>
       )}
 
-      {activeTab === 'failed' && (
+      {currentTab === 'failed' && (
         <Panel title="finance.failedWebhooks">
           <Table
             headers={['finance.batch', 'developer.status', 'finance.failureReason', 'finance.updatedAt']}

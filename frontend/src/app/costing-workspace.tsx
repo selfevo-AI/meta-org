@@ -1,6 +1,6 @@
 'use client'
 
-import { BadgeDollarSign, Calculator, Coins, Gauge, Layers3, ListChecks, RefreshCw, WalletCards } from 'lucide-react'
+import { BadgeDollarSign, Ban, Calculator, Coins, Gauge, Layers3, ListChecks, Pencil, RefreshCw, WalletCards } from 'lucide-react'
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
@@ -15,7 +15,16 @@ import {
   listCostRateCards,
   listCurrencies,
   listExchangeRates,
+  updateCostBudget,
+  updateCostLedgerEntry,
+  updateCostRateCard,
+  updateExchangeRate,
   upsertCurrency,
+  voidCostBudget,
+  voidCostLedgerEntry,
+  voidCostRateCard,
+  voidCurrency,
+  voidExchangeRate,
   type ConversionResult,
   type CostBudget,
   type CostLedgerEntry,
@@ -84,6 +93,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
     external_source: '',
   })
   const [rateForm, setRateForm] = useState({
+    id: '',
     from_currency: 'USD',
     to_currency: 'CNY',
     rate: '7.2',
@@ -97,6 +107,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
     to_currency: 'CNY',
   })
   const [rateCardForm, setRateCardForm] = useState({
+    id: '',
     subject_type: 'human',
     rate_type: 'hourly',
     amount: '0',
@@ -104,12 +115,14 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
     scope_type: '',
   })
   const [budgetForm, setBudgetForm] = useState({
+    id: '',
     scope_type: 'project',
     amount: '0',
     currency: 'CNY',
     status: 'active',
   })
   const [ledgerForm, setLedgerForm] = useState({
+    id: '',
     cost_category: 'manual',
     source_type: 'manual',
     amount: '0',
@@ -191,17 +204,20 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
 
   async function submitRate(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const input = {
+      from_currency: rateForm.from_currency,
+      to_currency: rateForm.to_currency,
+      rate: numberValue(rateForm.rate),
+      source: rateForm.source,
+      provider: rateForm.provider,
+      external_rate_id: rateForm.external_rate_id,
+      metadata: {},
+    }
     await run(
       () =>
-        createExchangeRate(token, {
-          from_currency: rateForm.from_currency,
-          to_currency: rateForm.to_currency,
-          rate: numberValue(rateForm.rate),
-          source: rateForm.source,
-          provider: rateForm.provider,
-          external_rate_id: rateForm.external_rate_id,
-          metadata: {},
-        }).then(() => undefined),
+        (rateForm.id ? updateExchangeRate(token, rateForm.id, input) : createExchangeRate(token, input)).then(() =>
+          setRateForm((current) => ({ ...current, id: '' })),
+        ),
       'costing.rateSaved',
     )
   }
@@ -221,52 +237,122 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
 
   async function submitRateCard(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const input = {
+      subject_type: rateCardForm.subject_type,
+      rate_type: rateCardForm.rate_type,
+      amount: numberValue(rateCardForm.amount),
+      currency: rateCardForm.currency,
+      scope_type: rateCardForm.scope_type,
+      status: 'active',
+      metadata: {},
+    }
     await run(
       () =>
-        createCostRateCard(token, {
-          subject_type: rateCardForm.subject_type,
-          rate_type: rateCardForm.rate_type,
-          amount: numberValue(rateCardForm.amount),
-          currency: rateCardForm.currency,
-          scope_type: rateCardForm.scope_type,
-          status: 'active',
-          metadata: {},
-        }).then(() => undefined),
+        (rateCardForm.id ? updateCostRateCard(token, rateCardForm.id, input) : createCostRateCard(token, input)).then(() =>
+          setRateCardForm((current) => ({ ...current, id: '', amount: '0' })),
+        ),
       'costing.rateCardSaved',
     )
   }
 
   async function submitBudget(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const input = {
+      scope_type: budgetForm.scope_type,
+      amount: numberValue(budgetForm.amount),
+      currency: budgetForm.currency,
+      status: budgetForm.status,
+      metadata: {},
+    }
     await run(
       () =>
-        createCostBudget(token, {
-          scope_type: budgetForm.scope_type,
-          amount: numberValue(budgetForm.amount),
-          currency: budgetForm.currency,
-          status: budgetForm.status,
-          metadata: {},
-        }).then(() => undefined),
+        (budgetForm.id ? updateCostBudget(token, budgetForm.id, input) : createCostBudget(token, input)).then(() =>
+          setBudgetForm((current) => ({ ...current, id: '', amount: '0' })),
+        ),
       'costing.budgetSaved',
     )
   }
 
   async function submitLedger(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    const input = {
+      ledger_type: 'actual',
+      cost_category: ledgerForm.cost_category,
+      source_type: ledgerForm.source_type,
+      amount: numberValue(ledgerForm.amount),
+      currency: ledgerForm.currency,
+      status: 'posted',
+      description: ledgerForm.description,
+      metadata: { source_ui: 'costing_workspace' },
+    }
     await run(
       () =>
-        createCostLedgerEntry(token, {
-          ledger_type: 'actual',
-          cost_category: ledgerForm.cost_category,
-          source_type: ledgerForm.source_type,
-          amount: numberValue(ledgerForm.amount),
-          currency: ledgerForm.currency,
-          status: 'posted',
-          description: ledgerForm.description,
-          metadata: { source_ui: 'costing_workspace' },
-        }).then(() => setLedgerForm((current) => ({ ...current, amount: '0', description: '' }))),
+        (ledgerForm.id ? updateCostLedgerEntry(token, ledgerForm.id, input) : createCostLedgerEntry(token, input)).then(() =>
+          setLedgerForm((current) => ({ ...current, id: '', amount: '0', description: '' })),
+        ),
       'costing.ledgerSaved',
     )
+  }
+
+  function editCurrency(currency: Currency) {
+    setCurrencyForm({
+      code: currency.code,
+      name: currency.name,
+      currency_type: currency.currency_type,
+      symbol: currency.symbol,
+      precision_digits: String(currency.precision_digits),
+      chain_id: currency.chain_id ?? '',
+      contract_address: currency.contract_address ?? '',
+      external_source: currency.external_source ?? '',
+    })
+  }
+
+  function editRate(rate: ExchangeRateVersion) {
+    setRateForm({
+      id: rate.id,
+      from_currency: rate.from_currency,
+      to_currency: rate.to_currency,
+      rate: String(rate.rate),
+      source: rate.source,
+      provider: rate.provider ?? '',
+      external_rate_id: rate.external_rate_id ?? '',
+    })
+  }
+
+  function editRateCard(card: CostRateCard) {
+    setRateCardForm({
+      id: card.id,
+      subject_type: card.subject_type,
+      rate_type: card.rate_type,
+      amount: String(card.amount),
+      currency: card.currency,
+      scope_type: card.scope_type ?? '',
+    })
+  }
+
+  function editBudget(budget: CostBudget) {
+    setBudgetForm({
+      id: budget.id,
+      scope_type: budget.scope_type,
+      amount: String(budget.amount),
+      currency: budget.currency,
+      status: budget.status,
+    })
+  }
+
+  function editLedger(entry: CostLedgerEntry) {
+    setLedgerForm({
+      id: entry.id,
+      cost_category: entry.cost_category,
+      source_type: entry.source_type,
+      amount: String(entry.amount),
+      currency: entry.currency,
+      description: entry.description,
+    })
+  }
+
+  async function voidCostingRecord(action: () => Promise<unknown>) {
+    await run(() => action().then(() => undefined), 'costing.recordVoided')
   }
 
   return (
@@ -346,6 +432,13 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
                 currency.symbol,
                 currency.is_active ? t('active') : t('disabled'),
               ])}
+              actions={currencies.map((currency) => (
+                <RowActions
+                  key={currency.code}
+                  onEdit={() => editCurrency(currency)}
+                  onVoid={() => void voidCostingRecord(() => voidCurrency(token, currency.code))}
+                />
+              ))}
             />
           </Panel>
           <Panel title="costing.currencySettings">
@@ -396,6 +489,13 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
                   t(`costing.${rate.source}`),
                   dateText(rate.effective_from),
                 ])}
+                actions={exchangeRates.map((rate) => (
+                  <RowActions
+                    key={rate.id}
+                    onEdit={() => editRate(rate)}
+                    onVoid={() => void voidCostingRecord(() => voidExchangeRate(token, rate.id))}
+                  />
+                ))}
               />
             </Panel>
             <Panel title="costing.conversion">
@@ -430,7 +530,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
               <SelectInput label="costing.source" value={rateForm.source} onChange={(value) => setRateForm({ ...rateForm, source: value })} options={['manual', 'external']} prefix="costing" />
               <TextInput label="costing.provider" value={rateForm.provider} onChange={(value) => setRateForm({ ...rateForm, provider: value })} />
               <TextInput label="costing.externalRateId" value={rateForm.external_rate_id} onChange={(value) => setRateForm({ ...rateForm, external_rate_id: value })} />
-              <SubmitButton loading={loading} label="costing.saveRate" />
+              <SubmitButton loading={loading} label={rateForm.id ? 'costing.updateRate' : 'costing.saveRate'} />
             </form>
           </Panel>
         </div>
@@ -448,6 +548,13 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
                 money(card.base_amount, card.base_currency),
                 t(card.status),
               ])}
+              actions={rateCards.map((card) => (
+                <RowActions
+                  key={card.id}
+                  onEdit={() => editRateCard(card)}
+                  onVoid={() => void voidCostingRecord(() => voidCostRateCard(token, card.id))}
+                />
+              ))}
             />
           </Panel>
           <Panel title="costing.rateCardSettings">
@@ -457,7 +564,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
               <TextInput label="finance.amount" type="number" value={rateCardForm.amount} onChange={(value) => setRateCardForm({ ...rateCardForm, amount: value })} />
               <SelectInput label="finance.currency" value={rateCardForm.currency} onChange={(value) => setRateCardForm({ ...rateCardForm, currency: value })} options={currencyOptions} />
               <SelectInput label="costing.scope" value={rateCardForm.scope_type} onChange={(value) => setRateCardForm({ ...rateCardForm, scope_type: value })} options={['', ...scopeTypes]} prefix="costing" />
-              <SubmitButton loading={loading} label="costing.saveRateCard" />
+              <SubmitButton loading={loading} label={rateCardForm.id ? 'costing.updateRateCard' : 'costing.saveRateCard'} />
             </form>
           </Panel>
         </div>
@@ -474,6 +581,13 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
                 money(budget.base_amount, budget.base_currency),
                 t(budget.status),
               ])}
+              actions={budgets.map((budget) => (
+                <RowActions
+                  key={budget.id}
+                  onEdit={() => editBudget(budget)}
+                  onVoid={() => void voidCostingRecord(() => voidCostBudget(token, budget.id))}
+                />
+              ))}
             />
           </Panel>
           <Panel title="costing.budgetSettings">
@@ -481,7 +595,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
               <SelectInput label="costing.scope" value={budgetForm.scope_type} onChange={(value) => setBudgetForm({ ...budgetForm, scope_type: value })} options={scopeTypes} prefix="costing" />
               <TextInput label="finance.amount" type="number" value={budgetForm.amount} onChange={(value) => setBudgetForm({ ...budgetForm, amount: value })} />
               <SelectInput label="finance.currency" value={budgetForm.currency} onChange={(value) => setBudgetForm({ ...budgetForm, currency: value })} options={currencyOptions} />
-              <SubmitButton loading={loading} label="costing.saveBudget" />
+              <SubmitButton loading={loading} label={budgetForm.id ? 'costing.updateBudget' : 'costing.saveBudget'} />
             </form>
           </Panel>
         </div>
@@ -490,7 +604,16 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
       {activeTab === 'ledger' && (
         <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
           <Panel title="costing.ledger">
-            <LedgerTable entries={ledgerEntries} />
+            <LedgerTable
+              entries={ledgerEntries}
+              actions={ledgerEntries.map((entry) => (
+                <RowActions
+                  key={entry.id}
+                  onEdit={() => editLedger(entry)}
+                  onVoid={() => void voidCostingRecord(() => voidCostLedgerEntry(token, entry.id))}
+                />
+              ))}
+            />
           </Panel>
           <Panel title="costing.ledgerSettings">
             <form className="space-y-3" onSubmit={submitLedger}>
@@ -499,7 +622,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
               <TextInput label="finance.amount" type="number" value={ledgerForm.amount} onChange={(value) => setLedgerForm({ ...ledgerForm, amount: value })} />
               <SelectInput label="finance.currency" value={ledgerForm.currency} onChange={(value) => setLedgerForm({ ...ledgerForm, currency: value })} options={currencyOptions} />
               <TextInput label="costing.description" value={ledgerForm.description} onChange={(value) => setLedgerForm({ ...ledgerForm, description: value })} />
-              <SubmitButton loading={loading} label="costing.saveLedger" />
+              <SubmitButton loading={loading} label={ledgerForm.id ? 'costing.updateLedger' : 'costing.saveLedger'} />
             </form>
           </Panel>
         </div>
@@ -601,7 +724,7 @@ function SubmitButton({ loading, label }: { loading: boolean; label: string }) {
   )
 }
 
-function LedgerTable({ entries }: { entries: CostLedgerEntry[] }) {
+function LedgerTable({ entries, actions = [] }: { entries: CostLedgerEntry[]; actions?: ReactNode[] }) {
   const { t } = useI18n()
   return (
     <Table
@@ -613,6 +736,7 @@ function LedgerTable({ entries }: { entries: CostLedgerEntry[] }) {
         money(entry.base_amount, entry.base_currency),
         t(entry.status),
       ])}
+      actions={actions}
     />
   )
 }
@@ -626,7 +750,23 @@ function KeyValueTable({ items, currency }: { items: Record<string, number>; cur
   return <Table headers={['common.name', 'finance.amount']} rows={rows} />
 }
 
-function Table({ headers, rows }: { headers: string[]; rows: string[][] }) {
+function RowActions({ onEdit, onVoid }: { onEdit: () => void; onVoid: () => void }) {
+  const { t } = useI18n()
+  return (
+    <div className="flex gap-2">
+      <button type="button" onClick={onEdit} className="inline-flex h-8 items-center gap-1 rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100">
+        <Pencil className="h-3.5 w-3.5" />
+        {t('common.edit')}
+      </button>
+      <button type="button" onClick={onVoid} className="inline-flex h-8 items-center gap-1 rounded-md border border-red-200 px-2 text-xs font-semibold text-red-700 hover:bg-red-50">
+        <Ban className="h-3.5 w-3.5" />
+        {t('common.void')}
+      </button>
+    </div>
+  )
+}
+
+function Table({ headers, rows, actions = [] }: { headers: string[]; rows: string[][]; actions?: ReactNode[] }) {
   const { t } = useI18n()
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-200">
@@ -638,6 +778,7 @@ function Table({ headers, rows }: { headers: string[]; rows: string[][] }) {
                 {t(header)}
               </th>
             ))}
+            {actions.length > 0 && <th className="px-3 py-2 text-left text-xs font-semibold uppercase tracking-normal text-slate-500">{t('common.action')}</th>}
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100 bg-white">
@@ -648,11 +789,12 @@ function Table({ headers, rows }: { headers: string[]; rows: string[][] }) {
                   {cell}
                 </td>
               ))}
+              {actions.length > 0 && <td className="px-3 py-2">{actions[index]}</td>}
             </tr>
           ))}
           {rows.length === 0 && (
             <tr>
-              <td colSpan={headers.length} className="px-3 py-6 text-center text-sm text-slate-400">
+              <td colSpan={headers.length + (actions.length > 0 ? 1 : 0)} className="px-3 py-6 text-center text-sm text-slate-400">
                 {t('common.empty')}
               </td>
             </tr>

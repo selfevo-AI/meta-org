@@ -2,6 +2,7 @@
 
 import {
   Activity,
+  ArrowDown,
   ArrowUp,
   Bot,
   Boxes,
@@ -15,6 +16,7 @@ import {
   FolderKanban,
   Gauge,
   GitBranch,
+  Github,
   Home as HomeIcon,
   KeyRound,
   LogOut,
@@ -77,8 +79,12 @@ const domainLabels: Record<string, string> = {
   Cost: '成本',
   Feedback: '反馈评估',
   DeveloperTools: '模型设置',
-  Finance: '财务导出',
-  Costing: '成本框架',
+  Finance: '财务核算',
+  Costing: '成本核算',
+  FinanceAccounting: '财务核算',
+  FinanceReceivables: '应收',
+  FinancePayables: '应付',
+  FinanceCostAccounting: '成本核算',
   MetaResource: 'Meta 资源',
 }
 
@@ -102,6 +108,10 @@ const domainIcons: Record<string, typeof Gauge> = {
   DeveloperTools: Code2,
   Finance: WalletCards,
   Costing: CircleDollarSign,
+  FinanceAccounting: WalletCards,
+  FinanceReceivables: ArrowDown,
+  FinancePayables: ArrowUp,
+  FinanceCostAccounting: CircleDollarSign,
   MetaResource: Boxes,
 }
 
@@ -123,6 +133,10 @@ const dedicatedDomains = new Set([
   'DeveloperTools',
   'Finance',
   'Costing',
+  'FinanceAccounting',
+  'FinanceReceivables',
+  'FinancePayables',
+  'FinanceCostAccounting',
   ...lifecycleDomains,
 ])
 const menuStorageKey = 'meta_org.menu.groups.v2'
@@ -130,6 +144,7 @@ const expandedMenuStorageKey = 'meta_org.menu.expanded.v2'
 const themeStorageKey = 'meta_org.theme.v1'
 const legacyMenuStorageKey = 'harness.menu.groups.v1'
 const legacyExpandedMenuStorageKey = 'harness.menu.expanded.v1'
+const projectGithubURL = 'https://github.com/selfevo-AI/meta-org'
 
 const defaultMenuGroups: MenuGroup[] = [
   {
@@ -151,12 +166,15 @@ const defaultMenuGroups: MenuGroup[] = [
       'MetaOrg',
       'Dashboard',
       'DeveloperTools',
-      'Costing',
-      'Finance',
       'Identity',
       'Layer',
       'Observability',
     ],
+  },
+  {
+    id: 'finance',
+    label: '财务',
+    domains: ['FinanceAccounting', 'FinanceReceivables', 'FinancePayables', 'FinanceCostAccounting'],
   },
 ]
 
@@ -290,6 +308,10 @@ function assistantModuleForDomain(domain: string): string {
     DeveloperTools: 'model_settings',
     Costing: 'costing',
     Finance: 'finance',
+    FinanceAccounting: 'finance',
+    FinanceReceivables: 'finance',
+    FinancePayables: 'finance',
+    FinanceCostAccounting: 'costing',
   }
   return modules[domain] ?? domain.toLowerCase()
 }
@@ -751,10 +773,14 @@ export default function Home() {
                 />
               ) : workspaceView === 'domain:DeveloperTools' ? (
                 <DeveloperToolsWorkspace token={token} />
-              ) : workspaceView === 'domain:Costing' ? (
+              ) : workspaceView === 'domain:Costing' || workspaceView === 'domain:FinanceCostAccounting' ? (
                 <CostingWorkspace token={token} />
-              ) : workspaceView === 'domain:Finance' ? (
-                <FinanceWorkspace token={token} />
+              ) : workspaceView === 'domain:Finance' || workspaceView === 'domain:FinanceAccounting' ? (
+                <FinanceWorkspace token={token} mode="accounting" />
+              ) : workspaceView === 'domain:FinanceReceivables' ? (
+                <FinanceWorkspace token={token} mode="receivables" />
+              ) : workspaceView === 'domain:FinancePayables' ? (
+                <FinanceWorkspace token={token} mode="payables" />
               ) : (
                 <AgentOnlyWorkspace domain={workspaceView.replace('domain:', '')} onAssistantOpen={() => setAssistantOpen(true)} />
               )}
@@ -870,6 +896,16 @@ function Topbar({
               {formatDate(overview.generated_at)}
             </button>
           )}
+          <a
+            href={projectGithubURL}
+            target="_blank"
+            rel="noreferrer"
+            aria-label={t('shell.githubLink')}
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-700 px-3 text-xs font-bold text-slate-300 transition hover:border-blue-400/60 hover:text-blue-200"
+          >
+            <Github className="h-3.5 w-3.5" />
+            <span className="hidden sm:inline">GitHub</span>
+          </a>
           <div className="inline-flex h-9 items-center rounded-lg border border-slate-700 bg-slate-950/40 p-1">
             <button
               type="button"
