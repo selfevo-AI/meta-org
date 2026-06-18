@@ -24,11 +24,27 @@ func NewHandler(service *Service) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
+	r.Get("/assistant/context-targets", h.listContextTargets)
 	r.Post("/assistant/sessions", h.createSession)
 	r.Get("/assistant/sessions", h.listSessions)
 	r.Get("/assistant/sessions/{id}", h.getSession)
 	r.Get("/assistant/sessions/{id}/steps", h.listSteps)
+	r.Get("/assistant/sessions/{id}/proposals", h.listProposals)
 	r.Post("/assistant/sessions/{id}/runs", h.runSession)
+	r.Get("/assistant/skills", h.listBusinessSkills)
+	r.Post("/assistant/skills", h.createBusinessSkill)
+	r.Post("/assistant/skills/{id}/activate", h.activateBusinessSkill)
+	r.Post("/assistant/skills/{id}/run", h.runBusinessSkill)
+	r.Post("/assistant/proposals/{id}/confirm", h.confirmProposal)
+	r.Post("/assistant/proposals/{id}/reject", h.rejectProposal)
+}
+
+func (h *Handler) listContextTargets(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := authenticatedActor(w, r); !ok {
+		return
+	}
+	result, err := h.service.ListContextTargets(r.Context(), r.URL.Query().Get("module_key"), r.URL.Query().Get("target_type"), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
 }
 
 func (h *Handler) createSession(w http.ResponseWriter, r *http.Request) {
@@ -79,6 +95,19 @@ func (h *Handler) listSteps(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, http.StatusOK, result, err)
 }
 
+func (h *Handler) listProposals(w http.ResponseWriter, r *http.Request) {
+	actorID, actorType, ok := authenticatedActor(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.ListProposals(r.Context(), id, actorID, actorType, queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
 func (h *Handler) runSession(w http.ResponseWriter, r *http.Request) {
 	actorID, actorType, ok := authenticatedActor(w, r)
 	if !ok {
@@ -115,6 +144,89 @@ func (h *Handler) runSession(w http.ResponseWriter, r *http.Request) {
 		writeSSE(w, name, event)
 		flusher.Flush()
 	}
+}
+
+func (h *Handler) confirmProposal(w http.ResponseWriter, r *http.Request) {
+	actorID, actorType, ok := authenticatedActor(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.ConfirmProposal(r.Context(), id, actorID, actorType)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) rejectProposal(w http.ResponseWriter, r *http.Request) {
+	actorID, actorType, ok := authenticatedActor(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input struct {
+		Reason string `json:"reason"`
+	}
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.RejectProposal(r.Context(), id, actorID, actorType, input.Reason)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) listBusinessSkills(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := authenticatedActor(w, r); !ok {
+		return
+	}
+	result, err := h.service.ListBusinessSkills(r.Context(), r.URL.Query().Get("module_key"), r.URL.Query().Get("target_type"))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) createBusinessSkill(w http.ResponseWriter, r *http.Request) {
+	actorID, actorType, ok := authenticatedActor(w, r)
+	if !ok {
+		return
+	}
+	var input CreateBusinessSkillInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.CreateBusinessSkill(r.Context(), actorID, actorType, input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) activateBusinessSkill(w http.ResponseWriter, r *http.Request) {
+	actorID, actorType, ok := authenticatedActor(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.ActivateBusinessSkill(r.Context(), id, actorID, actorType)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) runBusinessSkill(w http.ResponseWriter, r *http.Request) {
+	actorID, actorType, ok := authenticatedActor(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input map[string]any
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.RunBusinessSkill(r.Context(), id, actorID, actorType, input)
+	writeResult(w, http.StatusCreated, result, err)
 }
 
 func authenticatedActor(w http.ResponseWriter, r *http.Request) (uuid.UUID, string, bool) {

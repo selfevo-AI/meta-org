@@ -24,7 +24,6 @@ import {
   Moon,
   MoreHorizontal,
   RefreshCw,
-  Search,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -34,10 +33,26 @@ import {
   Workflow,
   X,
 } from 'lucide-react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent, FormEvent } from 'react'
-import { approveToolApproval, getMetaOrgInbox, getMetaOrgOverview, listRoles, login, registerUser, rejectToolApproval } from '@/lib/api'
-import type { InboxItem, MetaOrgOverview, Role } from '@/lib/api'
+import {
+  activateAssistantSkill,
+  approveToolApproval,
+  confirmAssistantProposal,
+  createAssistantSkill,
+  getMetaOrgInbox,
+  getMetaOrgOverview,
+  listAssistantContextTargets,
+  listAssistantProposals,
+  listAssistantSkills,
+  listRoles,
+  login,
+  registerUser,
+  rejectAssistantProposal,
+  rejectToolApproval,
+  runAssistantSkill,
+} from '@/lib/api'
+import type { AssistantBusinessSkill, AssistantContextTarget, AssistantProposal, InboxItem, MetaOrgOverview, Role } from '@/lib/api'
 import { clearSession, getSessionUser, getToken, setSession } from '@/lib/auth'
 import { useI18n } from '@/lib/i18n'
 import { apiOperations, getOperationProfile, operationDomains } from '@/lib/operations'
@@ -315,6 +330,20 @@ function assistantModuleForDomain(domain: string): string {
   }
   return modules[domain] ?? domain.toLowerCase()
 }
+
+const globalAssistantModules = [
+  { id: 'meta_org', key: 'meta_org', targetType: '', label: 'MetaOrg' },
+  { id: 'requirement', key: 'requirement', targetType: 'requirement', label: 'Requirement' },
+  { id: 'project', key: 'project', targetType: 'project', label: 'Project' },
+  { id: 'delivery', key: 'delivery', targetType: 'deliverable', label: 'Delivery' },
+  { id: 'project_cost', key: 'project_cost', targetType: 'project_cost', label: 'Cost' },
+  { id: 'feedback', key: 'feedback', targetType: 'project_evaluation', label: 'Feedback' },
+  { id: 'workflow', key: 'workflow', targetType: 'workflow_instance', label: 'Workflow' },
+  { id: 'finance_accounting', key: 'finance', targetType: 'finance_settlement', label: 'FinanceAccounting' },
+  { id: 'finance_receivables', key: 'finance', targetType: 'finance_receivable', label: 'FinanceReceivables' },
+  { id: 'finance_payables', key: 'finance', targetType: 'finance_payable', label: 'FinancePayables' },
+  { id: 'finance_costing', key: 'costing', targetType: 'cost_ledger_entry', label: 'FinanceCostAccounting' },
+]
 
 function agentIntentForOperation(operation: ApiOperation, context: Record<string, string>): string {
   const contextLines = Object.entries(context)
@@ -737,6 +766,7 @@ export default function Home() {
               {workspaceView === 'overview' ? (
                 overview ? (
                   <Dashboard
+                    token={token}
                     overview={overview}
                     inbox={inbox}
                     healthRatio={healthRatio}
@@ -1251,11 +1281,13 @@ function AgentOnlyWorkspace({ domain, onAssistantOpen }: { domain: string; onAss
 }
 
 function Dashboard({
+  token,
   overview,
   inbox,
   healthRatio,
   onReviewApproval,
 }: {
+  token: string
   overview: MetaOrgOverview
   inbox: InboxItem[]
   healthRatio: number
@@ -1263,12 +1295,6 @@ function Dashboard({
 }) {
   const { t } = useI18n()
   const agentCoverage = overview.agents.total > 0 ? overview.agents.active / overview.agents.total : 0
-  const quickActions = [
-    t('shell.quick.fixPipeline'),
-    t('shell.quick.gateway'),
-    t('shell.quick.optimizeCost'),
-    t('shell.quick.pricing'),
-  ]
   const filters = [
     ['shell.filter.all', Sparkles],
     ['shell.filter.business', BriefcaseBusiness],
@@ -1291,33 +1317,6 @@ function Dashboard({
           </h1>
           <p className="mx-auto mt-4 max-w-2xl text-base font-medium text-slate-400">{t('shell.commandSubtitle')}</p>
 
-          <div className="studio-command mx-auto mt-8 flex max-w-3xl items-center gap-3 rounded-[8px] p-2 text-left">
-            <Search className="ml-3 h-5 w-5 shrink-0 text-[#DF6A24]" />
-            <input
-              readOnly
-              value=""
-              placeholder={t('shell.commandPlaceholder')}
-              className="h-12 min-w-0 flex-1 border-0 bg-transparent text-sm font-medium text-slate-200 outline-none"
-            />
-            <button
-              type="button"
-              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[#AD4714] text-[#fffaf5] transition hover:bg-[#B84F18]"
-            >
-              <ArrowUp className="h-5 w-5" />
-            </button>
-          </div>
-
-          <div className="mx-auto mt-4 flex max-w-3xl flex-wrap justify-center gap-2">
-            {quickActions.map((action) => (
-              <span
-                key={action}
-                className="rounded-full border border-slate-700 bg-slate-900/70 px-3 py-1.5 text-xs font-bold text-slate-300"
-              >
-                {action}
-              </span>
-            ))}
-          </div>
-
           <div className="mt-8 flex flex-wrap justify-center gap-2">
             {filters.map(([label, Icon], index) => (
               <button
@@ -1335,6 +1334,8 @@ function Dashboard({
             ))}
           </div>
         </section>
+
+        <GlobalBusinessInteraction token={token} />
 
         <div className="flex items-center justify-between gap-3 px-1">
           <h2 className="text-sm font-bold uppercase tracking-normal text-slate-400">{t('shell.openWork')}</h2>
@@ -1517,6 +1518,391 @@ function Dashboard({
 
         <RecentEvents events={overview.activity} />
     </div>
+  )
+}
+
+function GlobalBusinessInteraction({ token }: { token: string }) {
+  const { t } = useI18n()
+  const [moduleID, setModuleID] = useState('meta_org')
+  const [targets, setTargets] = useState<AssistantContextTarget[]>([])
+  const [targetValue, setTargetValue] = useState('')
+  const [skills, setSkills] = useState<AssistantBusinessSkill[]>([])
+  const [selectedSkillID, setSelectedSkillID] = useState('')
+  const [sessionID, setSessionID] = useState('')
+  const [proposals, setProposals] = useState<AssistantProposal[]>([])
+  const [skillName, setSkillName] = useState('')
+  const [skillPrompt, setSkillPrompt] = useState('')
+  const [skillIntent, setSkillIntent] = useState('')
+  const [skillIntentKey, setSkillIntentKey] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [notice, setNotice] = useState('')
+  const [error, setError] = useState('')
+  const pendingSkillRunRef = useRef<{
+    skillID: string
+    moduleKey: string
+    targetType: string
+    targetID: string
+  } | null>(null)
+  const activeModule = globalAssistantModules.find((item) => item.id === moduleID) ?? globalAssistantModules[0]
+  const moduleKey = activeModule.key
+  const moduleTargetType = activeModule.targetType
+  const selectedSkill = skills.find((skill) => skill.id === selectedSkillID)
+
+  const selectedTarget = useMemo(() => {
+    if (!targetValue) return undefined
+    return targets.find((target) => `${target.type}:${target.id}` === targetValue)
+  }, [targetValue, targets])
+  const activeTargetType = selectedTarget?.type || moduleTargetType
+  const assistantContextKey = `${moduleKey}:${activeTargetType}:${selectedTarget?.id || ''}`
+
+  function resetAssistantContext() {
+    setSessionID('')
+    setProposals([])
+    setSkillIntent('')
+    setSkillIntentKey('')
+    pendingSkillRunRef.current = null
+  }
+
+  function handleModuleChange(nextModuleID: string) {
+    setModuleID(nextModuleID)
+    setTargetValue('')
+    resetAssistantContext()
+  }
+
+  function handleTargetChange(nextTargetValue: string) {
+    setTargetValue(nextTargetValue)
+    resetAssistantContext()
+  }
+
+  function handleSessionCreated(nextSessionID: string) {
+    setSessionID(nextSessionID)
+    setProposals([])
+    const pending = pendingSkillRunRef.current
+    if (!pending) return
+    pendingSkillRunRef.current = null
+    setBusy(true)
+    runAssistantSkill(token, pending.skillID, {
+      module_key: pending.moduleKey,
+      target_type: pending.targetType,
+      target_id: pending.targetID,
+      session_id: nextSessionID,
+    })
+      .then(() => setNotice(t('assistant.global.skillRunCreated')))
+      .catch((err) => setError(err instanceof Error ? err.message : t('common.operationFailed')))
+      .finally(() => setBusy(false))
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([listAssistantContextTargets(token, moduleKey, moduleTargetType), listAssistantSkills(token, moduleKey, moduleTargetType)])
+      .then(([targetItems, skillItems]) => {
+        if (cancelled) return
+        setTargets(targetItems)
+        setSkills(skillItems)
+        setSelectedSkillID((current) => (skillItems.some((skill) => skill.id === current) ? current : skillItems[0]?.id || ''))
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : t('assistant.global.loadFailed'))
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [moduleKey, moduleTargetType, t, token])
+
+  useEffect(() => {
+    if (!sessionID) return
+    let cancelled = false
+    const timers = [0, 2200, 5200, 8200].map((delay) =>
+      window.setTimeout(() => {
+        listAssistantProposals(token, sessionID)
+          .then((items) => {
+            if (!cancelled) setProposals(items)
+          })
+          .catch(() => {
+            if (!cancelled) setProposals([])
+          })
+      }, delay),
+    )
+    return () => {
+      cancelled = true
+      timers.forEach((timer) => window.clearTimeout(timer))
+    }
+  }, [sessionID, token])
+
+  async function refreshProposals() {
+    if (!sessionID) return
+    setBusy(true)
+    setError('')
+    try {
+      setProposals(await listAssistantProposals(token, sessionID))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('assistant.global.loadFailed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleProposal(id: string, decision: 'confirm' | 'reject') {
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      if (decision === 'confirm') {
+        await confirmAssistantProposal(token, id)
+        setNotice(t('assistant.global.proposalConfirmed'))
+      } else {
+        await rejectAssistantProposal(token, id, 'rejected from global business interaction')
+        setNotice(t('assistant.global.proposalRejected'))
+      }
+      await refreshProposals()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('common.operationFailed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleCreateSkill() {
+    if (!skillName.trim() || !skillPrompt.trim()) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const skill = await createAssistantSkill(token, {
+        module_key: moduleKey,
+        target_type: activeTargetType,
+        name: skillName.trim(),
+        prompt_template: skillPrompt.trim(),
+        source_session_id: sessionID || undefined,
+        metadata: {
+          source: 'global_business_interaction',
+          target_id: selectedTarget?.id || '',
+        },
+      })
+      setSkills((current) => [skill, ...current])
+      setSelectedSkillID(skill.id)
+      setSkillName('')
+      setSkillPrompt('')
+      setNotice(t('assistant.global.skillSaved'))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('common.operationFailed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleActivateSkill(id: string) {
+    setBusy(true)
+    setError('')
+    try {
+      const updated = await activateAssistantSkill(token, id)
+      setSkills((current) => current.map((skill) => (skill.id === id ? updated : skill)))
+      setNotice(t('assistant.global.skillActivated'))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('common.operationFailed'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleRunSkill() {
+    if (!selectedSkillID) return
+    const skill = selectedSkill
+    if (!skill || skill.status !== 'active') return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    pendingSkillRunRef.current = {
+      skillID: selectedSkillID,
+      moduleKey,
+      targetType: activeTargetType,
+      targetID: selectedTarget?.id || '',
+    }
+    setSkillIntent(
+      [
+        skill.prompt_template,
+        '',
+        `${t('assistant.global.module')}: ${t(activeModule.label)}`,
+        selectedTarget
+          ? `${t('assistant.global.target')}: ${selectedTarget.type} ${selectedTarget.id} ${selectedTarget.title}`
+          : `${t('assistant.global.target')}: ${t('assistant.global.noTarget')}`,
+      ].join('\n'),
+    )
+    setSkillIntentKey(`${skill.id}-${Date.now()}`)
+    setBusy(false)
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white shadow-sm">
+      <div className="grid gap-0 xl:grid-cols-[1fr_360px]">
+        <div className="min-h-[560px]">
+          <AIAssistant
+            key={assistantContextKey}
+            token={token}
+            contextType={moduleKey}
+            targetType={activeTargetType}
+            targetID={selectedTarget?.id}
+            autoModel
+            hideModelSelector
+            initialIntent={skillIntent}
+            initialIntentKey={skillIntentKey}
+            autoRunInitialIntent
+            className="min-h-[560px] rounded-l-lg"
+            onSessionCreated={handleSessionCreated}
+          />
+        </div>
+        <aside className="border-t border-slate-200 p-4 xl:border-l xl:border-t-0">
+          <div className="space-y-3">
+            <div>
+              <label className="text-xs font-semibold text-slate-500">{t('assistant.global.module')}</label>
+              <select
+                value={moduleID}
+                onChange={(event) => handleModuleChange(event.target.value)}
+                className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none focus:border-[#AD4714] focus:ring-2 focus:ring-[#DF6A24]/20"
+              >
+                {globalAssistantModules.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {t(item.label)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-slate-500">{t('assistant.global.target')}</label>
+              <select
+                value={targetValue}
+                onChange={(event) => handleTargetChange(event.target.value)}
+                className="mt-1 h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none focus:border-[#AD4714] focus:ring-2 focus:ring-[#DF6A24]/20"
+              >
+                <option value="">{t('assistant.global.noTarget')}</option>
+                {targets.map((target) => (
+                  <option key={`${target.type}:${target.id}`} value={`${target.type}:${target.id}`}>
+                    {target.type} · {target.title || target.id}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold text-slate-950">{t('assistant.global.proposals')}</h3>
+                <button
+                  type="button"
+                  onClick={() => void refreshProposals()}
+                  disabled={!sessionID || busy}
+                  className="inline-flex h-8 items-center rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-700 transition hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t('common.refresh')}
+                </button>
+              </div>
+              <div className="mt-3 space-y-2">
+                {proposals.length > 0 ? (
+                  proposals.map((proposal) => (
+                    <div key={proposal.id} className="rounded-md border border-slate-200 bg-white p-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <p className="line-clamp-2 text-sm font-semibold text-slate-900">{proposal.title || proposal.summary}</p>
+                        <StatusPill label={proposal.status} tone={proposal.status === 'applied' ? 'green' : 'blue'} />
+                      </div>
+                      <p className="mt-2 line-clamp-3 text-xs text-slate-500">{proposal.summary}</p>
+                      {proposal.status === 'pending' && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() => void handleProposal(proposal.id, 'confirm')}
+                            disabled={busy}
+                            className="inline-flex h-8 items-center rounded-md bg-emerald-600 px-2.5 text-xs font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-50"
+                          >
+                            {t('assistant.global.confirmWriteback')}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handleProposal(proposal.id, 'reject')}
+                            disabled={busy}
+                            className="inline-flex h-8 items-center rounded-md border border-red-200 bg-red-50 px-2.5 text-xs font-semibold text-red-700 transition hover:bg-red-100 disabled:opacity-50"
+                          >
+                            {t('assistant.global.rejectProposal')}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-slate-500">{t('assistant.global.noProposals')}</p>
+                )}
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+              <h3 className="text-sm font-semibold text-slate-950">{t('assistant.global.skills')}</h3>
+              <div className="mt-3 space-y-2">
+                <select
+                  value={selectedSkillID}
+                  onChange={(event) => setSelectedSkillID(event.target.value)}
+                  className="h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 outline-none focus:border-[#AD4714] focus:ring-2 focus:ring-[#DF6A24]/20"
+                >
+                  <option value="">{t('assistant.global.noSkill')}</option>
+                  {skills.map((skill) => (
+                    <option key={skill.id} value={skill.id}>
+                      {skill.name} · {t(skill.status)}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleRunSkill()}
+                    disabled={!selectedSkillID || selectedSkill?.status !== 'active' || busy}
+                    className="inline-flex h-8 items-center rounded-md bg-[#AD4714] px-2.5 text-xs font-semibold text-[#fffaf5] transition hover:bg-[#B84F18] disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {t('assistant.global.runSkill')}
+                  </button>
+                  {selectedSkillID && selectedSkill?.status !== 'active' && (
+                    <button
+                      type="button"
+                      onClick={() => void handleActivateSkill(selectedSkillID)}
+                      disabled={busy}
+                      className="inline-flex h-8 items-center rounded-md border border-slate-300 px-2.5 text-xs font-semibold text-slate-700 transition hover:bg-white disabled:opacity-50"
+                    >
+                      {t('assistant.global.activateSkill')}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-4 space-y-2">
+                <input
+                  value={skillName}
+                  onChange={(event) => setSkillName(event.target.value)}
+                  placeholder={t('assistant.global.skillName')}
+                  className="h-10 w-full rounded-lg border border-slate-300 px-3 text-sm text-slate-900 outline-none focus:border-[#AD4714] focus:ring-2 focus:ring-[#DF6A24]/20"
+                />
+                <textarea
+                  value={skillPrompt}
+                  onChange={(event) => setSkillPrompt(event.target.value)}
+                  placeholder={t('assistant.global.skillPrompt')}
+                  className="min-h-[84px] w-full resize-none rounded-lg border border-slate-300 p-3 text-sm text-slate-900 outline-none focus:border-[#AD4714] focus:ring-2 focus:ring-[#DF6A24]/20"
+                />
+                <button
+                  type="button"
+                  onClick={() => void handleCreateSkill()}
+                  disabled={!skillName.trim() || !skillPrompt.trim() || busy}
+                  className="inline-flex h-9 w-full items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {t('assistant.global.saveSkill')}
+                </button>
+              </div>
+            </div>
+
+            {(notice || error) && (
+              <p className={`rounded-md px-3 py-2 text-sm ${error ? 'bg-red-50 text-red-700' : 'bg-emerald-50 text-emerald-700'}`}>
+                {error || notice}
+              </p>
+            )}
+          </div>
+        </aside>
+      </div>
+    </section>
   )
 }
 

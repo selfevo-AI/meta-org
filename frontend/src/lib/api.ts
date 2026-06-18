@@ -247,6 +247,57 @@ export async function listAssistantSteps(token: string, sessionID: string): Prom
   return apiRequest<AssistantStep[]>(`/assistant/sessions/${sessionID}/steps`, { token })
 }
 
+export async function listAssistantContextTargets(token: string, moduleKey: string, targetType?: string): Promise<AssistantContextTarget[]> {
+  const params = new URLSearchParams()
+  if (moduleKey) params.set('module_key', moduleKey)
+  if (targetType) params.set('target_type', targetType)
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return apiRequest<AssistantContextTarget[]>(`/assistant/context-targets${query}`, { token })
+}
+
+export async function listAssistantProposals(token: string, sessionID: string): Promise<AssistantProposal[]> {
+  return apiRequest<AssistantProposal[]>(`/assistant/sessions/${sessionID}/proposals`, { token })
+}
+
+export async function confirmAssistantProposal(token: string, proposalID: string): Promise<AssistantProposal> {
+  return apiRequest<AssistantProposal>(`/assistant/proposals/${proposalID}/confirm`, { method: 'POST', token })
+}
+
+export async function rejectAssistantProposal(token: string, proposalID: string, reason = ''): Promise<AssistantProposal> {
+  return apiRequest<AssistantProposal>(`/assistant/proposals/${proposalID}/reject`, {
+    method: 'POST',
+    token,
+    body: { reason },
+  })
+}
+
+export async function listAssistantSkills(token: string, moduleKey?: string, targetType?: string): Promise<AssistantBusinessSkill[]> {
+  const params = new URLSearchParams()
+  if (moduleKey) params.set('module_key', moduleKey)
+  if (targetType) params.set('target_type', targetType)
+  const query = params.toString() ? `?${params.toString()}` : ''
+  return apiRequest<AssistantBusinessSkill[]>(`/assistant/skills${query}`, { token })
+}
+
+export async function createAssistantSkill(
+  token: string,
+  input: CreateAssistantBusinessSkillInput,
+): Promise<AssistantBusinessSkill> {
+  return apiRequest<AssistantBusinessSkill>('/assistant/skills', { method: 'POST', token, body: input })
+}
+
+export async function activateAssistantSkill(token: string, skillID: string): Promise<AssistantBusinessSkill> {
+  return apiRequest<AssistantBusinessSkill>(`/assistant/skills/${skillID}/activate`, { method: 'POST', token })
+}
+
+export async function runAssistantSkill(
+  token: string,
+  skillID: string,
+  input: Record<string, unknown>,
+): Promise<AssistantSkillRun> {
+  return apiRequest<AssistantSkillRun>(`/assistant/skills/${skillID}/run`, { method: 'POST', token, body: input })
+}
+
 export async function getAICostSummary(token: string): Promise<AICostSummary> {
   return apiRequest<AICostSummary>('/ai-gateway/cost-summary', { token })
 }
@@ -1089,6 +1140,7 @@ export interface AssistantSession {
   mode: 'business_process' | 'self_evolution'
   module_key: string
   status: string
+  agent_id?: string
   provider_type?: string
   model?: string
   service_tier?: string
@@ -1100,6 +1152,8 @@ export interface AssistantSession {
   project_id?: string
   workflow_id?: string
   task_id?: string
+  target_type?: string
+  target_id?: string
   working_memory: Record<string, unknown>
   metadata: Record<string, unknown>
   last_error?: string
@@ -1111,6 +1165,7 @@ export interface CreateAssistantSessionInput {
   title?: string
   mode?: 'business_process' | 'self_evolution'
   module_key: string
+  agent_id?: string
   provider_id?: string
   preferred_channel_id?: string
   provider_type?: 'openai' | 'anthropic' | 'gemini'
@@ -1124,6 +1179,9 @@ export interface CreateAssistantSessionInput {
   project_id?: string
   workflow_id?: string
   task_id?: string
+  target_type?: string
+  target_id?: string
+  auto_model?: boolean
   metadata?: Record<string, unknown>
 }
 
@@ -1144,6 +1202,88 @@ export interface AssistantStep {
   data: Record<string, unknown>
   turn: number
   created_at: string
+}
+
+export interface AssistantContextTarget {
+  id: string
+  type: string
+  title: string
+  status: string
+  created_at: string
+}
+
+export interface AssistantProposal {
+  id: string
+  session_id: string
+  module_key: string
+  target_type: string
+  target_id?: string
+  proposal_type: string
+  title: string
+  summary: string
+  payload: Record<string, unknown>
+  status: string
+  reviewer_id?: string
+  review_reason?: string
+  apply_result: Record<string, unknown>
+  error_message?: string
+  source_step_id?: string
+  applied_at?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface AssistantBusinessSkill {
+  id: string
+  module_key: string
+  target_type: string
+  name: string
+  description: string
+  trigger_intent: string
+  prompt_template: string
+  tool_allowlist: string[]
+  input_schema: Record<string, unknown>
+  output_schema: Record<string, unknown>
+  version: number
+  status: string
+  created_by?: string
+  created_by_type?: string
+  reviewed_by?: string
+  source_session_id?: string
+  metadata: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateAssistantBusinessSkillInput {
+  module_key: string
+  target_type?: string
+  name: string
+  description?: string
+  trigger_intent?: string
+  prompt_template: string
+  tool_allowlist?: string[]
+  input_schema?: Record<string, unknown>
+  output_schema?: Record<string, unknown>
+  source_session_id?: string
+  metadata?: Record<string, unknown>
+}
+
+export interface AssistantSkillRun {
+  id: string
+  skill_id: string
+  session_id?: string
+  module_key: string
+  target_type: string
+  target_id?: string
+  input: Record<string, unknown>
+  output: Record<string, unknown>
+  status: string
+  error_message?: string
+  created_by?: string
+  created_by_type?: string
+  created_at: string
+  completed_at?: string
 }
 
 export interface AICostSummary {

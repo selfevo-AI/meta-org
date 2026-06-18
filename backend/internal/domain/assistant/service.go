@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/aigateway"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/toolruntime"
 )
@@ -26,13 +27,18 @@ type ToolExecutor interface {
 	ListTools(context.Context, int) ([]toolruntime.ToolDefinition, error)
 }
 
+type ProposalApplicator interface {
+	ApplyProposal(context.Context, *Proposal) (map[string]any, error)
+}
+
 type Service struct {
-	repo            Repository
-	ai              AIInvoker
-	tools           ToolExecutor
-	contextResolver ContextResolver
-	maxTurns        int
-	maxHistory      int
+	repo               Repository
+	ai                 AIInvoker
+	tools              ToolExecutor
+	contextResolver    ContextResolver
+	proposalApplicator ProposalApplicator
+	maxTurns           int
+	maxHistory         int
 }
 
 type ServiceOption func(*Service)
@@ -40,6 +46,12 @@ type ServiceOption func(*Service)
 func WithContextResolver(resolver ContextResolver) ServiceOption {
 	return func(s *Service) {
 		s.contextResolver = resolver
+	}
+}
+
+func WithProposalApplicator(applicator ProposalApplicator) ServiceOption {
+	return func(s *Service) {
+		s.proposalApplicator = applicator
 	}
 }
 
@@ -53,6 +65,7 @@ func NewService(repo Repository, ai AIInvoker, tools ToolExecutor, opts ...Servi
 
 func (s *Service) CreateSession(ctx context.Context, actorID uuid.UUID, actorType string, input CreateSessionInput) (*Session, error) {
 	input.ModuleKey = normalizedModule(input.ModuleKey)
+	input.TargetType = strings.TrimSpace(input.TargetType)
 	if input.Mode == "" {
 		input.Mode = ModeBusinessProcess
 	}
@@ -62,7 +75,61 @@ func (s *Service) CreateSession(ctx context.Context, actorID uuid.UUID, actorTyp
 	if actorID == uuid.Nil || actorType == "" {
 		return nil, fmt.Errorf("%w: actor is required", ErrValidation)
 	}
+	if input.AutoModel {
+		if err := s.applyDefaultModel(ctx, &input); err != nil {
+			return nil, err
+		}
+	}
 	return s.repo.CreateSession(ctx, actorID, actorType, input)
+}
+
+func (s *Service) applyDefaultModel(ctx context.Context, input *CreateSessionInput) error {
+	if input == nil {
+		return fmt.Errorf("%w: session input is required", ErrValidation)
+	}
+	if input.AgentID != nil && (input.ProviderID != nil || input.ProviderType != "") && input.Model != "" {
+		return nil
+	}
+	var selected *ModuleDefault
+	if s.repo != nil {
+		if item, err := s.repo.GetModuleDefault(ctx, input.ModuleKey, input.TargetType); err == nil {
+			selected = item
+		} else if !isNotFound(err) {
+			return err
+		}
+		if selected == nil {
+			if item, err := s.repo.FindDefaultModel(ctx); err == nil {
+				selected = item
+			} else if !isNotFound(err) {
+				return err
+			}
+		}
+	}
+	if selected == nil {
+		return fmt.Errorf("%w: no default assistant model configured", ErrValidation)
+	}
+	if input.AgentID == nil {
+		input.AgentID = selected.AgentID
+	}
+	if input.ProviderID == nil {
+		input.ProviderID = selected.ProviderID
+	}
+	if input.PreferredChannelID == nil {
+		input.PreferredChannelID = selected.PreferredChannelID
+	}
+	if input.ProviderType == "" {
+		input.ProviderType = selected.ProviderType
+	}
+	if input.Model == "" {
+		input.Model = selected.Model
+	}
+	if input.ServiceTier == "" {
+		input.ServiceTier = selected.ServiceTier
+	}
+	if input.ReasoningEffort == "" {
+		input.ReasoningEffort = selected.ReasoningEffort
+	}
+	return nil
 }
 
 func (s *Service) ListSessions(ctx context.Context, actorID uuid.UUID, actorType string, moduleKey string, limit int) ([]Session, error) {
@@ -78,6 +145,158 @@ func (s *Service) ListSteps(ctx context.Context, sessionID uuid.UUID, actorID uu
 		return nil, err
 	}
 	return s.repo.ListSteps(ctx, sessionID, limit)
+}
+
+func (s *Service) ListContextTargets(ctx context.Context, moduleKey string, targetType string, limit int) ([]WorkRecord, error) {
+	moduleKey = normalizedModule(moduleKey)
+	if s.contextResolver == nil {
+		return []WorkRecord{}, nil
+	}
+	session := &Session{ModuleKey: moduleKey, TargetType: strings.TrimSpace(targetType)}
+	context := s.contextResolver.Resolve(ctx, session)
+	if context.Error != "" {
+		return nil, fmt.Errorf("%w: %s", ErrValidation, context.Error)
+	}
+	if limit <= 0 || limit > len(context.Records) {
+		return context.Records, nil
+	}
+	return context.Records[:limit], nil
+}
+
+func (s *Service) ListProposals(ctx context.Context, sessionID uuid.UUID, actorID uuid.UUID, actorType string, limit int) ([]Proposal, error) {
+	if _, err := s.repo.GetSession(ctx, sessionID, actorID, actorType); err != nil {
+		return nil, err
+	}
+	return s.repo.ListProposals(ctx, sessionID, limit)
+}
+
+func (s *Service) ConfirmProposal(ctx context.Context, proposalID uuid.UUID, reviewerID uuid.UUID, reviewerType string) (*Proposal, error) {
+	if proposalID == uuid.Nil || reviewerID == uuid.Nil {
+		return nil, fmt.Errorf("%w: proposal and reviewer are required", ErrValidation)
+	}
+	if !isHumanActor(reviewerType) {
+		return nil, fmt.Errorf("%w: only human users can confirm assistant proposals", ErrValidation)
+	}
+	proposal, err := s.repo.GetProposal(ctx, proposalID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.repo.GetSession(ctx, proposal.SessionID, reviewerID, reviewerType); err != nil {
+		return nil, err
+	}
+	switch proposal.Status {
+	case ProposalApplied:
+		return proposal, nil
+	case ProposalRejected:
+		return nil, fmt.Errorf("%w: rejected proposal cannot be confirmed", ErrValidation)
+	case ProposalPending, "":
+	default:
+		return nil, fmt.Errorf("%w: proposal is not confirmable", ErrValidation)
+	}
+	if s.proposalApplicator == nil {
+		return nil, fmt.Errorf("%w: proposal applicator is not configured", ErrValidation)
+	}
+	result, err := s.proposalApplicator.ApplyProposal(ctx, proposal)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.MarkProposalApplied(ctx, proposal.ID, reviewerID, result)
+}
+
+func (s *Service) RejectProposal(ctx context.Context, proposalID uuid.UUID, reviewerID uuid.UUID, reviewerType string, reason string) (*Proposal, error) {
+	if proposalID == uuid.Nil || reviewerID == uuid.Nil {
+		return nil, fmt.Errorf("%w: proposal and reviewer are required", ErrValidation)
+	}
+	if !isHumanActor(reviewerType) {
+		return nil, fmt.Errorf("%w: only human users can reject assistant proposals", ErrValidation)
+	}
+	proposal, err := s.repo.GetProposal(ctx, proposalID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.repo.GetSession(ctx, proposal.SessionID, reviewerID, reviewerType); err != nil {
+		return nil, err
+	}
+	if proposal.Status == ProposalApplied {
+		return nil, fmt.Errorf("%w: applied proposal cannot be rejected", ErrValidation)
+	}
+	if proposal.Status == ProposalRejected {
+		return proposal, nil
+	}
+	return s.repo.MarkProposalRejected(ctx, proposal.ID, reviewerID, strings.TrimSpace(reason))
+}
+
+func (s *Service) CreateBusinessSkill(ctx context.Context, actorID uuid.UUID, actorType string, input CreateBusinessSkillInput) (*BusinessSkill, error) {
+	if actorID == uuid.Nil || !isHumanActor(actorType) {
+		return nil, fmt.Errorf("%w: only human users can create business skills", ErrValidation)
+	}
+	input.ModuleKey = normalizedModule(input.ModuleKey)
+	input.TargetType = strings.TrimSpace(input.TargetType)
+	input.Name = strings.TrimSpace(input.Name)
+	input.PromptTemplate = strings.TrimSpace(input.PromptTemplate)
+	if input.Name == "" || input.PromptTemplate == "" {
+		return nil, fmt.Errorf("%w: name and prompt_template are required", ErrValidation)
+	}
+	if input.InputSchema == nil {
+		input.InputSchema = map[string]any{}
+	}
+	if input.OutputSchema == nil {
+		input.OutputSchema = map[string]any{}
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+	return s.repo.CreateBusinessSkill(ctx, input, actorID, actorType)
+}
+
+func (s *Service) ListBusinessSkills(ctx context.Context, moduleKey string, targetType string) ([]BusinessSkill, error) {
+	return s.repo.ListBusinessSkills(ctx, normalizedOptionalModule(moduleKey), strings.TrimSpace(targetType), 100)
+}
+
+func (s *Service) ActivateBusinessSkill(ctx context.Context, id uuid.UUID, reviewerID uuid.UUID, reviewerType string) (*BusinessSkill, error) {
+	if id == uuid.Nil || reviewerID == uuid.Nil {
+		return nil, fmt.Errorf("%w: skill and reviewer are required", ErrValidation)
+	}
+	if !isHumanActor(reviewerType) {
+		return nil, fmt.Errorf("%w: only human users can activate business skills", ErrValidation)
+	}
+	return s.repo.ActivateBusinessSkill(ctx, id, reviewerID)
+}
+
+func (s *Service) RunBusinessSkill(ctx context.Context, id uuid.UUID, actorID uuid.UUID, actorType string, input map[string]any) (*SkillRun, error) {
+	if id == uuid.Nil || actorID == uuid.Nil {
+		return nil, fmt.Errorf("%w: skill and actor are required", ErrValidation)
+	}
+	skill, err := s.repo.GetBusinessSkill(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if skill.Status != SkillActive {
+		return nil, fmt.Errorf("%w: skill is not active", ErrValidation)
+	}
+	if input == nil {
+		input = map[string]any{}
+	}
+	sessionID := uuidFromInput(input, "session_id")
+	targetID := uuidFromInput(input, "target_id")
+	targetType := firstNonEmpty(stringFromInput(input, "target_type"), skill.TargetType)
+	output := map[string]any{
+		"prompt_template": skill.PromptTemplate,
+		"trigger_intent":  skill.TriggerIntent,
+		"tool_allowlist":  skill.ToolAllowlist,
+	}
+	return s.repo.CreateSkillRun(ctx, CreateSkillRunInput{
+		SkillID:       skill.ID,
+		SessionID:     sessionID,
+		ModuleKey:     skill.ModuleKey,
+		TargetType:    targetType,
+		TargetID:      targetID,
+		Input:         input,
+		Output:        output,
+		Status:        StatusCompleted,
+		CreatedBy:     &actorID,
+		CreatedByType: actorType,
+	})
 }
 
 func (s *Service) Run(ctx context.Context, sessionID uuid.UUID, actorID uuid.UUID, actorType string, input RunInput) (<-chan RunEvent, error) {
@@ -324,6 +543,29 @@ func (s *Service) finishRun(ctx context.Context, send func(RunEvent) bool, sessi
 		})
 		send(RunEvent{Type: "memory_updated", Step: step, Data: step.Data})
 	}
+	if session.TargetID != nil || session.TargetType != "" {
+		proposal, err := s.repo.CreateProposal(ctx, CreateProposalInput{
+			SessionID:    session.ID,
+			ModuleKey:    session.ModuleKey,
+			TargetType:   firstNonEmpty(session.TargetType, session.ModuleKey),
+			TargetID:     session.TargetID,
+			ProposalType: "metadata_patch",
+			Title:        "Assistant suggested result",
+			Summary:      trimSummary(summary),
+			Payload: map[string]any{
+				"summary":        summary,
+				"module_key":     session.ModuleKey,
+				"target_type":    session.TargetType,
+				"target_id":      uuidString(session.TargetID),
+				"source":         "assistant",
+				"requires_human": true,
+			},
+			SourceStepID: &sourceStepID,
+		})
+		if err == nil {
+			send(RunEvent{Type: "proposal_created", Data: map[string]any{"proposal_id": proposal.ID.String(), "status": proposal.Status}})
+		}
+	}
 	_ = s.repo.UpdateSessionStatus(ctx, session.ID, StatusCompleted, "")
 	send(RunEvent{Type: "done", Done: true, Data: map[string]any{"status": StatusCompleted}})
 }
@@ -353,8 +595,8 @@ func systemPrompt(session *Session, memories []Memory, workContext WorkRecordCon
 	b.WriteString("For high-risk, financial, governance, external, model-configuration, or destructive actions, rely on the tool runtime approval policy and stop when approval_required is returned.\n")
 	b.WriteString("Before using tools, inspect the scoped work records below and infer the safest current entity context. If the target entity remains ambiguous, ask a short review question instead of guessing.\n")
 	b.WriteString("Memory isolation rule: only use memories and work records from the exact module_key and organization position scope shown here. Do not infer or import context from other modules or positions.\n")
-	b.WriteString(fmt.Sprintf("mode=%s module_key=%s organization_id=%s department_id=%s position_id=%s position_assignment_id=%s\n",
-		session.Mode, session.ModuleKey, uuidString(session.OrganizationID), uuidString(session.DepartmentID),
+	b.WriteString(fmt.Sprintf("mode=%s module_key=%s target_type=%s target_id=%s organization_id=%s department_id=%s position_id=%s position_assignment_id=%s\n",
+		session.Mode, session.ModuleKey, session.TargetType, uuidString(session.TargetID), uuidString(session.OrganizationID), uuidString(session.DepartmentID),
 		uuidString(session.PositionID), uuidString(session.PositionAssignmentID)))
 	if len(memories) > 0 {
 		b.WriteString("Scoped memories:\n")
@@ -388,6 +630,12 @@ func systemPrompt(session *Session, memories []Memory, workContext WorkRecordCon
 			if record.CreatedAt != "" {
 				b.WriteString(" created_at=")
 				b.WriteString(record.CreatedAt)
+			}
+			if len(record.Data) > 0 {
+				if data, err := json.Marshal(record.Data); err == nil {
+					b.WriteString(" data=")
+					b.Write(data)
+				}
 			}
 			b.WriteByte('\n')
 		}
@@ -490,6 +738,42 @@ func uuidString(id *uuid.UUID) string {
 		return ""
 	}
 	return id.String()
+}
+
+func stringFromInput(input map[string]any, key string) string {
+	value, ok := input[key]
+	if !ok {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
+func uuidFromInput(input map[string]any, key string) *uuid.UUID {
+	raw := stringFromInput(input, key)
+	if raw == "" {
+		return nil
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil {
+		return nil
+	}
+	return &id
+}
+
+func isHumanActor(actorType string) bool {
+	switch strings.TrimSpace(actorType) {
+	case "human", "internal", "internal_human", "external_human":
+		return true
+	default:
+		return false
+	}
+}
+
+func isNotFound(err error) bool {
+	return errors.Is(err, ErrNotFound) || errors.Is(err, pgx.ErrNoRows)
 }
 
 func copyMap(input map[string]any) map[string]any {

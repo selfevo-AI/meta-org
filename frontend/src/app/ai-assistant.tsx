@@ -66,10 +66,15 @@ interface AIAssistantProps {
   token: string
   contextType: string
   contextID?: string
+  targetType?: string
+  targetID?: string
+  autoModel?: boolean
+  hideModelSelector?: boolean
   initialIntent?: string
   initialIntentKey?: string
   autoRunInitialIntent?: boolean
   className?: string
+  onSessionCreated?: (sessionID: string) => void
 }
 
 const modelPreferenceKey = 'meta_org.assistant.model_by_module.v1'
@@ -112,10 +117,15 @@ export function AIAssistant({
   token,
   contextType,
   contextID,
+  targetType,
+  targetID,
+  autoModel = false,
+  hideModelSelector = false,
   initialIntent,
   initialIntentKey,
   autoRunInitialIntent = false,
   className = '',
+  onSessionCreated,
 }: AIAssistantProps) {
   const { t } = useI18n()
   const [models, setModels] = useState<ModelCatalogItem[]>([])
@@ -206,26 +216,32 @@ export function AIAssistant({
         title: trimmed.slice(0, 80),
         mode: assistantMode(contextType),
         module_key: contextType,
-        provider_id: selectedModel?.provider_id,
-        provider_type: selectedModel ? undefined : 'openai',
-        model: modelKey,
+        provider_id: autoModel ? undefined : selectedModel?.provider_id,
+        provider_type: autoModel ? undefined : selectedModel ? undefined : 'openai',
+        model: autoModel ? undefined : modelKey,
+        target_type: targetType,
+        target_id: targetID,
+        auto_model: autoModel,
         metadata: {
           source_context: contextType,
           context_id: contextID || '',
+          target_type: targetType || '',
+          target_id: targetID || '',
           selected_model_id: selectedModel?.id || '',
-          selected_model_key: modelKey,
+          selected_model_key: autoModel ? '' : modelKey,
           selected_provider_type: provider?.provider_type || 'openai',
         },
       })
       setSessionID(session.id)
+      onSessionCreated?.(session.id)
       await streamSSEPost<GatewayStreamData>(
         `${API_BASE}/assistant/sessions/${session.id}/runs`,
         token,
         {
           message: trimmed,
-          provider_id: selectedModel?.provider_id,
-          provider_type: selectedModel ? undefined : 'openai',
-          model: modelKey,
+          provider_id: autoModel ? undefined : selectedModel?.provider_id,
+          provider_type: autoModel ? undefined : selectedModel ? undefined : 'openai',
+          model: autoModel ? undefined : modelKey,
         },
         ({ data }) => {
           const nextInvocationID = data.invocation_id || data.step?.invocation_id
@@ -332,22 +348,24 @@ export function AIAssistant({
           </div>
         </div>
         <div className="flex min-w-0 items-center gap-2">
-          <select
-            value={selectedModelID}
-            onChange={(event) => changeModel(event.target.value)}
-            className="h-9 max-w-[220px] rounded-lg border border-slate-300 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-[#AD4714] focus:ring-2 focus:ring-[#DF6A24]/20"
-            aria-label={t('assistant.model')}
-          >
-            {models.length === 0 ? (
-              <option value="">{t('assistant.defaultModel')}</option>
-            ) : (
-              models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.display_name || model.model_key}
-                </option>
-              ))
-            )}
-          </select>
+          {!hideModelSelector && (
+            <select
+              value={selectedModelID}
+              onChange={(event) => changeModel(event.target.value)}
+              className="h-9 max-w-[220px] rounded-lg border border-slate-300 bg-white px-2 text-xs font-semibold text-slate-700 outline-none focus:border-[#AD4714] focus:ring-2 focus:ring-[#DF6A24]/20"
+              aria-label={t('assistant.model')}
+            >
+              {models.length === 0 ? (
+                <option value="">{t('assistant.defaultModel')}</option>
+              ) : (
+                models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.display_name || model.model_key}
+                  </option>
+                ))
+              )}
+            </select>
+          )}
           <StateBadge state={state} />
         </div>
       </div>

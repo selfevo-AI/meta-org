@@ -22,6 +22,14 @@ const (
 	StepMemory     = "memory"
 	StepApproval   = "approval"
 	StepError      = "error"
+
+	ProposalPending  = "pending"
+	ProposalApplied  = "applied"
+	ProposalRejected = "rejected"
+
+	SkillDraft    = "draft"
+	SkillActive   = "active"
+	SkillArchived = "archived"
 )
 
 type Scope struct {
@@ -43,6 +51,7 @@ type Session struct {
 	Status               string         `json:"status"`
 	ActorID              uuid.UUID      `json:"actor_id"`
 	ActorType            string         `json:"actor_type"`
+	AgentID              *uuid.UUID     `json:"agent_id,omitempty"`
 	ProviderID           *uuid.UUID     `json:"provider_id,omitempty"`
 	PreferredChannelID   *uuid.UUID     `json:"preferred_channel_id,omitempty"`
 	ProviderType         string         `json:"provider_type"`
@@ -56,6 +65,8 @@ type Session struct {
 	ProjectID            *uuid.UUID     `json:"project_id,omitempty"`
 	WorkflowID           *uuid.UUID     `json:"workflow_id,omitempty"`
 	TaskID               *uuid.UUID     `json:"task_id,omitempty"`
+	TargetType           string         `json:"target_type,omitempty"`
+	TargetID             *uuid.UUID     `json:"target_id,omitempty"`
 	WorkingMemory        map[string]any `json:"working_memory"`
 	Metadata             map[string]any `json:"metadata"`
 	LastError            string         `json:"last_error,omitempty"`
@@ -113,6 +124,7 @@ type CreateSessionInput struct {
 	Title                string         `json:"title"`
 	Mode                 string         `json:"mode"`
 	ModuleKey            string         `json:"module_key"`
+	AgentID              *uuid.UUID     `json:"agent_id,omitempty"`
 	ProviderID           *uuid.UUID     `json:"provider_id,omitempty"`
 	PreferredChannelID   *uuid.UUID     `json:"preferred_channel_id,omitempty"`
 	ProviderType         string         `json:"provider_type,omitempty"`
@@ -126,6 +138,9 @@ type CreateSessionInput struct {
 	ProjectID            *uuid.UUID     `json:"project_id,omitempty"`
 	WorkflowID           *uuid.UUID     `json:"workflow_id,omitempty"`
 	TaskID               *uuid.UUID     `json:"task_id,omitempty"`
+	TargetType           string         `json:"target_type,omitempty"`
+	TargetID             *uuid.UUID     `json:"target_id,omitempty"`
+	AutoModel            bool           `json:"auto_model,omitempty"`
 	Metadata             map[string]any `json:"metadata,omitempty"`
 }
 
@@ -161,4 +176,120 @@ type CreateMemoryInput struct {
 	SourceSessionID *uuid.UUID
 	SourceStepID    *uuid.UUID
 	Confidence      float64
+}
+
+type ModuleDefault struct {
+	ID                 uuid.UUID      `json:"id"`
+	ModuleKey          string         `json:"module_key"`
+	TargetType         string         `json:"target_type"`
+	AgentID            *uuid.UUID     `json:"agent_id,omitempty"`
+	ProviderID         *uuid.UUID     `json:"provider_id,omitempty"`
+	PreferredChannelID *uuid.UUID     `json:"preferred_channel_id,omitempty"`
+	ProviderType       string         `json:"provider_type"`
+	Model              string         `json:"model"`
+	ServiceTier        string         `json:"service_tier,omitempty"`
+	ReasoningEffort    string         `json:"reasoning_effort,omitempty"`
+	Metadata           map[string]any `json:"metadata"`
+	CreatedAt          time.Time      `json:"created_at"`
+	UpdatedAt          time.Time      `json:"updated_at"`
+}
+
+type Proposal struct {
+	ID           uuid.UUID      `json:"id"`
+	SessionID    uuid.UUID      `json:"session_id"`
+	ModuleKey    string         `json:"module_key"`
+	TargetType   string         `json:"target_type"`
+	TargetID     *uuid.UUID     `json:"target_id,omitempty"`
+	ProposalType string         `json:"proposal_type"`
+	Title        string         `json:"title"`
+	Summary      string         `json:"summary"`
+	Payload      map[string]any `json:"payload"`
+	Status       string         `json:"status"`
+	ReviewerID   *uuid.UUID     `json:"reviewer_id,omitempty"`
+	ReviewReason string         `json:"review_reason,omitempty"`
+	ApplyResult  map[string]any `json:"apply_result"`
+	ErrorMessage string         `json:"error_message,omitempty"`
+	SourceStepID *uuid.UUID     `json:"source_step_id,omitempty"`
+	AppliedAt    *time.Time     `json:"applied_at,omitempty"`
+	CreatedAt    time.Time      `json:"created_at"`
+	UpdatedAt    time.Time      `json:"updated_at"`
+}
+
+type CreateProposalInput struct {
+	SessionID    uuid.UUID
+	ModuleKey    string
+	TargetType   string
+	TargetID     *uuid.UUID
+	ProposalType string
+	Title        string
+	Summary      string
+	Payload      map[string]any
+	SourceStepID *uuid.UUID
+}
+
+type BusinessSkill struct {
+	ID              uuid.UUID      `json:"id"`
+	ModuleKey       string         `json:"module_key"`
+	TargetType      string         `json:"target_type"`
+	Name            string         `json:"name"`
+	Description     string         `json:"description"`
+	TriggerIntent   string         `json:"trigger_intent"`
+	PromptTemplate  string         `json:"prompt_template"`
+	ToolAllowlist   []string       `json:"tool_allowlist"`
+	InputSchema     map[string]any `json:"input_schema"`
+	OutputSchema    map[string]any `json:"output_schema"`
+	Version         int            `json:"version"`
+	Status          string         `json:"status"`
+	CreatedBy       *uuid.UUID     `json:"created_by,omitempty"`
+	CreatedByType   string         `json:"created_by_type,omitempty"`
+	ReviewedBy      *uuid.UUID     `json:"reviewed_by,omitempty"`
+	SourceSessionID *uuid.UUID     `json:"source_session_id,omitempty"`
+	Metadata        map[string]any `json:"metadata"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+}
+
+type CreateBusinessSkillInput struct {
+	ModuleKey       string         `json:"module_key"`
+	TargetType      string         `json:"target_type,omitempty"`
+	Name            string         `json:"name"`
+	Description     string         `json:"description,omitempty"`
+	TriggerIntent   string         `json:"trigger_intent,omitempty"`
+	PromptTemplate  string         `json:"prompt_template"`
+	ToolAllowlist   []string       `json:"tool_allowlist,omitempty"`
+	InputSchema     map[string]any `json:"input_schema,omitempty"`
+	OutputSchema    map[string]any `json:"output_schema,omitempty"`
+	SourceSessionID *uuid.UUID     `json:"source_session_id,omitempty"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+}
+
+type SkillRun struct {
+	ID            uuid.UUID      `json:"id"`
+	SkillID       uuid.UUID      `json:"skill_id"`
+	SessionID     *uuid.UUID     `json:"session_id,omitempty"`
+	ModuleKey     string         `json:"module_key"`
+	TargetType    string         `json:"target_type"`
+	TargetID      *uuid.UUID     `json:"target_id,omitempty"`
+	Input         map[string]any `json:"input"`
+	Output        map[string]any `json:"output"`
+	Status        string         `json:"status"`
+	ErrorMessage  string         `json:"error_message,omitempty"`
+	CreatedBy     *uuid.UUID     `json:"created_by,omitempty"`
+	CreatedByType string         `json:"created_by_type,omitempty"`
+	CreatedAt     time.Time      `json:"created_at"`
+	CompletedAt   *time.Time     `json:"completed_at,omitempty"`
+}
+
+type CreateSkillRunInput struct {
+	SkillID       uuid.UUID
+	SessionID     *uuid.UUID
+	ModuleKey     string
+	TargetType    string
+	TargetID      *uuid.UUID
+	Input         map[string]any
+	Output        map[string]any
+	Status        string
+	ErrorMessage  string
+	CreatedBy     *uuid.UUID
+	CreatedByType string
 }

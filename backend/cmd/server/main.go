@@ -133,7 +133,13 @@ func main() {
 	toolHandler := toolruntime.NewHandler(toolSvc)
 
 	assistantRepo := assistant.NewRepository(db)
-	assistantSvc := assistant.NewService(assistantRepo, aiSvc, toolSvc, assistant.WithContextResolver(assistant.NewDBContextResolver(db)))
+	assistantSvc := assistant.NewService(
+		assistantRepo,
+		aiSvc,
+		toolSvc,
+		assistant.WithContextResolver(assistant.NewDBContextResolver(db)),
+		assistant.WithProposalApplicator(assistant.NewDBProposalApplicator(db)),
+	)
 	assistantHandler := assistant.NewHandler(assistantSvc)
 
 	verRepo := verification.NewRepository(db)

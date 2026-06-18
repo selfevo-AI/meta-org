@@ -12,6 +12,8 @@ import (
 
 type Repository interface {
 	CreateSession(ctx context.Context, actorID uuid.UUID, actorType string, input CreateSessionInput) (*Session, error)
+	GetModuleDefault(ctx context.Context, moduleKey string, targetType string) (*ModuleDefault, error)
+	FindDefaultModel(ctx context.Context) (*ModuleDefault, error)
 	ListSessions(ctx context.Context, actorID uuid.UUID, actorType string, moduleKey string, limit int) ([]Session, error)
 	GetSession(ctx context.Context, id uuid.UUID, actorID uuid.UUID, actorType string) (*Session, error)
 	UpdateSessionStatus(ctx context.Context, id uuid.UUID, status string, lastError string) error
@@ -22,6 +24,16 @@ type Repository interface {
 	ListSteps(ctx context.Context, sessionID uuid.UUID, limit int) ([]Step, error)
 	ListScopedMemories(ctx context.Context, scope Scope, actorID uuid.UUID, actorType string, limit int) ([]Memory, error)
 	CreateMemory(ctx context.Context, input CreateMemoryInput) (*Memory, error)
+	CreateProposal(ctx context.Context, input CreateProposalInput) (*Proposal, error)
+	ListProposals(ctx context.Context, sessionID uuid.UUID, limit int) ([]Proposal, error)
+	GetProposal(ctx context.Context, id uuid.UUID) (*Proposal, error)
+	MarkProposalApplied(ctx context.Context, id uuid.UUID, reviewerID uuid.UUID, result map[string]any) (*Proposal, error)
+	MarkProposalRejected(ctx context.Context, id uuid.UUID, reviewerID uuid.UUID, reason string) (*Proposal, error)
+	CreateBusinessSkill(ctx context.Context, input CreateBusinessSkillInput, actorID uuid.UUID, actorType string) (*BusinessSkill, error)
+	ListBusinessSkills(ctx context.Context, moduleKey string, targetType string, limit int) ([]BusinessSkill, error)
+	GetBusinessSkill(ctx context.Context, id uuid.UUID) (*BusinessSkill, error)
+	ActivateBusinessSkill(ctx context.Context, id uuid.UUID, reviewerID uuid.UUID) (*BusinessSkill, error)
+	CreateSkillRun(ctx context.Context, input CreateSkillRunInput) (*SkillRun, error)
 }
 
 type AddStepInput struct {
@@ -47,31 +59,72 @@ func (r *PostgresRepository) CreateSession(ctx context.Context, actorID uuid.UUI
 	session := &Session{}
 	err := scanSession(r.db.QueryRow(ctx, `
 		INSERT INTO assistant_sessions (
-			title, mode, module_key, actor_id, actor_type, provider_id, preferred_channel_id,
+			title, mode, module_key, actor_id, actor_type, agent_id, provider_id, preferred_channel_id,
 			provider_type, model, service_tier, reasoning_effort, organization_id, department_id,
-			position_id, position_assignment_id, project_id, workflow_id, task_id, metadata
+			position_id, position_assignment_id, project_id, workflow_id, task_id, target_type, target_id, metadata
 		)
 		VALUES ($1, COALESCE(NULLIF($2, ''), 'business_process'), COALESCE(NULLIF($3, ''), 'general'),
-			$4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-		RETURNING id, title, mode, module_key, status, actor_id, actor_type, provider_id, preferred_channel_id,
+			$4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+		RETURNING id, title, mode, module_key, status, actor_id, actor_type, agent_id, provider_id, preferred_channel_id,
 			provider_type, model, service_tier, reasoning_effort, organization_id, department_id,
-			position_id, position_assignment_id, project_id, workflow_id, task_id, working_memory, metadata,
+			position_id, position_assignment_id, project_id, workflow_id, task_id, target_type, target_id, working_memory, metadata,
 			last_error, created_at, updated_at
-	`, input.Title, input.Mode, input.ModuleKey, actorID, actorType, input.ProviderID, input.PreferredChannelID,
+	`, input.Title, input.Mode, input.ModuleKey, actorID, actorType, input.AgentID, input.ProviderID, input.PreferredChannelID,
 		input.ProviderType, input.Model, input.ServiceTier, input.ReasoningEffort, input.OrganizationID,
 		input.DepartmentID, input.PositionID, input.PositionAssignmentID, input.ProjectID, input.WorkflowID,
-		input.TaskID, mustJSON(input.Metadata)), session)
+		input.TaskID, input.TargetType, input.TargetID, mustJSON(input.Metadata)), session)
 	if err != nil {
 		return nil, fmt.Errorf("create assistant session: %w", err)
 	}
 	return session, nil
 }
 
+func (r *PostgresRepository) GetModuleDefault(ctx context.Context, moduleKey string, targetType string) (*ModuleDefault, error) {
+	item := &ModuleDefault{}
+	err := scanModuleDefault(r.db.QueryRow(ctx, `
+		SELECT id, module_key, target_type, agent_id, provider_id, preferred_channel_id, provider_type,
+			model, service_tier, reasoning_effort, metadata, created_at, updated_at
+		FROM assistant_module_defaults
+		WHERE module_key = COALESCE(NULLIF($1, ''), 'general')
+			AND (target_type = $2 OR target_type = '')
+		ORDER BY CASE WHEN target_type = $2 THEN 0 ELSE 1 END, updated_at DESC
+		LIMIT 1
+	`, moduleKey, targetType), item)
+	if err != nil {
+		return nil, fmt.Errorf("get assistant module default: %w", err)
+	}
+	return item, nil
+}
+
+func (r *PostgresRepository) FindDefaultModel(ctx context.Context) (*ModuleDefault, error) {
+	item := &ModuleDefault{}
+	err := scanModuleDefault(r.db.QueryRow(ctx, `
+		SELECT gen_random_uuid(), '', '', agent_defaults.agent_id, m.provider_id, NULL::uuid, mp.provider_type,
+			m.model_key, '', '', '{}'::jsonb, m.created_at, m.created_at
+		FROM models m
+		JOIN model_providers mp ON mp.id = m.provider_id
+		LEFT JOIN LATERAL (
+			SELECT id AS agent_id
+			FROM ai_agents
+			WHERE is_active
+			ORDER BY updated_at DESC, created_at DESC
+			LIMIT 1
+		) agent_defaults ON TRUE
+		WHERE m.status = 'active' AND mp.status = 'active'
+		ORDER BY m.updated_at DESC NULLS LAST, m.created_at DESC
+		LIMIT 1
+	`), item)
+	if err != nil {
+		return nil, fmt.Errorf("find default assistant model: %w", err)
+	}
+	return item, nil
+}
+
 func (r *PostgresRepository) ListSessions(ctx context.Context, actorID uuid.UUID, actorType string, moduleKey string, limit int) ([]Session, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, title, mode, module_key, status, actor_id, actor_type, provider_id, preferred_channel_id,
+		SELECT id, title, mode, module_key, status, actor_id, actor_type, agent_id, provider_id, preferred_channel_id,
 			provider_type, model, service_tier, reasoning_effort, organization_id, department_id,
-			position_id, position_assignment_id, project_id, workflow_id, task_id, working_memory, metadata,
+			position_id, position_assignment_id, project_id, workflow_id, task_id, target_type, target_id, working_memory, metadata,
 			last_error, created_at, updated_at
 		FROM assistant_sessions
 		WHERE actor_id = $1 AND actor_type = $2 AND ($3 = '' OR module_key = $3)
@@ -96,9 +149,9 @@ func (r *PostgresRepository) ListSessions(ctx context.Context, actorID uuid.UUID
 func (r *PostgresRepository) GetSession(ctx context.Context, id uuid.UUID, actorID uuid.UUID, actorType string) (*Session, error) {
 	session := &Session{}
 	err := scanSession(r.db.QueryRow(ctx, `
-		SELECT id, title, mode, module_key, status, actor_id, actor_type, provider_id, preferred_channel_id,
+		SELECT id, title, mode, module_key, status, actor_id, actor_type, agent_id, provider_id, preferred_channel_id,
 			provider_type, model, service_tier, reasoning_effort, organization_id, department_id,
-			position_id, position_assignment_id, project_id, workflow_id, task_id, working_memory, metadata,
+			position_id, position_assignment_id, project_id, workflow_id, task_id, target_type, target_id, working_memory, metadata,
 			last_error, created_at, updated_at
 		FROM assistant_sessions
 		WHERE id = $1 AND actor_id = $2 AND actor_type = $3
@@ -258,20 +311,202 @@ func (r *PostgresRepository) CreateMemory(ctx context.Context, input CreateMemor
 	return memory, nil
 }
 
+func (r *PostgresRepository) CreateProposal(ctx context.Context, input CreateProposalInput) (*Proposal, error) {
+	proposal := &Proposal{}
+	err := scanProposal(r.db.QueryRow(ctx, `
+		INSERT INTO assistant_proposals (
+			session_id, module_key, target_type, target_id, proposal_type, title, summary, payload, source_step_id
+		)
+		VALUES ($1, COALESCE(NULLIF($2, ''), 'general'), $3, $4, COALESCE(NULLIF($5, ''), 'metadata_patch'), $6, $7, $8, $9)
+		RETURNING id, session_id, module_key, target_type, target_id, proposal_type, title, summary, payload,
+			status, reviewer_id, review_reason, apply_result, error_message, source_step_id, applied_at, created_at, updated_at
+	`, input.SessionID, input.ModuleKey, input.TargetType, input.TargetID, input.ProposalType, input.Title,
+		input.Summary, mustJSON(input.Payload), input.SourceStepID), proposal)
+	if err != nil {
+		return nil, fmt.Errorf("create assistant proposal: %w", err)
+	}
+	return proposal, nil
+}
+
+func (r *PostgresRepository) ListProposals(ctx context.Context, sessionID uuid.UUID, limit int) ([]Proposal, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, session_id, module_key, target_type, target_id, proposal_type, title, summary, payload,
+			status, reviewer_id, review_reason, apply_result, error_message, source_step_id, applied_at, created_at, updated_at
+		FROM assistant_proposals
+		WHERE session_id = $1
+		ORDER BY created_at DESC
+		LIMIT $2
+	`, sessionID, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list assistant proposals: %w", err)
+	}
+	defer rows.Close()
+	items := []Proposal{}
+	for rows.Next() {
+		var item Proposal
+		if err := scanProposal(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan assistant proposal: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) GetProposal(ctx context.Context, id uuid.UUID) (*Proposal, error) {
+	proposal := &Proposal{}
+	err := scanProposal(r.db.QueryRow(ctx, `
+		SELECT id, session_id, module_key, target_type, target_id, proposal_type, title, summary, payload,
+			status, reviewer_id, review_reason, apply_result, error_message, source_step_id, applied_at, created_at, updated_at
+		FROM assistant_proposals
+		WHERE id = $1
+	`, id), proposal)
+	if err != nil {
+		return nil, fmt.Errorf("get assistant proposal: %w", err)
+	}
+	return proposal, nil
+}
+
+func (r *PostgresRepository) MarkProposalApplied(ctx context.Context, id uuid.UUID, reviewerID uuid.UUID, result map[string]any) (*Proposal, error) {
+	proposal := &Proposal{}
+	err := scanProposal(r.db.QueryRow(ctx, `
+		UPDATE assistant_proposals
+		SET status = 'applied', reviewer_id = $2, apply_result = $3, error_message = '', applied_at = NOW(), updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, session_id, module_key, target_type, target_id, proposal_type, title, summary, payload,
+			status, reviewer_id, review_reason, apply_result, error_message, source_step_id, applied_at, created_at, updated_at
+	`, id, reviewerID, mustJSON(result)), proposal)
+	if err != nil {
+		return nil, fmt.Errorf("mark assistant proposal applied: %w", err)
+	}
+	return proposal, nil
+}
+
+func (r *PostgresRepository) MarkProposalRejected(ctx context.Context, id uuid.UUID, reviewerID uuid.UUID, reason string) (*Proposal, error) {
+	proposal := &Proposal{}
+	err := scanProposal(r.db.QueryRow(ctx, `
+		UPDATE assistant_proposals
+		SET status = 'rejected', reviewer_id = $2, review_reason = $3, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, session_id, module_key, target_type, target_id, proposal_type, title, summary, payload,
+			status, reviewer_id, review_reason, apply_result, error_message, source_step_id, applied_at, created_at, updated_at
+	`, id, reviewerID, reason), proposal)
+	if err != nil {
+		return nil, fmt.Errorf("mark assistant proposal rejected: %w", err)
+	}
+	return proposal, nil
+}
+
+func (r *PostgresRepository) CreateBusinessSkill(ctx context.Context, input CreateBusinessSkillInput, actorID uuid.UUID, actorType string) (*BusinessSkill, error) {
+	skill := &BusinessSkill{}
+	err := scanBusinessSkill(r.db.QueryRow(ctx, `
+		INSERT INTO assistant_business_skills (
+			module_key, target_type, name, description, trigger_intent, prompt_template, tool_allowlist,
+			input_schema, output_schema, created_by, created_by_type, source_session_id, metadata
+		)
+		VALUES (COALESCE(NULLIF($1, ''), 'general'), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		RETURNING id, module_key, target_type, name, description, trigger_intent, prompt_template, tool_allowlist,
+			input_schema, output_schema, version, status, created_by, created_by_type, reviewed_by, source_session_id,
+			metadata, created_at, updated_at
+	`, input.ModuleKey, input.TargetType, input.Name, input.Description, input.TriggerIntent, input.PromptTemplate,
+		mustJSONValue(input.ToolAllowlist), mustJSON(input.InputSchema), mustJSON(input.OutputSchema), actorID, actorType,
+		input.SourceSessionID, mustJSON(input.Metadata)), skill)
+	if err != nil {
+		return nil, fmt.Errorf("create assistant business skill: %w", err)
+	}
+	return skill, nil
+}
+
+func (r *PostgresRepository) ListBusinessSkills(ctx context.Context, moduleKey string, targetType string, limit int) ([]BusinessSkill, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, module_key, target_type, name, description, trigger_intent, prompt_template, tool_allowlist,
+			input_schema, output_schema, version, status, created_by, created_by_type, reviewed_by, source_session_id,
+			metadata, created_at, updated_at
+		FROM assistant_business_skills
+		WHERE ($1 = '' OR module_key = $1)
+			AND ($2 = '' OR target_type = $2 OR target_type = '')
+		ORDER BY status = 'active' DESC, updated_at DESC
+		LIMIT $3
+	`, moduleKey, targetType, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list assistant business skills: %w", err)
+	}
+	defer rows.Close()
+	items := []BusinessSkill{}
+	for rows.Next() {
+		var item BusinessSkill
+		if err := scanBusinessSkill(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan assistant business skill: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *PostgresRepository) GetBusinessSkill(ctx context.Context, id uuid.UUID) (*BusinessSkill, error) {
+	skill := &BusinessSkill{}
+	err := scanBusinessSkill(r.db.QueryRow(ctx, `
+		SELECT id, module_key, target_type, name, description, trigger_intent, prompt_template, tool_allowlist,
+			input_schema, output_schema, version, status, created_by, created_by_type, reviewed_by, source_session_id,
+			metadata, created_at, updated_at
+		FROM assistant_business_skills
+		WHERE id = $1
+	`, id), skill)
+	if err != nil {
+		return nil, fmt.Errorf("get assistant business skill: %w", err)
+	}
+	return skill, nil
+}
+
+func (r *PostgresRepository) ActivateBusinessSkill(ctx context.Context, id uuid.UUID, reviewerID uuid.UUID) (*BusinessSkill, error) {
+	skill := &BusinessSkill{}
+	err := scanBusinessSkill(r.db.QueryRow(ctx, `
+		UPDATE assistant_business_skills
+		SET status = 'active', reviewed_by = $2, updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, module_key, target_type, name, description, trigger_intent, prompt_template, tool_allowlist,
+			input_schema, output_schema, version, status, created_by, created_by_type, reviewed_by, source_session_id,
+			metadata, created_at, updated_at
+	`, id, reviewerID), skill)
+	if err != nil {
+		return nil, fmt.Errorf("activate assistant business skill: %w", err)
+	}
+	return skill, nil
+}
+
+func (r *PostgresRepository) CreateSkillRun(ctx context.Context, input CreateSkillRunInput) (*SkillRun, error) {
+	run := &SkillRun{}
+	err := scanSkillRun(r.db.QueryRow(ctx, `
+		INSERT INTO assistant_skill_runs (
+			skill_id, session_id, module_key, target_type, target_id, input, output, status, error_message, created_by, created_by_type,
+			completed_at
+		)
+		VALUES ($1, $2, COALESCE(NULLIF($3, ''), 'general'), $4, $5, $6, $7, COALESCE(NULLIF($8, ''), 'completed'), $9, $10, $11,
+			CASE WHEN COALESCE(NULLIF($8, ''), 'completed') IN ('completed', 'failed') THEN NOW() ELSE NULL END)
+		RETURNING id, skill_id, session_id, module_key, target_type, target_id, input, output, status, error_message,
+			created_by, created_by_type, created_at, completed_at
+	`, input.SkillID, input.SessionID, input.ModuleKey, input.TargetType, input.TargetID, mustJSON(input.Input),
+		mustJSON(input.Output), input.Status, input.ErrorMessage, input.CreatedBy, input.CreatedByType), run)
+	if err != nil {
+		return nil, fmt.Errorf("create assistant skill run: %w", err)
+	}
+	return run, nil
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }
 
 func scanSession(row scanner, session *Session) error {
-	var providerID, channelID, orgID, deptID, positionID, assignmentID, projectID, workflowID, taskID pgtype.UUID
+	var agentID, providerID, channelID, orgID, deptID, positionID, assignmentID, projectID, workflowID, taskID, targetID pgtype.UUID
 	var workingJSON, metaJSON []byte
 	if err := row.Scan(&session.ID, &session.Title, &session.Mode, &session.ModuleKey, &session.Status,
-		&session.ActorID, &session.ActorType, &providerID, &channelID, &session.ProviderType, &session.Model,
+		&session.ActorID, &session.ActorType, &agentID, &providerID, &channelID, &session.ProviderType, &session.Model,
 		&session.ServiceTier, &session.ReasoningEffort, &orgID, &deptID, &positionID, &assignmentID,
-		&projectID, &workflowID, &taskID, &workingJSON, &metaJSON, &session.LastError, &session.CreatedAt,
+		&projectID, &workflowID, &taskID, &session.TargetType, &targetID, &workingJSON, &metaJSON, &session.LastError, &session.CreatedAt,
 		&session.UpdatedAt); err != nil {
 		return err
 	}
+	session.AgentID = uuidPointer(agentID)
 	session.ProviderID = uuidPointer(providerID)
 	session.PreferredChannelID = uuidPointer(channelID)
 	session.OrganizationID = uuidPointer(orgID)
@@ -281,8 +516,24 @@ func scanSession(row scanner, session *Session) error {
 	session.ProjectID = uuidPointer(projectID)
 	session.WorkflowID = uuidPointer(workflowID)
 	session.TaskID = uuidPointer(taskID)
+	session.TargetID = uuidPointer(targetID)
 	session.WorkingMemory = unmarshalMap(workingJSON)
 	session.Metadata = unmarshalMap(metaJSON)
+	return nil
+}
+
+func scanModuleDefault(row scanner, item *ModuleDefault) error {
+	var agentID, providerID, channelID pgtype.UUID
+	var metaJSON []byte
+	if err := row.Scan(&item.ID, &item.ModuleKey, &item.TargetType, &agentID, &providerID, &channelID,
+		&item.ProviderType, &item.Model, &item.ServiceTier, &item.ReasoningEffort, &metaJSON, &item.CreatedAt,
+		&item.UpdatedAt); err != nil {
+		return err
+	}
+	item.AgentID = uuidPointer(agentID)
+	item.ProviderID = uuidPointer(providerID)
+	item.PreferredChannelID = uuidPointer(channelID)
+	item.Metadata = unmarshalMap(metaJSON)
 	return nil
 }
 
@@ -334,6 +585,66 @@ func scanMemory(row scanner, memory *Memory) error {
 	return nil
 }
 
+func scanProposal(row scanner, proposal *Proposal) error {
+	var targetID, reviewerID, stepID pgtype.UUID
+	var appliedAt pgtype.Timestamptz
+	var payloadJSON, resultJSON []byte
+	if err := row.Scan(&proposal.ID, &proposal.SessionID, &proposal.ModuleKey, &proposal.TargetType, &targetID,
+		&proposal.ProposalType, &proposal.Title, &proposal.Summary, &payloadJSON, &proposal.Status, &reviewerID,
+		&proposal.ReviewReason, &resultJSON, &proposal.ErrorMessage, &stepID, &appliedAt, &proposal.CreatedAt,
+		&proposal.UpdatedAt); err != nil {
+		return err
+	}
+	proposal.TargetID = uuidPointer(targetID)
+	proposal.ReviewerID = uuidPointer(reviewerID)
+	proposal.SourceStepID = uuidPointer(stepID)
+	if appliedAt.Valid {
+		proposal.AppliedAt = &appliedAt.Time
+	}
+	proposal.Payload = unmarshalMap(payloadJSON)
+	proposal.ApplyResult = unmarshalMap(resultJSON)
+	return nil
+}
+
+func scanBusinessSkill(row scanner, skill *BusinessSkill) error {
+	var createdBy, reviewedBy, sourceSessionID pgtype.UUID
+	var toolsJSON, inputJSON, outputJSON, metaJSON []byte
+	if err := row.Scan(&skill.ID, &skill.ModuleKey, &skill.TargetType, &skill.Name, &skill.Description,
+		&skill.TriggerIntent, &skill.PromptTemplate, &toolsJSON, &inputJSON, &outputJSON, &skill.Version,
+		&skill.Status, &createdBy, &skill.CreatedByType, &reviewedBy, &sourceSessionID, &metaJSON,
+		&skill.CreatedAt, &skill.UpdatedAt); err != nil {
+		return err
+	}
+	skill.CreatedBy = uuidPointer(createdBy)
+	skill.ReviewedBy = uuidPointer(reviewedBy)
+	skill.SourceSessionID = uuidPointer(sourceSessionID)
+	skill.ToolAllowlist = unmarshalStringSlice(toolsJSON)
+	skill.InputSchema = unmarshalMap(inputJSON)
+	skill.OutputSchema = unmarshalMap(outputJSON)
+	skill.Metadata = unmarshalMap(metaJSON)
+	return nil
+}
+
+func scanSkillRun(row scanner, run *SkillRun) error {
+	var sessionID, targetID, createdBy pgtype.UUID
+	var completedAt pgtype.Timestamptz
+	var inputJSON, outputJSON []byte
+	if err := row.Scan(&run.ID, &run.SkillID, &sessionID, &run.ModuleKey, &run.TargetType, &targetID,
+		&inputJSON, &outputJSON, &run.Status, &run.ErrorMessage, &createdBy, &run.CreatedByType,
+		&run.CreatedAt, &completedAt); err != nil {
+		return err
+	}
+	run.SessionID = uuidPointer(sessionID)
+	run.TargetID = uuidPointer(targetID)
+	run.CreatedBy = uuidPointer(createdBy)
+	if completedAt.Valid {
+		run.CompletedAt = &completedAt.Time
+	}
+	run.Input = unmarshalMap(inputJSON)
+	run.Output = unmarshalMap(outputJSON)
+	return nil
+}
+
 func mustJSON(input map[string]any) []byte {
 	if input == nil {
 		input = map[string]any{}
@@ -341,6 +652,14 @@ func mustJSON(input map[string]any) []byte {
 	data, err := json.Marshal(input)
 	if err != nil {
 		return []byte("{}")
+	}
+	return data
+}
+
+func mustJSONValue(input any) []byte {
+	data, err := json.Marshal(input)
+	if err != nil {
+		return []byte("null")
 	}
 	return data
 }
@@ -355,6 +674,15 @@ func unmarshalMap(data []byte) map[string]any {
 		return map[string]any{}
 	}
 	return value
+}
+
+func unmarshalStringSlice(data []byte) []string {
+	items := []string{}
+	if len(data) == 0 {
+		return items
+	}
+	_ = json.Unmarshal(data, &items)
+	return items
 }
 
 func normalizeLimit(limit int) int {
