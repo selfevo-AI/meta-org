@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 var (
@@ -193,6 +194,19 @@ func riskLevelWeight(level string) int {
 	}
 }
 
+func validPreferenceKey(key string) bool {
+	if key == "" || len(key) > 120 {
+		return false
+	}
+	for _, r := range key {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '.' || r == '_' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 func (s *Service) ListDataTables(ctx context.Context, category string) ([]DataTable, error) {
 	if category == "" {
 		category = "canonical"
@@ -253,6 +267,34 @@ func (s *Service) UpsertUserFieldPreference(ctx context.Context, actorID, tableN
 		input.FieldWidths = map[string]int{}
 	}
 	return s.repo.UpsertUserFieldPreference(ctx, actorID, tableName, input)
+}
+
+func (s *Service) GetUserUIPreference(ctx context.Context, actorID, preferenceKey string) (*UserUIPreference, error) {
+	if actorID == "" || !validPreferenceKey(preferenceKey) {
+		return nil, fmt.Errorf("%w: actor_id and preference_key are required", ErrValidation)
+	}
+	pref, err := s.repo.GetUserUIPreference(ctx, actorID, preferenceKey)
+	if err == nil {
+		return pref, nil
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &UserUIPreference{
+			ActorID:       actorID,
+			PreferenceKey: preferenceKey,
+			Value:         map[string]any{},
+		}, nil
+	}
+	return nil, err
+}
+
+func (s *Service) UpsertUserUIPreference(ctx context.Context, actorID, preferenceKey string, input UpsertUserUIPreferenceInput) (*UserUIPreference, error) {
+	if actorID == "" || !validPreferenceKey(preferenceKey) {
+		return nil, fmt.Errorf("%w: actor_id and preference_key are required", ErrValidation)
+	}
+	if input.Value == nil {
+		input.Value = map[string]any{}
+	}
+	return s.repo.UpsertUserUIPreference(ctx, actorID, preferenceKey, input)
 }
 
 func (s *Service) CreateFieldPermissionRule(ctx context.Context, input CreateFieldPermissionRuleInput) (*FieldPermissionRule, error) {

@@ -155,6 +155,18 @@ type UpsertUserFieldPreferenceInput struct {
 	FieldWidths   map[string]int `json:"field_widths"`
 }
 
+type UserUIPreference struct {
+	ActorID       string         `json:"actor_id"`
+	PreferenceKey string         `json:"preference_key"`
+	Value         map[string]any `json:"value"`
+	CreatedAt     time.Time      `json:"created_at"`
+	UpdatedAt     time.Time      `json:"updated_at"`
+}
+
+type UpsertUserUIPreferenceInput struct {
+	Value map[string]any `json:"value"`
+}
+
 type FieldPermissionRule struct {
 	ID            uuid.UUID      `json:"id"`
 	TableName     string         `json:"table_name"`

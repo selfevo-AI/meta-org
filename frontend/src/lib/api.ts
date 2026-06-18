@@ -71,6 +71,18 @@ export async function saveUserFieldPreference(token: string, tableName: string, 
   })
 }
 
+export async function getUserPreference(token: string, key: string): Promise<UserPreference> {
+  return apiRequest<UserPreference>(`/preferences/${encodeURIComponent(key)}`, { token })
+}
+
+export async function saveUserPreference(token: string, key: string, value: Record<string, unknown>): Promise<UserPreference> {
+  return apiRequest<UserPreference>(`/preferences/${encodeURIComponent(key)}`, {
+    method: 'PUT',
+    token,
+    body: { value },
+  })
+}
+
 export async function createFieldPermissionRule(token: string, input: CreateFieldPermissionRuleInput): Promise<FieldPermissionRule> {
   return apiRequest<FieldPermissionRule>('/governance/data/field-permissions', {
     method: 'POST',
@@ -633,6 +645,14 @@ export interface SaveUserFieldPreferenceInput {
   visible_fields: string[]
   field_order: string[]
   field_widths: Record<string, number>
+}
+
+export interface UserPreference {
+  actor_id: string
+  preference_key: string
+  value: Record<string, unknown>
+  created_at?: string
+  updated_at?: string
 }
 
 export interface FieldPermissionRule {

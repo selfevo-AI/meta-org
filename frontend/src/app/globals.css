@@ -111,6 +111,106 @@ body {
   box-shadow: 16px 0 44px rgba(0, 0, 0, 0.18);
 }
 
+.workspace-shell {
+  --workspace-grid-lg: 248px 8px 300px 8px minmax(520px, 1fr);
+  --workspace-grid-xl: 248px 8px 300px 8px minmax(520px, 1fr) 8px 340px;
+}
+
+@media (min-width: 1024px) {
+  .workspace-shell {
+    grid-template-columns: var(--workspace-grid-lg);
+    grid-template-rows: 60px minmax(0, 1fr);
+  }
+
+  .workspace-sidebar-pane {
+    grid-column: 1;
+    grid-row: 1 / span 2;
+  }
+
+  .workspace-menu-resizer {
+    grid-column: 2;
+    grid-row: 1 / span 2;
+  }
+
+  .workspace-topbar {
+    grid-column: 3 / -1;
+    grid-row: 1;
+  }
+
+  .workspace-business-pane {
+    grid-column: 3;
+    grid-row: 2;
+    min-width: 0;
+  }
+
+  .workspace-business-resizer {
+    grid-column: 4;
+    grid-row: 2;
+  }
+
+  .workspace-main-pane {
+    grid-column: 5;
+    grid-row: 2;
+  }
+
+  .workspace-shell-overview {
+    grid-template-columns: var(--workspace-overview-grid-lg);
+  }
+
+  .workspace-shell-overview .workspace-topbar {
+    grid-column: 3 / -1;
+  }
+
+  .workspace-shell-overview .workspace-main-pane {
+    grid-column: 3;
+  }
+}
+
+@media (min-width: 1280px) {
+  .workspace-shell {
+    grid-template-columns: var(--workspace-grid-xl);
+  }
+
+  .workspace-status-resizer {
+    grid-column: 6;
+    grid-row: 2;
+  }
+
+  .workspace-status-pane {
+    grid-column: 7;
+    grid-row: 2;
+  }
+
+  .workspace-shell-overview {
+    grid-template-columns: var(--workspace-overview-grid-xl);
+  }
+
+  .workspace-shell-overview .workspace-status-resizer {
+    grid-column: 4;
+  }
+
+  .workspace-shell-overview .workspace-status-pane {
+    grid-column: 5;
+  }
+}
+
+.workspace-layout-resizer {
+  cursor: col-resize;
+  background: rgba(18, 19, 23, 0.72);
+  border-left: 1px solid rgba(154, 163, 177, 0.08);
+  border-right: 1px solid rgba(154, 163, 177, 0.08);
+}
+
+.workspace-layout-resizer:hover span,
+.workspace-layout-resizer:focus-visible span {
+  background: #f6a66a;
+}
+
+.workspace-layout-resizer:focus-visible {
+  outline: 2px solid rgba(246, 166, 106, 0.55);
+  outline-offset: -2px;
+}
+
 .studio-panel {
   background: var(--studio-panel);
   border: 1px solid var(--studio-border);

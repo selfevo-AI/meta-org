@@ -385,6 +385,41 @@ func (r *Repository) UpsertUserFieldPreference(ctx context.Context, actorID, tab
 	return pref, nil
 }
 
+func (r *Repository) GetUserUIPreference(ctx context.Context, actorID, preferenceKey string) (*UserUIPreference, error) {
+	pref := &UserUIPreference{}
+	var valueJSON []byte
+	err := r.db.QueryRow(ctx,
+		`SELECT actor_id, preference_key, value, created_at, updated_at
+		 FROM user_ui_preferences
+		 WHERE actor_id = $1 AND preference_key = $2`, actorID, preferenceKey,
+	).Scan(&pref.ActorID, &pref.PreferenceKey, &valueJSON, &pref.CreatedAt, &pref.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("get user ui preference: %w", err)
+	}
+	_ = json.Unmarshal(valueJSON, &pref.Value)
+	return pref, nil
+}
+
+func (r *Repository) UpsertUserUIPreference(ctx context.Context, actorID, preferenceKey string, input UpsertUserUIPreferenceInput) (*UserUIPreference, error) {
+	valueJSON, _ := json.Marshal(input.Value)
+
+	pref := &UserUIPreference{}
+	err := r.db.QueryRow(ctx,
+		`INSERT INTO user_ui_preferences(actor_id, preference_key, value)
+		 VALUES ($1, $2, $3)
+		 ON CONFLICT (actor_id, preference_key) DO UPDATE SET
+		    value = EXCLUDED.value,
+		    updated_at = NOW()
+		 RETURNING actor_id, preference_key, value, created_at, updated_at`,
+		actorID, preferenceKey, valueJSON,
+	).Scan(&pref.ActorID, &pref.PreferenceKey, &valueJSON, &pref.CreatedAt, &pref.UpdatedAt)
+	if err != nil {
+		return nil, fmt.Errorf("upsert user ui preference: %w", err)
+	}
+	_ = json.Unmarshal(valueJSON, &pref.Value)
+	return pref, nil
+}
+
 func (r *Repository) CreateFieldPermissionRule(ctx context.Context, input CreateFieldPermissionRuleInput) (*FieldPermissionRule, error) {
 	metadataJSON, _ := json.Marshal(input.Metadata)
 	rule := &FieldPermissionRule{}

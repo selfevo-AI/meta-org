@@ -37,6 +37,8 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Post("/governance/data/field-permissions", h.createFieldPermissionRule)
 	r.Get("/governance/data/field-permissions", h.listFieldPermissionRules)
 	r.Post("/governance/data/field-access/check", h.checkFieldAccess)
+	r.Get("/preferences/{key}", h.getUserUIPreference)
+	r.Put("/preferences/{key}", h.upsertUserUIPreference)
 }
 
 func (h *Handler) createPermission(w http.ResponseWriter, r *http.Request) {
@@ -209,6 +211,39 @@ func (h *Handler) upsertUserFieldPreference(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	pref, err := h.service.UpsertUserFieldPreference(r.Context(), user.ID, chi.URLParam(r, "table"), input)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, pref)
+}
+
+func (h *Handler) getUserUIPreference(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	pref, err := h.service.GetUserUIPreference(r.Context(), user.ID, chi.URLParam(r, "key"))
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, pref)
+}
+
+func (h *Handler) upsertUserUIPreference(w http.ResponseWriter, r *http.Request) {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var input UpsertUserUIPreferenceInput
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&input); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+		return
+	}
+	pref, err := h.service.UpsertUserUIPreference(r.Context(), user.ID, chi.URLParam(r, "key"), input)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return

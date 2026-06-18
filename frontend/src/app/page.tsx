@@ -24,6 +24,7 @@ import {
   Moon,
   MoreHorizontal,
   RefreshCw,
+  Send,
   ShieldCheck,
   SlidersHorizontal,
   Sparkles,
@@ -34,26 +35,29 @@ import {
   X,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { DragEvent, FormEvent } from 'react'
+import type { CSSProperties, DragEvent, FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import {
   activateAssistantSkill,
   approveToolApproval,
   apiRequest,
   confirmAssistantProposal,
   createAssistantSkill,
+  getUserPreference,
   getMetaOrgInbox,
   getMetaOrgOverview,
   listAssistantContextTargets,
   listAssistantProposals,
   listAssistantSkills,
+  listModels,
   listRoles,
   login,
   registerUser,
   rejectAssistantProposal,
   rejectToolApproval,
   runAssistantSkill,
+  saveUserPreference,
 } from '@/lib/api'
-import type { AssistantBusinessSkill, AssistantContextTarget, AssistantProposal, InboxItem, MetaOrgOverview, Role } from '@/lib/api'
+import type { AssistantBusinessSkill, AssistantContextTarget, AssistantProposal, InboxItem, MetaOrgOverview, ModelCatalogItem, Role } from '@/lib/api'
 import { clearSession, getSessionUser, getToken, setSession } from '@/lib/auth'
 import { useI18n } from '@/lib/i18n'
 import { apiOperations, getOperationProfile, operationDomains } from '@/lib/operations'
@@ -169,6 +173,16 @@ type BusinessTreeNode = {
 
 type BusinessSelection = BusinessTreeNode
 
+type OverviewBusinessFunction = {
+  id: string
+  domain: string
+  moduleKey: string
+  targetType: string
+  label: string
+  intentKey: string
+  icon: typeof Gauge
+}
+
 type OrganizationTreeRecord = {
   id: string
   name: string
@@ -203,6 +217,14 @@ type PositionTreeRecord = {
   assignments?: BusinessRecord[] | null
 }
 
+type WorkspaceLayoutWidths = {
+  menu: number
+  business: number
+  status: number
+}
+
+type WorkspaceLayoutPane = keyof WorkspaceLayoutWidths
+
 const lifecycleDomains = ['Requirement', 'Project', 'Delivery', 'Cost', 'Feedback']
 const virtualDomains = ['Costing', 'MetaResource']
 const dedicatedDomains = new Set([
@@ -224,9 +246,23 @@ const dedicatedDomains = new Set([
 const menuStorageKey = 'meta_org.menu.groups.v2'
 const expandedMenuStorageKey = 'meta_org.menu.expanded.v2'
 const themeStorageKey = 'meta_org.theme.v1'
+const workspaceLayoutPreferenceKey = 'workspace.layout.widths.v1'
+const modelPreferenceKey = 'meta_org.assistant.model_by_module.v1'
 const legacyMenuStorageKey = 'harness.menu.groups.v1'
 const legacyExpandedMenuStorageKey = 'harness.menu.expanded.v1'
 const projectGithubURL = 'https://github.com/selfevo-AI/meta-org'
+
+const defaultWorkspaceLayoutWidths: WorkspaceLayoutWidths = {
+  menu: 248,
+  business: 300,
+  status: 340,
+}
+
+const workspaceLayoutLimits: Record<WorkspaceLayoutPane, { min: number; max: number }> = {
+  menu: { min: 220, max: 320 },
+  business: { min: 240, max: 420 },
+  status: { min: 280, max: 480 },
+}
 
 const defaultMenuGroups: MenuGroup[] = [
   {
@@ -290,6 +326,47 @@ function formatDate(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value))
+}
+
+function clampLayoutWidth(pane: WorkspaceLayoutPane, value: number): number {
+  const limit = workspaceLayoutLimits[pane]
+  return Math.min(Math.max(Math.round(value), limit.min), limit.max)
+}
+
+function normalizeWorkspaceLayoutWidths(value?: Record<string, unknown>): WorkspaceLayoutWidths {
+  return (Object.keys(defaultWorkspaceLayoutWidths) as WorkspaceLayoutPane[]).reduce(
+    (result, pane) => {
+      const next = value?.[pane]
+      result[pane] = clampLayoutWidth(pane, typeof next === 'number' && Number.isFinite(next) ? next : defaultWorkspaceLayoutWidths[pane])
+      return result
+    },
+    { ...defaultWorkspaceLayoutWidths },
+  )
+}
+
+function workspaceLayoutStyle(widths: WorkspaceLayoutWidths): CSSProperties {
+  return {
+    '--workspace-grid-lg': `${widths.menu}px 8px ${widths.business}px 8px minmax(520px, 1fr)`,
+    '--workspace-grid-xl': `${widths.menu}px 8px ${widths.business}px 8px minmax(520px, 1fr) 8px ${widths.status}px`,
+    '--workspace-overview-grid-lg': `${widths.menu}px 8px minmax(520px, 1fr)`,
+    '--workspace-overview-grid-xl': `${widths.menu}px 8px minmax(520px, 1fr) 8px ${widths.status}px`,
+  } as CSSProperties
+}
+
+function loadModelPreferences(): Record<string, string> {
+  if (typeof window === 'undefined') return {}
+  try {
+    return JSON.parse(window.localStorage.getItem(modelPreferenceKey) || '{}')
+  } catch {
+    return {}
+  }
+}
+
+function saveModelPreference(moduleKey: string, modelID: string) {
+  if (typeof window === 'undefined' || !moduleKey || !modelID) return
+  const preferences = loadModelPreferences()
+  preferences[moduleKey] = modelID
+  window.localStorage.setItem(modelPreferenceKey, JSON.stringify(preferences))
 }
 
 function asRecord(value: unknown): BusinessRecord {
@@ -650,6 +727,153 @@ const globalAssistantModules = [
   { id: 'finance_costing', key: 'costing', targetType: 'cost_ledger_entry', label: 'FinanceCostAccounting' },
 ]
 
+const overviewBusinessFunctions: OverviewBusinessFunction[] = [
+  {
+    id: 'meta_org',
+    domain: 'MetaOrg',
+    moduleKey: 'meta_org',
+    targetType: '',
+    label: 'MetaOrg',
+    intentKey: 'overview.business.metaOrgIntent',
+    icon: Sparkles,
+  },
+  {
+    id: 'requirement',
+    domain: 'Requirement',
+    moduleKey: 'requirement',
+    targetType: 'requirement',
+    label: 'Requirement',
+    intentKey: 'overview.business.requirementIntent',
+    icon: BriefcaseBusiness,
+  },
+  {
+    id: 'project',
+    domain: 'Project',
+    moduleKey: 'project',
+    targetType: 'project',
+    label: 'Project',
+    intentKey: 'overview.business.projectIntent',
+    icon: FolderKanban,
+  },
+  {
+    id: 'delivery',
+    domain: 'Delivery',
+    moduleKey: 'delivery',
+    targetType: 'deliverable',
+    label: 'Delivery',
+    intentKey: 'overview.business.deliveryIntent',
+    icon: ArrowUp,
+  },
+  {
+    id: 'cost',
+    domain: 'Cost',
+    moduleKey: 'project_cost',
+    targetType: 'project_cost',
+    label: 'Cost',
+    intentKey: 'overview.business.costIntent',
+    icon: CircleDollarSign,
+  },
+  {
+    id: 'feedback',
+    domain: 'Feedback',
+    moduleKey: 'feedback',
+    targetType: 'project_evaluation',
+    label: 'Feedback',
+    intentKey: 'overview.business.feedbackIntent',
+    icon: Activity,
+  },
+  {
+    id: 'organization',
+    domain: 'Organization',
+    moduleKey: 'organization',
+    targetType: 'organization',
+    label: 'Organization',
+    intentKey: 'overview.business.organizationIntent',
+    icon: Users,
+  },
+  {
+    id: 'workflow',
+    domain: 'Workflow',
+    moduleKey: 'workflow',
+    targetType: 'workflow_instance',
+    label: 'Workflow',
+    intentKey: 'overview.business.workflowIntent',
+    icon: Workflow,
+  },
+  {
+    id: 'capability',
+    domain: 'Capability',
+    moduleKey: 'capability',
+    targetType: 'capability',
+    label: 'Capability',
+    intentKey: 'overview.business.capabilityIntent',
+    icon: BrainCircuit,
+  },
+  {
+    id: 'governance',
+    domain: 'Governance',
+    moduleKey: 'governance',
+    targetType: 'governance_policy',
+    label: 'Governance',
+    intentKey: 'overview.business.governanceIntent',
+    icon: ShieldCheck,
+  },
+  {
+    id: 'evolution',
+    domain: 'Evolution',
+    moduleKey: 'self_evolution',
+    targetType: 'evolution_task',
+    label: 'Evolution',
+    intentKey: 'overview.business.evolutionIntent',
+    icon: GitBranch,
+  },
+  {
+    id: 'meta_resource',
+    domain: 'MetaResource',
+    moduleKey: 'meta_resource',
+    targetType: 'meta_resource',
+    label: 'MetaResource',
+    intentKey: 'overview.business.metaResourceIntent',
+    icon: Boxes,
+  },
+  {
+    id: 'finance_accounting',
+    domain: 'FinanceAccounting',
+    moduleKey: 'finance',
+    targetType: 'finance_settlement',
+    label: 'FinanceAccounting',
+    intentKey: 'overview.business.financeIntent',
+    icon: WalletCards,
+  },
+  {
+    id: 'finance_receivables',
+    domain: 'FinanceReceivables',
+    moduleKey: 'finance',
+    targetType: 'finance_receivable',
+    label: 'FinanceReceivables',
+    intentKey: 'overview.business.receivablesIntent',
+    icon: ArrowDown,
+  },
+  {
+    id: 'finance_payables',
+    domain: 'FinancePayables',
+    moduleKey: 'finance',
+    targetType: 'finance_payable',
+    label: 'FinancePayables',
+    intentKey: 'overview.business.payablesIntent',
+    icon: ArrowUp,
+  },
+  {
+    id: 'finance_costing',
+    domain: 'FinanceCostAccounting',
+    moduleKey: 'costing',
+    targetType: 'cost_ledger_entry',
+    label: 'FinanceCostAccounting',
+    intentKey: 'overview.business.financeCostIntent',
+    icon: CircleDollarSign,
+  },
+]
+
 function agentIntentForOperation(operation: ApiOperation, context: Record<string, string>): string {
   const contextLines = Object.entries(context)
     .filter(([, value]) => value)
@@ -695,12 +919,42 @@ export default function Home() {
   const [assistantOpen, setAssistantOpen] = useState(false)
   const [assistantIntent, setAssistantIntent] = useState('')
   const [assistantIntentKey, setAssistantIntentKey] = useState('')
+  const [overviewPrompt, setOverviewPrompt] = useState('')
+  const [overviewFunctionID, setOverviewFunctionID] = useState('meta_org')
+  const [overviewModels, setOverviewModels] = useState<ModelCatalogItem[]>([])
+  const [overviewModelID, setOverviewModelID] = useState('')
+  const [overviewSkills, setOverviewSkills] = useState<AssistantBusinessSkill[]>([])
+  const [overviewSkillID, setOverviewSkillID] = useState('')
+  const [skillImportOpen, setSkillImportOpen] = useState(false)
+  const [skillLibrary, setSkillLibrary] = useState<AssistantBusinessSkill[]>([])
+  const [skillImportID, setSkillImportID] = useState('')
+  const [overviewControlLoading, setOverviewControlLoading] = useState(false)
+  const [overviewControlNotice, setOverviewControlNotice] = useState('')
+  const [overviewControlError, setOverviewControlError] = useState('')
   const [operationContext, setOperationContext] = useState<Record<string, string>>({})
   const [businessNodesByDomain, setBusinessNodesByDomain] = useState<Record<string, BusinessTreeNode[]>>({})
   const [businessSelection, setBusinessSelection] = useState<BusinessSelection | null>(null)
   const [businessTreeLoading, setBusinessTreeLoading] = useState(false)
   const [businessTreeError, setBusinessTreeError] = useState<string | null>(null)
   const [mobileBusinessOpen, setMobileBusinessOpen] = useState(false)
+  const [workspaceLayoutWidths, setWorkspaceLayoutWidths] = useState<WorkspaceLayoutWidths>(defaultWorkspaceLayoutWidths)
+
+  const orderedOverviewFunctions = useMemo(() => {
+    const domainOrder = menuGroups.flatMap((group) => group.domains)
+    return [...overviewBusinessFunctions].sort((left, right) => {
+      if (left.id === 'meta_org') return -1
+      if (right.id === 'meta_org') return 1
+      const leftIndex = domainOrder.indexOf(left.domain)
+      const rightIndex = domainOrder.indexOf(right.domain)
+      const normalizedLeft = leftIndex === -1 ? Number.MAX_SAFE_INTEGER : leftIndex
+      const normalizedRight = rightIndex === -1 ? Number.MAX_SAFE_INTEGER : rightIndex
+      return normalizedLeft - normalizedRight
+    })
+  }, [menuGroups])
+  const selectedOverviewFunction =
+    orderedOverviewFunctions.find((item) => item.id === overviewFunctionID) ?? orderedOverviewFunctions[0] ?? overviewBusinessFunctions[0]
+  const selectedOverviewSkill = overviewSkills.find((skill) => skill.id === overviewSkillID)
+  const selectedOverviewModel = overviewModels.find((model) => model.id === overviewModelID)
 
   useEffect(() => {
     let cancelled = false
@@ -738,6 +992,75 @@ export default function Home() {
   }, [menuGroups, menuReady])
 
   useEffect(() => {
+    if (!orderedOverviewFunctions.some((item) => item.id === overviewFunctionID)) {
+      setOverviewFunctionID(orderedOverviewFunctions[0]?.id || 'meta_org')
+    }
+  }, [orderedOverviewFunctions, overviewFunctionID])
+
+  useEffect(() => {
+    if (!token) {
+      setOverviewModels([])
+      setOverviewModelID('')
+      return
+    }
+    let cancelled = false
+    listModels(token)
+      .then((items) => {
+        if (cancelled) return
+        setOverviewModels(items.filter((model) => model.status === 'active'))
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setOverviewModels([])
+          setOverviewModelID('')
+        }
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [token])
+
+  useEffect(() => {
+    if (overviewModels.length === 0) {
+      setOverviewModelID('')
+      return
+    }
+    const preferences = loadModelPreferences()
+    const preferred = preferences[selectedOverviewFunction.moduleKey] || overviewModels[0]?.id || ''
+    setOverviewModelID(overviewModels.some((model) => model.id === preferred) ? preferred : overviewModels[0]?.id || '')
+  }, [overviewModels, selectedOverviewFunction.moduleKey])
+
+  useEffect(() => {
+    if (!token) {
+      setOverviewSkills([])
+      setOverviewSkillID('')
+      return
+    }
+    let cancelled = false
+    setOverviewControlLoading(true)
+    setOverviewControlError('')
+    listAssistantSkills(token, selectedOverviewFunction.moduleKey, selectedOverviewFunction.targetType)
+      .then((items) => {
+        if (cancelled) return
+        setOverviewSkills(items)
+        setOverviewSkillID((current) => (items.some((skill) => skill.id === current) ? current : items[0]?.id || ''))
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setOverviewSkills([])
+          setOverviewSkillID('')
+          setOverviewControlError(err instanceof Error ? err.message : t('assistant.global.loadFailed'))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setOverviewControlLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selectedOverviewFunction.moduleKey, selectedOverviewFunction.targetType, t, token])
+
+  useEffect(() => {
     if (!menuReady || typeof window === 'undefined') return
     window.localStorage.setItem(expandedMenuStorageKey, JSON.stringify(expandedGroups))
   }, [expandedGroups, menuReady])
@@ -746,6 +1069,26 @@ export default function Home() {
     if (!menuReady || typeof window === 'undefined') return
     window.localStorage.setItem(themeStorageKey, themeMode)
   }, [menuReady, themeMode])
+
+  useEffect(() => {
+    if (!token) {
+      setWorkspaceLayoutWidths(defaultWorkspaceLayoutWidths)
+      return
+    }
+    let cancelled = false
+
+    getUserPreference(token, workspaceLayoutPreferenceKey)
+      .then((preference) => {
+        if (!cancelled) setWorkspaceLayoutWidths(normalizeWorkspaceLayoutWidths(preference.value))
+      })
+      .catch(() => {
+        if (!cancelled) setWorkspaceLayoutWidths(defaultWorkspaceLayoutWidths)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [token])
 
   useEffect(() => {
     if (!token) return
@@ -908,6 +1251,161 @@ export default function Home() {
     setExpandedGroups(defaultExpandedGroups())
   }
 
+  function persistWorkspaceLayout(widths: WorkspaceLayoutWidths) {
+    if (!token) return
+    saveUserPreference(token, workspaceLayoutPreferenceKey, widths).catch(() => undefined)
+  }
+
+  function handleResetWorkspaceLayout() {
+    setWorkspaceLayoutWidths(defaultWorkspaceLayoutWidths)
+    persistWorkspaceLayout(defaultWorkspaceLayoutWidths)
+  }
+
+  function handleLayoutResizeStart(event: ReactPointerEvent<HTMLButtonElement>, pane: WorkspaceLayoutPane) {
+    event.preventDefault()
+    const startX = event.clientX
+    const startWidths = workspaceLayoutWidths
+    let latestWidths = startWidths
+    const previousCursor = document.body.style.cursor
+    const previousUserSelect = document.body.style.userSelect
+
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      const delta = moveEvent.clientX - startX
+      const next = { ...startWidths }
+      if (pane === 'menu') {
+        next.menu = clampLayoutWidth('menu', startWidths.menu + delta)
+      } else if (pane === 'business') {
+        next.business = clampLayoutWidth('business', startWidths.business + delta)
+      } else {
+        next.status = clampLayoutWidth('status', startWidths.status - delta)
+      }
+      latestWidths = next
+      setWorkspaceLayoutWidths(next)
+    }
+
+    const handlePointerUp = () => {
+      document.removeEventListener('pointermove', handlePointerMove)
+      document.removeEventListener('pointerup', handlePointerUp)
+      document.body.style.cursor = previousCursor
+      document.body.style.userSelect = previousUserSelect
+      persistWorkspaceLayout(latestWidths)
+    }
+
+    document.addEventListener('pointermove', handlePointerMove)
+    document.addEventListener('pointerup', handlePointerUp)
+  }
+
+  function overviewAssistantIntent(intent: string): string {
+    const trimmed = intent.trim()
+    if (!trimmed) return ''
+    const functionLabel = t(selectedOverviewFunction.label)
+    if (!selectedOverviewSkill) {
+      return [
+        trimmed,
+        '',
+        `${t('overview.business.currentContext')}: ${functionLabel}`,
+        `${t('assistant.global.module')}: ${selectedOverviewFunction.moduleKey}`,
+      ].join('\n')
+    }
+    return [
+      selectedOverviewSkill.prompt_template,
+      '',
+      `${t('overview.business.userRequest')}: ${trimmed}`,
+      `${t('overview.business.currentContext')}: ${functionLabel}`,
+      `${t('assistant.global.module')}: ${selectedOverviewFunction.moduleKey}`,
+      `${t('overview.technique')}: ${selectedOverviewSkill.name}`,
+    ].join('\n')
+  }
+
+  function openAssistantWithIntent(intent: string) {
+    const nextIntent = overviewAssistantIntent(intent)
+    if (!nextIntent) return
+    setAssistantIntent(nextIntent)
+    setAssistantIntentKey(`overview:${selectedOverviewFunction.id}:${Date.now()}`)
+    setAssistantOpen(true)
+  }
+
+  function handleOverviewFunctionSelect(functionID: string) {
+    const nextFunction = orderedOverviewFunctions.find((item) => item.id === functionID)
+    if (!nextFunction) return
+    setOverviewFunctionID(nextFunction.id)
+    setOverviewControlNotice('')
+    setOverviewControlError('')
+    setAssistantIntent('')
+    setAssistantIntentKey('')
+  }
+
+  function handleOverviewModelChange(modelID: string) {
+    setOverviewModelID(modelID)
+    saveModelPreference(selectedOverviewFunction.moduleKey, modelID)
+  }
+
+  function openSkillImport() {
+    if (!token) return
+    setSkillImportOpen(true)
+    setOverviewControlError('')
+    setOverviewControlNotice('')
+    setOverviewControlLoading(true)
+    listAssistantSkills(token)
+      .then((items) => {
+        setSkillLibrary(items)
+        setSkillImportID(items[0]?.id || '')
+      })
+      .catch((err) => {
+        setSkillLibrary([])
+        setSkillImportID('')
+        setOverviewControlError(err instanceof Error ? err.message : t('assistant.global.loadFailed'))
+      })
+      .finally(() => setOverviewControlLoading(false))
+  }
+
+  async function handleImportSkill() {
+    if (!token || !skillImportID) return
+    const source = skillLibrary.find((skill) => skill.id === skillImportID)
+    if (!source) return
+    setOverviewControlLoading(true)
+    setOverviewControlError('')
+    setOverviewControlNotice('')
+    try {
+      const imported = await createAssistantSkill(token, {
+        module_key: selectedOverviewFunction.moduleKey,
+        target_type: selectedOverviewFunction.targetType,
+        name: source.name,
+        description: source.description,
+        trigger_intent: source.trigger_intent,
+        prompt_template: source.prompt_template,
+        tool_allowlist: source.tool_allowlist,
+        input_schema: source.input_schema,
+        output_schema: source.output_schema,
+        source_session_id: source.source_session_id,
+        metadata: {
+          ...(source.metadata || {}),
+          imported_from_skill_id: source.id,
+          imported_from_module_key: source.module_key,
+          imported_from_target_type: source.target_type,
+          imported_to_overview_function: selectedOverviewFunction.id,
+        },
+      })
+      setOverviewSkills((current) => [imported, ...current])
+      setOverviewSkillID(imported.id)
+      setSkillImportOpen(false)
+      setOverviewControlNotice(t('overview.skillImported'))
+    } catch (err) {
+      setOverviewControlError(err instanceof Error ? err.message : t('common.operationFailed'))
+    } finally {
+      setOverviewControlLoading(false)
+    }
+  }
+
+  function openAssistantWithoutIntent() {
+    setAssistantIntent('')
+    setAssistantIntentKey('')
+    setAssistantOpen(true)
+  }
+
   function handleViewChange(view: WorkspaceView) {
     setWorkspaceView(view)
     setBusinessSelection(null)
@@ -957,14 +1455,17 @@ export default function Home() {
   }
 
   const activeGroup = menuGroups.find((group) => group.domains.includes(activeDomain))
+  const isOverview = workspaceView === 'overview'
   const activeOperationCount =
-    workspaceView === 'overview'
+    isOverview
       ? apiOperations.filter((operation) => operation.domain === 'MetaOrg').length
       : apiOperations.filter((operation) => operation.domain === activeDomain).length
-  const activeOperations = apiOperations.filter((operation) => operation.domain === (workspaceView === 'overview' ? 'MetaOrg' : activeDomain))
-  const assistantModule = assistantModuleForDomain(workspaceView === 'overview' ? 'MetaOrg' : activeDomain)
-  const activeBusinessNodes = workspaceView === 'overview' ? buildOperationNodes('MetaOrg') : businessNodesByDomain[activeDomain] ?? []
+  const activeOperations = apiOperations.filter((operation) => operation.domain === (isOverview ? 'MetaOrg' : activeDomain))
   const activeBusinessSelection = businessSelection?.domain === activeDomain ? businessSelection : null
+  const assistantModule = isOverview ? selectedOverviewFunction.moduleKey : assistantModuleForDomain(activeDomain)
+  const assistantTargetType = isOverview ? selectedOverviewFunction.targetType : activeBusinessSelection?.targetType
+  const assistantTargetID = isOverview ? undefined : activeBusinessSelection?.targetID
+  const activeBusinessNodes = isOverview ? buildOperationNodes('MetaOrg') : businessNodesByDomain[activeDomain] ?? []
 
   return (
     <main className={`app-dark ${themeMode === 'light' ? 'theme-light' : ''}`}>
@@ -1062,9 +1563,9 @@ export default function Home() {
           <RoleDirectory roles={roles} />
         </div>
       ) : (
-        <div className="grid min-h-screen lg:grid-cols-[248px_300px_minmax(0,1fr)_340px]">
+        <div className={`workspace-shell grid min-h-screen ${isOverview ? 'workspace-shell-overview' : ''}`} style={workspaceLayoutStyle(workspaceLayoutWidths)}>
           <div
-            className={`fixed inset-y-0 left-0 z-40 w-[248px] transform transition lg:static lg:translate-x-0 ${
+            className={`workspace-sidebar-pane fixed inset-y-0 left-0 z-40 w-[248px] transform transition lg:static lg:w-auto lg:translate-x-0 ${
               mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
             }`}
           >
@@ -1088,30 +1589,9 @@ export default function Home() {
             />
           )}
 
-          <div
-            className={`fixed inset-y-0 left-0 z-30 w-[300px] transform transition lg:static lg:translate-x-0 ${
-              mobileBusinessOpen ? 'translate-x-0' : '-translate-x-full'
-            }`}
-          >
-            <BusinessTreePanel
-              domain={activeDomain}
-              nodes={activeBusinessNodes}
-              selectedID={activeBusinessSelection?.id}
-              loading={businessTreeLoading}
-              error={businessTreeError}
-              onSelect={handleBusinessSelect}
-            />
-          </div>
-          {mobileBusinessOpen && (
-            <button
-              type="button"
-              aria-label={t('businessTree.close')}
-              className="fixed inset-0 z-20 bg-black/60 lg:hidden"
-              onClick={() => setMobileBusinessOpen(false)}
-            />
-          )}
+          <WorkspaceLayoutResizer pane="menu" label={t('layout.resizeMenu')} onResizeStart={handleLayoutResizeStart} className="workspace-menu-resizer lg:flex" />
 
-          <section className="min-w-0">
+          <div className="workspace-topbar min-w-0">
             <Topbar
               activeTitle={workspaceView === 'overview' ? t('nav.overview') : t(domainLabels[activeDomain] ?? activeDomain)}
               activeDomain={workspaceView === 'overview' ? 'SuperClaw' : activeDomain}
@@ -1125,30 +1605,60 @@ export default function Home() {
               onRefresh={() => loadOverview()}
               onSignOut={handleSignOut}
               onOpenMenu={() => setMobileMenuOpen(true)}
+              showBusinessControl={!isOverview}
               onOpenBusiness={() => setMobileBusinessOpen(true)}
+              onResetLayout={handleResetWorkspaceLayout}
             />
-            <div className="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
-              <WorkspaceHeader
-                title={activeBusinessSelection?.label ?? (workspaceView === 'overview' ? '总览' : domainLabels[activeDomain] ?? activeDomain)}
-                domain={
-                  activeBusinessSelection
-                    ? t(`businessTree.type.${activeBusinessSelection.targetType}`)
-                    : workspaceView === 'overview'
-                      ? 'Overview'
-                      : activeDomain
-                }
-                groupLabel={workspaceView === 'overview' ? '工作台' : activeGroup?.label ?? '功能台'}
-                selection={activeBusinessSelection}
-                operationCount={activeOperationCount}
-                operations={activeOperations}
-                dedicated={workspaceView === 'overview' || dedicatedDomains.has(activeDomain)}
-                onOperationSelect={delegateOperationToAgent}
-                onAssistantOpen={() => {
-                  setAssistantIntent('')
-                  setAssistantIntentKey('')
-                  setAssistantOpen(true)
-                }}
+          </div>
+
+          {!isOverview && (
+            <div
+              className={`workspace-business-pane fixed inset-y-0 left-0 z-30 w-[300px] transform transition lg:static lg:w-auto lg:translate-x-0 ${
+                mobileBusinessOpen ? 'translate-x-0' : '-translate-x-full'
+              }`}
+            >
+              <BusinessTreePanel
+                domain={activeDomain}
+                nodes={activeBusinessNodes}
+                selectedID={activeBusinessSelection?.id}
+                loading={businessTreeLoading}
+                error={businessTreeError}
+                onSelect={handleBusinessSelect}
               />
+            </div>
+          )}
+          {!isOverview && mobileBusinessOpen && (
+            <button
+              type="button"
+              aria-label={t('businessTree.close')}
+              className="fixed inset-0 z-20 bg-black/60 lg:hidden"
+              onClick={() => setMobileBusinessOpen(false)}
+            />
+          )}
+
+          {!isOverview && (
+            <WorkspaceLayoutResizer pane="business" label={t('layout.resizeBusiness')} onResizeStart={handleLayoutResizeStart} className="workspace-business-resizer lg:flex" />
+          )}
+
+          <section className="workspace-main-pane min-w-0">
+            <div className="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
+              {workspaceView !== 'overview' && (
+                <WorkspaceHeader
+                  title={activeBusinessSelection?.label ?? (domainLabels[activeDomain] ?? activeDomain)}
+                  domain={activeBusinessSelection ? t(`businessTree.type.${activeBusinessSelection.targetType}`) : activeDomain}
+                  groupLabel={activeGroup?.label ?? '功能台'}
+                  selection={activeBusinessSelection}
+                  operationCount={activeOperationCount}
+                  operations={activeOperations}
+                  dedicated={dedicatedDomains.has(activeDomain)}
+                  onOperationSelect={delegateOperationToAgent}
+                  onAssistantOpen={() => {
+                    setAssistantIntent('')
+                    setAssistantIntentKey('')
+                    setAssistantOpen(true)
+                  }}
+                />
+              )}
               {error && (
                 <div className="mb-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
                   {error}
@@ -1156,11 +1666,33 @@ export default function Home() {
               )}
               {workspaceView === 'overview' ? (
                 overview ? (
-                  <Dashboard
-                    token={token}
+                  <OverviewAssistantHome
                     overview={overview}
                     inbox={inbox}
                     healthRatio={healthRatio}
+                    businessFunctions={orderedOverviewFunctions}
+                    selectedFunctionID={selectedOverviewFunction.id}
+                    onSelectFunction={handleOverviewFunctionSelect}
+                    models={overviewModels}
+                    selectedModelID={overviewModelID}
+                    selectedModel={selectedOverviewModel}
+                    onModelChange={handleOverviewModelChange}
+                    skills={overviewSkills}
+                    selectedSkillID={overviewSkillID}
+                    selectedSkill={selectedOverviewSkill}
+                    onSkillChange={setOverviewSkillID}
+                    onImportSkill={openSkillImport}
+                    controlsLoading={overviewControlLoading}
+                    controlNotice={overviewControlNotice}
+                    controlError={overviewControlError}
+                    prompt={overviewPrompt}
+                    onPromptChange={setOverviewPrompt}
+                    onSubmitPrompt={() => openAssistantWithIntent(overviewPrompt)}
+                    onQuickPrompt={(intent) => {
+                      setOverviewPrompt(intent)
+                      openAssistantWithIntent(intent)
+                    }}
+                    onOpenAssistant={openAssistantWithoutIntent}
                     onReviewApproval={(id, decision) => void handleToolApproval(id, decision)}
                   />
                 ) : (
@@ -1211,9 +1743,73 @@ export default function Home() {
               </div>
             </div>
           </section>
-          <aside className="hidden min-w-0 border-l border-slate-800 bg-[#121317] xl:block">
+          <WorkspaceLayoutResizer pane="status" label={t('layout.resizeStatus')} onResizeStart={handleLayoutResizeStart} className="workspace-status-resizer xl:flex" />
+          <aside className="workspace-status-pane hidden min-w-0 border-l border-slate-800 bg-[#121317] xl:block">
             <BusinessStatusPanel token={token} selection={activeBusinessSelection} operations={activeOperations} />
           </aside>
+          {skillImportOpen && (
+            <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+              <button
+                type="button"
+                className="absolute inset-0 bg-black/60"
+                aria-label={t('common.close')}
+                onClick={() => setSkillImportOpen(false)}
+              />
+              <section className="relative w-full max-w-lg rounded-lg border border-slate-700 bg-[#17181d] p-5 shadow-2xl">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-base font-semibold text-white">{t('overview.importSkill')}</h2>
+                    <p className="mt-1 text-sm text-slate-400">
+                      {t('overview.importSkillHint')}: {t(selectedOverviewFunction.label)}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSkillImportOpen(false)}
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-300 transition hover:bg-slate-800 hover:text-white"
+                    aria-label={t('common.close')}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+                <div className="mt-4 space-y-3">
+                  <select
+                    value={skillImportID}
+                    onChange={(event) => setSkillImportID(event.target.value)}
+                    className="h-11 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 outline-none focus:border-[#DF6A24] focus:ring-2 focus:ring-[#DF6A24]/20"
+                  >
+                    {skillLibrary.length === 0 ? (
+                      <option value="">{overviewControlLoading ? t('common.loading') : t('overview.noImportableSkills')}</option>
+                    ) : (
+                      skillLibrary.map((skill) => (
+                        <option key={skill.id} value={skill.id}>
+                          {skill.name} · {skill.module_key}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                  {overviewControlError && <p className="rounded-md bg-red-950/40 px-3 py-2 text-sm text-red-200">{overviewControlError}</p>}
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSkillImportOpen(false)}
+                      className="inline-flex h-10 items-center rounded-lg border border-slate-700 px-4 text-sm font-semibold text-slate-200 transition hover:bg-slate-800"
+                    >
+                      {t('common.cancel')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleImportSkill()}
+                      disabled={!skillImportID || overviewControlLoading}
+                      className="inline-flex h-10 items-center rounded-lg bg-[#AD4714] px-4 text-sm font-semibold text-[#fffaf5] transition hover:bg-[#B84F18] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {overviewControlLoading ? t('auth.processing') : t('overview.importSkill')}
+                    </button>
+                  </div>
+                </div>
+              </section>
+            </div>
+          )}
           {assistantOpen && (
             <div className="fixed inset-0 z-50">
               <button
@@ -1242,6 +1838,8 @@ export default function Home() {
                 <AIAssistant
                   token={token}
                   contextType={assistantModule}
+                  targetType={assistantTargetType}
+                  targetID={assistantTargetID}
                   initialIntent={assistantIntent}
                   initialIntentKey={assistantIntentKey}
                   autoRunInitialIntent={Boolean(assistantIntent)}
@@ -1252,6 +1850,30 @@ export default function Home() {
         </div>
       )}
     </main>
+  )
+}
+
+function WorkspaceLayoutResizer({
+  pane,
+  label,
+  onResizeStart,
+  className = 'lg:flex',
+}: {
+  pane: WorkspaceLayoutPane
+  label: string
+  onResizeStart: (event: ReactPointerEvent<HTMLButtonElement>, pane: WorkspaceLayoutPane) => void
+  className?: string
+}) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onPointerDown={(event) => onResizeStart(event, pane)}
+      className={`workspace-layout-resizer hidden h-full items-stretch justify-center ${className}`}
+    >
+      <span className="my-3 w-px rounded-full bg-slate-700/70 transition" />
+    </button>
   )
 }
 
@@ -1268,7 +1890,9 @@ function Topbar({
   onRefresh,
   onSignOut,
   onOpenMenu,
+  showBusinessControl,
   onOpenBusiness,
+  onResetLayout,
 }: {
   activeTitle: string
   activeDomain: string
@@ -1282,7 +1906,9 @@ function Topbar({
   onRefresh: () => void
   onSignOut: () => void
   onOpenMenu: () => void
+  showBusinessControl: boolean
   onOpenBusiness: () => void
+  onResetLayout: () => void
 }) {
   const { t } = useI18n()
   const activeWork = overview?.health.active_projects ?? 0
@@ -1299,14 +1925,16 @@ function Topbar({
           >
             <Menu className="h-4 w-4" />
           </button>
-          <button
-            type="button"
-            onClick={onOpenBusiness}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-300 lg:hidden"
-            aria-label={t('businessTree.open')}
-          >
-            <GitBranch className="h-4 w-4" />
-          </button>
+          {showBusinessControl && (
+            <button
+              type="button"
+              onClick={onOpenBusiness}
+              className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-300 lg:hidden"
+              aria-label={t('businessTree.open')}
+            >
+              <GitBranch className="h-4 w-4" />
+            </button>
+          )}
           <div className="min-w-0 text-xs font-semibold">
             <span className="text-[#F6A66A]">{t('shell.breadcrumbRoot')}</span>
             <span className="px-2 text-slate-500">/</span>
@@ -1323,6 +1951,16 @@ function Topbar({
             <span>{activeDomain}</span>
           </div>
           {userType && <StatusPill label={userType === 'ai' ? 'AI Agent' : 'Human'} tone="blue" />}
+          <button
+            type="button"
+            onClick={onResetLayout}
+            className="hidden h-9 items-center gap-2 rounded-lg border border-slate-700 px-3 text-xs font-bold text-slate-300 transition hover:border-blue-400/60 hover:text-blue-200 lg:inline-flex"
+            aria-label={t('layout.resetWidths')}
+            title={t('layout.resetWidths')}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            <span className="hidden 2xl:inline">{t('layout.resetWidths')}</span>
+          </button>
           {overview && (
             <button
               type="button"
@@ -1539,6 +2177,85 @@ function SidebarButton({
   )
 }
 
+function BusinessFunctionTreePanel({
+  groups,
+  expandedGroups,
+  activeDomain,
+  onToggleGroup,
+  onViewChange,
+}: {
+  groups: MenuGroup[]
+  expandedGroups: Record<string, boolean>
+  activeDomain: string
+  onToggleGroup: (groupID: string) => void
+  onViewChange: (view: WorkspaceView) => void
+}) {
+  const { t } = useI18n()
+
+  return (
+    <aside className="flex h-full min-h-screen flex-col border-r border-slate-800 bg-[#17181d] px-3 py-4 lg:min-h-0">
+      <div className="px-2 pb-4">
+        <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#F6A66A]">{t('businessTree.functions')}</p>
+        <h2 className="mt-1 flex min-w-0 items-center gap-2 text-base font-semibold text-white">
+          <GitBranch className="h-4 w-4 shrink-0 text-slate-400" />
+          <span className="truncate">{t('businessTree.functionNavigator')}</span>
+        </h2>
+      </div>
+      <div className="flex-1 overflow-y-auto pr-1">
+        <div className="space-y-2">
+          {groups.map((group) => {
+            const expanded = expandedGroups[group.id] ?? true
+            return (
+              <div key={group.id} className="rounded-lg border border-slate-800 bg-slate-950/25 p-1.5">
+                <button
+                  type="button"
+                  onClick={() => onToggleGroup(group.id)}
+                  className="flex h-9 w-full items-center justify-between rounded-md px-2 text-left text-xs font-bold uppercase tracking-[0.08em] text-slate-500 transition hover:bg-slate-900/60 hover:text-slate-200"
+                >
+                  <span className="inline-flex min-w-0 items-center gap-2">
+                    {expanded ? <ChevronDown className="h-3.5 w-3.5 shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0" />}
+                    <span className="truncate">{t(`nav.group.${group.id}`)}</span>
+                  </span>
+                  <span>{group.domains.length}</span>
+                </button>
+                {expanded && (
+                  <div className="mt-1 space-y-1">
+                    {group.domains.map((domain) => {
+                      const Icon = domainIcons[domain] ?? Gauge
+                      const active = activeDomain === domain
+                      const count = apiOperations.filter((operation) => operation.domain === domain).length
+                      return (
+                        <button
+                          type="button"
+                          key={`${group.id}-${domain}`}
+                          onClick={() => onViewChange(domain === 'MetaOrg' ? 'overview' : (`domain:${domain}` as WorkspaceView))}
+                          className={`flex h-10 w-full items-center justify-between gap-2 rounded-md px-2 text-left text-sm font-semibold transition ${
+                            active
+                              ? 'border border-[#DF6A24]/35 bg-[#DF6A24]/10 text-white'
+                              : 'border border-transparent text-slate-300 hover:border-slate-700 hover:bg-slate-950/40'
+                          }`}
+                        >
+                          <span className="inline-flex min-w-0 items-center gap-2">
+                            <Icon className={`h-4 w-4 shrink-0 ${active ? 'text-[#F6A66A]' : 'text-slate-500'}`} />
+                            <span className="truncate">{t(domainLabels[domain] ?? domain)}</span>
+                          </span>
+                          <span className="shrink-0 rounded-md border border-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-500">
+                            {count}
+                          </span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    </aside>
+  )
+}
+
 function BusinessTreePanel({
   domain,
   nodes,
@@ -1558,7 +2275,7 @@ function BusinessTreePanel({
   const Icon = domainIcons[domain] ?? GitBranch
 
   return (
-    <aside className="flex h-full min-h-screen flex-col border-r border-slate-800 bg-[#17181d] px-3 py-4">
+    <aside className="flex h-full min-h-screen flex-col border-r border-slate-800 bg-[#17181d] px-3 py-4 lg:min-h-0">
       <div className="flex items-center justify-between gap-2 px-2 pb-4">
         <div className="min-w-0">
           <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#F6A66A]">{t('businessTree.title')}</p>
@@ -1949,6 +2666,251 @@ function AgentOnlyWorkspace({ domain, onAssistantOpen }: { domain: string; onAss
         </button>
       </div>
     </section>
+  )
+}
+
+function OverviewAssistantHome({
+  overview,
+  inbox,
+  healthRatio,
+  businessFunctions,
+  selectedFunctionID,
+  onSelectFunction,
+  models,
+  selectedModelID,
+  selectedModel,
+  onModelChange,
+  skills,
+  selectedSkillID,
+  selectedSkill,
+  onSkillChange,
+  onImportSkill,
+  controlsLoading,
+  controlNotice,
+  controlError,
+  prompt,
+  onPromptChange,
+  onSubmitPrompt,
+  onQuickPrompt,
+  onOpenAssistant,
+  onReviewApproval,
+}: {
+  overview: MetaOrgOverview
+  inbox: InboxItem[]
+  healthRatio: number
+  businessFunctions: OverviewBusinessFunction[]
+  selectedFunctionID: string
+  onSelectFunction: (functionID: string) => void
+  models: ModelCatalogItem[]
+  selectedModelID: string
+  selectedModel?: ModelCatalogItem
+  onModelChange: (modelID: string) => void
+  skills: AssistantBusinessSkill[]
+  selectedSkillID: string
+  selectedSkill?: AssistantBusinessSkill
+  onSkillChange: (skillID: string) => void
+  onImportSkill: () => void
+  controlsLoading: boolean
+  controlNotice: string
+  controlError: string
+  prompt: string
+  onPromptChange: (value: string) => void
+  onSubmitPrompt: () => void
+  onQuickPrompt: (intent: string) => void
+  onOpenAssistant: () => void
+  onReviewApproval: (id: string, decision: 'approve' | 'reject') => void
+}) {
+  const { t } = useI18n()
+  const modes = [
+    ['overview.mode.code', 'overview.mode.codeIntent', Code2],
+    ['overview.mode.office', 'overview.mode.officeIntent', BriefcaseBusiness],
+    ['overview.mode.design', 'overview.mode.designIntent', Sparkles],
+  ] as const
+  const pendingInbox = inbox.slice(0, 3)
+  const selectedBusinessFunction = businessFunctions.find((item) => item.id === selectedFunctionID) ?? businessFunctions[0]
+
+  return (
+    <div className="overview-assistant-home flex min-h-[calc(100vh-132px)] flex-col">
+      <section className="flex flex-1 flex-col items-center justify-center px-2 py-8 text-center sm:py-12">
+        <div className="relative">
+          <div className="flex h-28 w-28 items-center justify-center rounded-full border border-slate-800 bg-slate-950/45 shadow-[0_20px_80px_rgba(0,0,0,0.24)]">
+            <Bot className="h-14 w-14 text-slate-300" />
+          </div>
+          <button
+            type="button"
+            onClick={onOpenAssistant}
+            aria-label={t('assistant.title')}
+            className="absolute -right-3 top-9 inline-flex h-8 w-8 items-center justify-center rounded-full border border-slate-800 bg-slate-900 text-slate-300 transition hover:border-[#DF6A24]/50 hover:text-[#F6A66A]"
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+          </button>
+        </div>
+
+        <h1 className="mt-6 text-balance text-3xl font-extrabold tracking-normal text-white sm:text-4xl">{t('overview.heroTitle')}</h1>
+        <p className="mt-3 max-w-2xl text-sm font-medium leading-6 text-slate-400 sm:text-base">{t('overview.heroSubtitle')}</p>
+
+        <div className="mt-6 inline-flex max-w-full flex-wrap items-center justify-center gap-1 rounded-full bg-slate-200/10 p-1">
+          {modes.map(([label, intent, Icon], index) => (
+            <button
+              key={label}
+              type="button"
+              onClick={() => onQuickPrompt(t(intent))}
+              className={`inline-flex h-9 items-center gap-2 rounded-full px-4 text-sm font-bold transition ${
+                index === 1 ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-300 hover:bg-slate-900/70 hover:text-white'
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+              {t(label)}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-24 w-full max-w-4xl">
+          <div className="mb-3 flex flex-wrap justify-center gap-2">
+            {businessFunctions.map((item) => {
+              const Icon = item.icon
+              const selected = item.id === selectedFunctionID
+              return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onSelectFunction(item.id)}
+                title={t(item.intentKey)}
+                className={`inline-flex h-9 items-center gap-2 rounded-full px-3 text-sm font-semibold shadow-sm transition ${
+                  selected ? 'bg-white text-slate-950 ring-2 ring-[#DF6A24]/50' : 'bg-slate-100 text-slate-800 hover:bg-white'
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {t(item.label)}
+              </button>
+              )
+            })}
+          </div>
+          <form
+            onSubmit={(event) => {
+              event.preventDefault()
+              onSubmitPrompt()
+            }}
+            className="rounded-[22px] border border-slate-800 bg-[#17181d] p-3 text-left shadow-[0_24px_90px_rgba(0,0,0,0.26)]"
+          >
+            <textarea
+              value={prompt}
+              onChange={(event) => onPromptChange(event.target.value)}
+              placeholder={t('overview.promptPlaceholder')}
+              className="min-h-[86px] w-full resize-none border-0 bg-transparent px-2 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-500"
+            />
+            <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-800 px-1 pt-3">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <label className="inline-flex h-9 items-center gap-2 rounded-full border border-slate-700 bg-slate-950/45 px-3 text-xs font-semibold text-slate-300">
+                  <span>{t('overview.model')}</span>
+                  <select
+                    value={selectedModelID}
+                    onChange={(event) => onModelChange(event.target.value)}
+                    className="max-w-[190px] bg-transparent text-sm font-semibold text-slate-100 outline-none"
+                    aria-label={t('overview.model')}
+                  >
+                    {models.length === 0 ? (
+                      <option value="">{t('overview.noModels')}</option>
+                    ) : (
+                      models.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.display_name || model.model_key}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </label>
+                <label className="inline-flex h-9 items-center gap-2 rounded-full border border-slate-700 bg-slate-950/45 px-3 text-xs font-semibold text-slate-300">
+                  <span>{t('overview.technique')}</span>
+                  <select
+                    value={selectedSkillID}
+                    onChange={(event) => {
+                      if (event.target.value === '__import__') {
+                        onImportSkill()
+                        return
+                      }
+                      onSkillChange(event.target.value)
+                    }}
+                    className="max-w-[190px] bg-transparent text-sm font-semibold text-slate-100 outline-none"
+                    aria-label={t('overview.technique')}
+                  >
+                    <option value="">{controlsLoading ? t('common.loading') : t('overview.noSkills')}</option>
+                    {skills.map((skill) => (
+                      <option key={skill.id} value={skill.id}>
+                        {skill.name} · {t(skill.status)}
+                      </option>
+                    ))}
+                    <option value="__import__">{t('overview.importSkill')}</option>
+                  </select>
+                </label>
+                <StatusPill label={formatMoney(overview.health.unexported_cost, overview.health.currency)} tone="amber" />
+              </div>
+              <button
+                type="submit"
+                disabled={!prompt.trim()}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-[#AD4714] text-[#fffaf5] transition hover:bg-[#B84F18] disabled:cursor-not-allowed disabled:opacity-45"
+                aria-label={t('overview.send')}
+              >
+                <Send className="h-4 w-4" />
+              </button>
+            </div>
+          </form>
+          <div className="mt-2 flex flex-wrap justify-center gap-2 text-xs">
+            <StatusPill label={`${t('overview.business.currentContext')}: ${selectedBusinessFunction ? t(selectedBusinessFunction.label) : t('common.none')}`} tone="blue" />
+            {selectedModel && <StatusPill label={selectedModel.display_name || selectedModel.model_key} tone="green" />}
+            {selectedSkill && <StatusPill label={selectedSkill.name} tone="amber" />}
+            {(controlNotice || controlError) && (
+              <span className={`inline-flex min-h-7 items-center rounded-full px-3 font-semibold ${controlError ? 'bg-red-100 text-red-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                {controlError || controlNotice}
+              </span>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {pendingInbox.length > 0 && (
+        <section className="mx-auto mb-6 w-full max-w-4xl rounded-lg border border-slate-800 bg-slate-950/25 p-3">
+          <div className="flex items-center justify-between gap-3 px-1">
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-slate-500">{t('overview.pending')}</p>
+            <StatusPill label={formatNumber(inbox.length)} tone="blue" />
+          </div>
+          <div className="mt-2 divide-y divide-slate-800">
+            {pendingInbox.map((item) => (
+              <div key={`${item.type}-${item.id}`} className="grid gap-2 py-3 sm:grid-cols-[1fr_auto]">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-semibold text-slate-100">{item.title}</p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {item.type} · {item.source || t('common.none')} · {formatDate(item.created_at)}
+                  </p>
+                </div>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <StatusPill label={item.priority} tone={item.priority === 'high' || item.priority === 'critical' ? 'amber' : 'blue'} />
+                  <StatusPill label={item.status} tone="green" />
+                  {item.type === 'tool_approval' && item.status === 'pending' && (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => onReviewApproval(item.id, 'approve')}
+                        className="inline-flex h-7 items-center rounded-md bg-emerald-600 px-2.5 text-xs font-semibold text-white transition hover:bg-emerald-700"
+                      >
+                        {t('agent.approve')}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => onReviewApproval(item.id, 'reject')}
+                        className="inline-flex h-7 items-center rounded-md border border-red-500/30 bg-red-500/10 px-2.5 text-xs font-semibold text-red-200 transition hover:bg-red-500/20"
+                      >
+                        {t('agent.reject')}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+    </div>
   )
 }
 
