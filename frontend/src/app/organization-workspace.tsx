@@ -20,6 +20,11 @@ import { useI18n } from '@/lib/i18n'
 interface OrganizationWorkspaceProps {
   token: string
   currentUserId?: string | null
+  externalSelection?: {
+    targetType: string
+    targetID?: string
+    record?: Record<string, unknown>
+  } | null
 }
 
 interface Organization {
@@ -160,7 +165,7 @@ const emptyAgentForm = {
   risk_level: 'medium',
 }
 
-export function OrganizationWorkspace({ token, currentUserId }: OrganizationWorkspaceProps) {
+export function OrganizationWorkspace({ token, currentUserId, externalSelection }: OrganizationWorkspaceProps) {
   const { t } = useI18n()
   const [organizations, setOrganizations] = useState<Organization[]>([])
   const [selectedOrgId, setSelectedOrgId] = useState<string>('')
@@ -375,6 +380,58 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
       cancelled = true
     }
   }, [selectedPositionId, token])
+
+  useEffect(() => {
+    if (!externalSelection?.targetID) return
+    if (externalSelection.targetType === 'organization') {
+      const org = asArray<Organization>(organizations).find((item) => item.id === externalSelection.targetID)
+      if (org) {
+        setSelectedOrgId(org.id)
+        setSelectedDepartmentId('')
+        setSelectedPositionId('')
+        setPositionAssignments([])
+        setOrgForm({
+          name: org.name,
+          description: org.description ?? '',
+        })
+        setDepartmentForm(emptyDepartmentForm)
+        setPositionForm(emptyPositionForm)
+      } else {
+        setSelectedOrgId(externalSelection.targetID)
+      }
+      return
+    }
+
+    if (externalSelection.targetType === 'department') {
+      const organizationID = typeof externalSelection.record?.organization_id === 'string' ? externalSelection.record.organization_id : ''
+      if (organizationID && organizationID !== selectedOrgId) setSelectedOrgId(organizationID)
+      const department = findDepartment(asArray<Department>(departmentTree), externalSelection.targetID)
+      if (department) {
+        setSelectedDepartmentId(department.id)
+        setSelectedPositionId('')
+        setPositionAssignments([])
+        setDepartmentForm({
+          name: department.name,
+          code: department.code ?? '',
+          description: department.description ?? '',
+          status: department.status,
+          sort_order: String(department.sort_order),
+        })
+        setPositionForm(emptyPositionForm)
+      } else {
+        setSelectedDepartmentId(externalSelection.targetID)
+      }
+      return
+    }
+
+    if (externalSelection.targetType === 'position') {
+      const organizationID = typeof externalSelection.record?.organization_id === 'string' ? externalSelection.record.organization_id : ''
+      const departmentID = typeof externalSelection.record?.department_id === 'string' ? externalSelection.record.department_id : ''
+      if (organizationID && organizationID !== selectedOrgId) setSelectedOrgId(organizationID)
+      if (departmentID) setSelectedDepartmentId(departmentID)
+      setSelectedPositionId(externalSelection.targetID)
+    }
+  }, [departmentTree, externalSelection?.record, externalSelection?.targetID, externalSelection?.targetType, organizations, selectedOrgId])
 
   async function runAction(action: () => Promise<void>, success: string) {
     setLoading(true)
@@ -815,7 +872,7 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[300px_1fr]">
+    <div className="space-y-5">
       <aside className="space-y-5">
         <section className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
           <div className="flex items-center justify-between gap-2">
@@ -888,7 +945,7 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
           </div>
         )}
 
-        <div className="grid gap-5 xl:grid-cols-2">
+        <div className="space-y-5">
           <Panel icon={Plus} title="创建组织">
             <form className="space-y-3" onSubmit={createOrganization}>
               <TextInput label="组织名称" value={orgForm.name} onChange={(value) => setOrgForm({ ...orgForm, name: value })} />
@@ -914,7 +971,7 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
           </Panel>
         </div>
 
-        <div className="grid gap-5 xl:grid-cols-2">
+        <div className="space-y-5">
           <Panel icon={GitBranch} title={selectedDepartment ? '修改部门' : '创建部门'}>
             <form className="space-y-3" onSubmit={selectedDepartment ? updateDepartment : createDepartment}>
               <TextInput
@@ -1302,7 +1359,7 @@ export function OrganizationWorkspace({ token, currentUserId }: OrganizationWork
           </Panel>
         </div>
 
-        <div className="grid gap-5 xl:grid-cols-2">
+        <div className="space-y-5">
           <Panel icon={Users} title="外部成员">
             <form className="space-y-3" onSubmit={createExternalMember}>
               <TextInput

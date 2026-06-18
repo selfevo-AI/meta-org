@@ -28,6 +28,7 @@ const (
 	ApprovalPending  = "pending"
 	ApprovalApproved = "approved"
 	ApprovalRejected = "rejected"
+	ApprovalExpired  = "expired"
 
 	ToolCategoryCoreData           = "core_data"
 	ToolCategoryBusinessApproval   = "business_approval"
@@ -94,6 +95,17 @@ type ToolApproval struct {
 	ReviewedAt        *time.Time `json:"reviewed_at,omitempty"`
 }
 
+type InterfaceFile struct {
+	ID        uuid.UUID      `json:"id"`
+	Name      string         `json:"name"`
+	FileType  string         `json:"file_type"`
+	Content   string         `json:"content"`
+	Metadata  map[string]any `json:"metadata"`
+	CreatedBy *uuid.UUID     `json:"created_by,omitempty"`
+	CreatedAt time.Time      `json:"created_at"`
+	UpdatedAt time.Time      `json:"updated_at"`
+}
+
 type ExecuteToolInput struct {
 	ToolName       string         `json:"tool_name"`
 	InvocationID   *uuid.UUID     `json:"invocation_id,omitempty"`
@@ -111,6 +123,11 @@ type ExecuteToolInput struct {
 type ExecuteToolOutput struct {
 	Execution *ToolExecution `json:"execution"`
 	Approval  *ToolApproval  `json:"approval,omitempty"`
+}
+
+type ApprovalReviewOutput struct {
+	Approval  *ToolApproval  `json:"approval"`
+	Execution *ToolExecution `json:"execution"`
 }
 
 type GovernanceResult struct {
@@ -137,6 +154,20 @@ type CreateToolInput struct {
 	OutputSchema         map[string]any `json:"output_schema,omitempty"`
 	Metadata             map[string]any `json:"metadata,omitempty"`
 	IsActive             *bool          `json:"is_active,omitempty"`
+}
+
+type CreateInterfaceFileInput struct {
+	Name     string         `json:"name"`
+	FileType string         `json:"file_type"`
+	Content  string         `json:"content"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type UpdateInterfaceFileInput struct {
+	Name     *string        `json:"name,omitempty"`
+	FileType *string        `json:"file_type,omitempty"`
+	Content  *string        `json:"content,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type UpdateToolInput struct {

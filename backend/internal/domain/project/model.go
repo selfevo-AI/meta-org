@@ -8,6 +8,7 @@ import (
 
 type Requirement struct {
 	ID             uuid.UUID      `json:"id"`
+	MasterKey      string         `json:"master_key,omitempty"`
 	Title          string         `json:"title"`
 	Description    string         `json:"description"`
 	Source         string         `json:"source"`
@@ -29,6 +30,7 @@ type Requirement struct {
 
 type RequirementDocument struct {
 	ID             uuid.UUID      `json:"id"`
+	MasterKey      string         `json:"master_key,omitempty"`
 	RequirementID  uuid.UUID      `json:"requirement_id"`
 	FileName       string         `json:"file_name"`
 	ContentType    string         `json:"content_type"`
@@ -46,6 +48,7 @@ type RequirementDocumentContent struct {
 
 type RequirementAnalysisWorkflow struct {
 	ID                 uuid.UUID      `json:"id"`
+	MasterKey          string         `json:"master_key,omitempty"`
 	RequirementID      uuid.UUID      `json:"requirement_id"`
 	WorkflowID         uuid.UUID      `json:"workflow_id"`
 	WorkflowTemplateID uuid.UUID      `json:"workflow_template_id"`
@@ -58,6 +61,7 @@ type RequirementAnalysisWorkflow struct {
 
 type Project struct {
 	ID             uuid.UUID      `json:"id"`
+	MasterKey      string         `json:"master_key,omitempty"`
 	RequirementID  *uuid.UUID     `json:"requirement_id,omitempty"`
 	OrganizationID *uuid.UUID     `json:"organization_id,omitempty"`
 	DepartmentID   *uuid.UUID     `json:"department_id,omitempty"`
@@ -76,6 +80,7 @@ type Project struct {
 
 type ProjectMember struct {
 	ID                   uuid.UUID      `json:"id"`
+	MasterKey            string         `json:"master_key,omitempty"`
 	ProjectID            uuid.UUID      `json:"project_id"`
 	ActorID              uuid.UUID      `json:"actor_id"`
 	ActorType            string         `json:"actor_type"`
@@ -95,6 +100,7 @@ type ProjectMember struct {
 
 type ProjectWorkflow struct {
 	ID                 uuid.UUID      `json:"id"`
+	MasterKey          string         `json:"master_key,omitempty"`
 	ProjectID          uuid.UUID      `json:"project_id"`
 	WorkflowID         uuid.UUID      `json:"workflow_id"`
 	WorkflowTemplateID *uuid.UUID     `json:"workflow_template_id,omitempty"`
@@ -106,6 +112,7 @@ type ProjectWorkflow struct {
 
 type Deliverable struct {
 	ID              uuid.UUID      `json:"id"`
+	MasterKey       string         `json:"master_key,omitempty"`
 	ProjectID       uuid.UUID      `json:"project_id"`
 	Name            string         `json:"name"`
 	DeliverableType string         `json:"deliverable_type"`
@@ -126,6 +133,7 @@ type Deliverable struct {
 
 type CostEntry struct {
 	ID          uuid.UUID      `json:"id"`
+	MasterKey   string         `json:"master_key,omitempty"`
 	ProjectID   uuid.UUID      `json:"project_id"`
 	SourceType  string         `json:"source_type"`
 	SourceID    *uuid.UUID     `json:"source_id,omitempty"`
@@ -141,6 +149,7 @@ type CostEntry struct {
 
 type ProjectEvaluation struct {
 	ID                 uuid.UUID      `json:"id"`
+	MasterKey          string         `json:"master_key,omitempty"`
 	ProjectID          uuid.UUID      `json:"project_id"`
 	ActorID            *uuid.UUID     `json:"actor_id,omitempty"`
 	ActorType          string         `json:"actor_type,omitempty"`

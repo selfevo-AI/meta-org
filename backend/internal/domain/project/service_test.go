@@ -32,3 +32,19 @@ func TestPrepareAIUsageCostEntryInputNormalizesSource(t *testing.T) {
 		t.Fatalf("Description was not defaulted")
 	}
 }
+
+func TestValidateRequirementStatusAllowsConvertedAnalysis(t *testing.T) {
+	for _, action := range []string{"analyze", "sync_analysis"} {
+		if err := validateRequirementStatus("converted", action); err != nil {
+			t.Fatalf("validateRequirementStatus(converted, %s) returned error: %v", action, err)
+		}
+	}
+}
+
+func TestValidateRequirementStatusAllowsProjectConversionFromAnyStatus(t *testing.T) {
+	for _, status := range []string{"draft", "analyzed", "approved", "converted"} {
+		if err := validateRequirementStatus(status, "convert"); err != nil {
+			t.Fatalf("validateRequirementStatus(%s, convert) returned error: %v", status, err)
+		}
+	}
+}

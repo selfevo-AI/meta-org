@@ -31,6 +31,7 @@ func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Get("/assistant/sessions/{id}/steps", h.listSteps)
 	r.Get("/assistant/sessions/{id}/proposals", h.listProposals)
 	r.Post("/assistant/sessions/{id}/runs", h.runSession)
+	r.Post("/assistant/sessions/{id}/resume", h.resumeSession)
 	r.Get("/assistant/skills", h.listBusinessSkills)
 	r.Post("/assistant/skills", h.createBusinessSkill)
 	r.Post("/assistant/skills/{id}/activate", h.activateBusinessSkill)
@@ -135,6 +136,44 @@ func (h *Handler) runSession(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	writeSSE(w, "lifecycle", map[string]any{"status": StatusRunning, "session_id": id.String()})
+	flusher.Flush()
+	for event := range events {
+		name := event.Type
+		if name == "" {
+			name = "message"
+		}
+		writeSSE(w, name, event)
+		flusher.Flush()
+	}
+}
+
+func (h *Handler) resumeSession(w http.ResponseWriter, r *http.Request) {
+	actorID, actorType, ok := authenticatedActor(w, r)
+	if !ok {
+		return
+	}
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input ResumeInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	events, err := h.service.Resume(r.Context(), id, actorID, actorType, input)
+	if err != nil {
+		writeJSON(w, statusFromError(err), map[string]string{"error": err.Error()})
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "streaming unsupported"})
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	writeSSE(w, "lifecycle", map[string]any{"status": StatusRunning, "session_id": id.String(), "resume": true})
 	flusher.Flush()
 	for event := range events {
 		name := event.Type

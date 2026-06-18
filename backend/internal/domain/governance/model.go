@@ -87,6 +87,7 @@ type AccessDecisionInput struct {
 
 type AccessDecision struct {
 	ID             uuid.UUID      `json:"id"`
+	MasterKey      string         `json:"master_key"`
 	ActorID        uuid.UUID      `json:"actor_id"`
 	ActorType      string         `json:"actor_type"`
 	Action         string         `json:"action"`

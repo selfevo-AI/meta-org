@@ -270,7 +270,7 @@ export function MetaResourceWorkspace({ token }: MetaResourceWorkspaceProps) {
       )}
 
       {activeTab === 'resources' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="space-y-5">
           <Panel title="metaresource.resources">
             <div className="mb-4 flex justify-end">
               <button
@@ -300,7 +300,7 @@ export function MetaResourceWorkspace({ token }: MetaResourceWorkspaceProps) {
       )}
 
       {activeTab === 'demands' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+        <div className="space-y-5">
           <Panel title="metaresource.demands">
             <Table
               headers={['common.name', 'metaresource.goal', 'developer.status', 'metaresource.requiredCapabilities']}
@@ -328,7 +328,7 @@ export function MetaResourceWorkspace({ token }: MetaResourceWorkspaceProps) {
       )}
 
       {activeTab === 'pdca' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+        <div className="space-y-5">
           <div className="space-y-5">
             <Panel title="metaresource.cycles">
               <Table
@@ -353,7 +353,7 @@ export function MetaResourceWorkspace({ token }: MetaResourceWorkspaceProps) {
               />
             </Panel>
           </div>
-          <div className="space-y-5">
+          <div className="grid gap-5 xl:grid-cols-2">
             <Panel title="metaresource.createCycle">
               <form className="space-y-3" onSubmit={submitCycle}>
                 <SelectInput label="metaresource.demand" value={cycleForm.demand_profile_id} onChange={(value) => setCycleForm({ ...cycleForm, demand_profile_id: value })} options={['', ...demands.map((demand) => demand.id)]} labels={{ '': t('common.none'), ...demandLabels }} />

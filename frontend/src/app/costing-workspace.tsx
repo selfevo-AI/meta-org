@@ -421,7 +421,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
       )}
 
       {activeTab === 'currencies' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-5">
           <Panel title="costing.currencies">
             <Table
               headers={['costing.code', 'common.name', 'costing.type', 'costing.symbol', 'developer.status']}
@@ -477,7 +477,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
       )}
 
       {activeTab === 'rates' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-5">
           <div className="space-y-5">
             <Panel title="costing.exchangeRates">
               <Table
@@ -537,7 +537,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
       )}
 
       {activeTab === 'rateCards' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-5">
           <Panel title="costing.rateCards">
             <Table
               headers={['costing.subject', 'costing.rateType', 'finance.amount', 'costing.baseAmount', 'developer.status']}
@@ -571,7 +571,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
       )}
 
       {activeTab === 'budgets' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-5">
           <Panel title="costing.budgets">
             <Table
               headers={['costing.scope', 'finance.amount', 'costing.baseAmount', 'developer.status']}
@@ -602,7 +602,7 @@ export function CostingWorkspace({ token }: CostingWorkspaceProps) {
       )}
 
       {activeTab === 'ledger' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-5">
           <Panel title="costing.ledger">
             <LedgerTable
               entries={ledgerEntries}

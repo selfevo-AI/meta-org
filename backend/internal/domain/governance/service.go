@@ -194,6 +194,12 @@ func riskLevelWeight(level string) int {
 }
 
 func (s *Service) ListDataTables(ctx context.Context, category string) ([]DataTable, error) {
+	if category == "" {
+		category = "canonical"
+	}
+	if category == "all" {
+		category = ""
+	}
 	return s.repo.ListDataTables(ctx, category)
 }
 

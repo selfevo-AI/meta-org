@@ -2,6 +2,7 @@ package toolruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -26,6 +27,10 @@ type Repository interface {
 	UpdateTool(ctx context.Context, id uuid.UUID, input UpdateToolInput) (*ToolDefinition, error)
 	GetToolByID(ctx context.Context, id uuid.UUID) (*ToolDefinition, error)
 	GetToolByName(ctx context.Context, name string) (*ToolDefinition, error)
+	CreateInterfaceFile(ctx context.Context, input CreateInterfaceFileInput, createdBy *uuid.UUID) (*InterfaceFile, error)
+	ListInterfaceFiles(ctx context.Context, limit int) ([]InterfaceFile, error)
+	GetInterfaceFile(ctx context.Context, id uuid.UUID) (*InterfaceFile, error)
+	UpdateInterfaceFile(ctx context.Context, id uuid.UUID, input UpdateInterfaceFileInput) (*InterfaceFile, error)
 	CreateExecution(ctx context.Context, input CreateExecutionInput) (*ToolExecution, error)
 	CompleteExecution(ctx context.Context, id uuid.UUID, input CompleteExecutionInput) (*ToolExecution, error)
 	CreateApproval(ctx context.Context, executionID uuid.UUID, requestedBy *uuid.UUID, reason string) (*ToolApproval, error)
@@ -140,6 +145,44 @@ func (s *Service) UpdateTool(ctx context.Context, id uuid.UUID, input UpdateTool
 	return s.repo.UpdateTool(ctx, id, input)
 }
 
+func (s *Service) CreateInterfaceFile(ctx context.Context, input CreateInterfaceFileInput, createdBy *uuid.UUID) (*InterfaceFile, error) {
+	normalized, err := normalizeCreateInterfaceFileInput(input)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.CreateInterfaceFile(ctx, normalized, createdBy)
+}
+
+func (s *Service) ListInterfaceFiles(ctx context.Context, limit int) ([]InterfaceFile, error) {
+	return s.repo.ListInterfaceFiles(ctx, limit)
+}
+
+func (s *Service) GetInterfaceFile(ctx context.Context, id uuid.UUID) (*InterfaceFile, error) {
+	return s.repo.GetInterfaceFile(ctx, id)
+}
+
+func (s *Service) UpdateInterfaceFile(ctx context.Context, id uuid.UUID, input UpdateInterfaceFileInput) (*InterfaceFile, error) {
+	if (input.Content != nil && input.FileType == nil) || (input.Content == nil && input.FileType != nil) {
+		current, err := s.repo.GetInterfaceFile(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if input.Content != nil && input.FileType == nil {
+			fileType := current.FileType
+			input.FileType = &fileType
+		}
+		if input.Content == nil && input.FileType != nil {
+			content := current.Content
+			input.Content = &content
+		}
+	}
+	normalized, err := normalizeUpdateInterfaceFileInput(input)
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.UpdateInterfaceFile(ctx, id, normalized)
+}
+
 func (s *Service) ExecuteTool(ctx context.Context, input ExecuteToolInput) (*ExecuteToolOutput, error) {
 	if input.ToolName == "" || input.ActorID == uuid.Nil || input.ActorType == "" {
 		return nil, fmt.Errorf("%w: tool_name, actor_id, and actor_type are required", ErrValidation)
@@ -232,48 +275,112 @@ func (s *Service) GetExecution(ctx context.Context, id uuid.UUID) (*ToolExecutio
 	return s.repo.GetExecution(ctx, id)
 }
 
-func (s *Service) Approve(ctx context.Context, id uuid.UUID, reviewedBy *uuid.UUID, reason string) (*ToolApproval, error) {
-	if err := s.authorizeApprovalReview(ctx, id, reviewedBy); err != nil {
-		return nil, err
-	}
-	return s.repo.UpdateApproval(ctx, id, ApprovalApproved, reviewedBy, reason)
+func (s *Service) GetApproval(ctx context.Context, id uuid.UUID) (*ToolApproval, error) {
+	return s.repo.GetApproval(ctx, id)
 }
 
-func (s *Service) Reject(ctx context.Context, id uuid.UUID, reviewedBy *uuid.UUID, reason string) (*ToolApproval, error) {
-	if err := s.authorizeApprovalReview(ctx, id, reviewedBy); err != nil {
-		return nil, err
-	}
-	return s.repo.UpdateApproval(ctx, id, ApprovalRejected, reviewedBy, reason)
-}
-
-func (s *Service) authorizeApprovalReview(ctx context.Context, approvalID uuid.UUID, reviewedBy *uuid.UUID) error {
-	if reviewedBy == nil || *reviewedBy == uuid.Nil {
-		return fmt.Errorf("%w: reviewed_by human is required", ErrValidation)
-	}
-	approval, err := s.repo.GetApproval(ctx, approvalID)
+func (s *Service) Approve(ctx context.Context, id uuid.UUID, reviewedBy *uuid.UUID, reason string) (*ApprovalReviewOutput, error) {
+	approval, execution, tool, err := s.authorizeApprovalReview(ctx, id, reviewedBy)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	if approval.Status != ApprovalPending {
-		return fmt.Errorf("%w: approval is not pending", ErrValidation)
+	if approval.Status == ApprovalApproved {
+		return s.approvedOutput(ctx, approval, execution, tool)
+	}
+	if approval.ExpiresAt != nil && time.Now().After(*approval.ExpiresAt) {
+		expired, err := s.repo.UpdateApproval(ctx, id, ApprovalExpired, nil, firstNonEmpty(reason, "approval expired"))
+		if err != nil {
+			return nil, err
+		}
+		expiredExecution, err := s.repo.GetExecution(ctx, expired.ExecutionID)
+		if err != nil {
+			return nil, err
+		}
+		return &ApprovalReviewOutput{Approval: expired, Execution: expiredExecution}, fmt.Errorf("%w: approval expired", ErrValidation)
+	}
+	approved, err := s.repo.UpdateApproval(ctx, id, ApprovalApproved, reviewedBy, reason)
+	if err != nil {
+		return nil, err
+	}
+	execution, err = s.repo.GetExecution(ctx, approved.ExecutionID)
+	if err != nil {
+		return nil, err
+	}
+	return s.approvedOutput(ctx, approved, execution, tool)
+}
+
+func (s *Service) Reject(ctx context.Context, id uuid.UUID, reviewedBy *uuid.UUID, reason string) (*ApprovalReviewOutput, error) {
+	_, _, _, err := s.authorizeApprovalReview(ctx, id, reviewedBy)
+	if err != nil {
+		return nil, err
+	}
+	approval, err := s.repo.UpdateApproval(ctx, id, ApprovalRejected, reviewedBy, reason)
+	if err != nil {
+		return nil, err
 	}
 	execution, err := s.repo.GetExecution(ctx, approval.ExecutionID)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	return &ApprovalReviewOutput{Approval: approval, Execution: execution}, nil
+}
+
+func (s *Service) approvedOutput(ctx context.Context, approval *ToolApproval, execution *ToolExecution, tool *ToolDefinition) (*ApprovalReviewOutput, error) {
+	if execution.Status == ExecutionCompleted || execution.Status == ExecutionFailed || execution.Status == ExecutionDenied || execution.Status == ExecutionRejected {
+		return &ApprovalReviewOutput{Approval: approval, Execution: execution}, nil
+	}
+	input := ExecuteToolInput{
+		ToolName:       tool.Name,
+		InvocationID:   execution.InvocationID,
+		ActorID:        execution.ActorID,
+		ActorType:      execution.ActorType,
+		OrganizationID: execution.OrganizationID,
+		DepartmentID:   execution.DepartmentID,
+		ProjectID:      execution.ProjectID,
+		WorkflowID:     execution.WorkflowID,
+		TaskID:         execution.TaskID,
+		IdempotencyKey: execution.IdempotencyKey,
+		Arguments:      execution.Arguments,
+	}
+	trace := s.startToolTrace(ctx, tool, execution, input, execution.Policy, GovernanceResult{Decision: execution.GovernanceDecision, Allowed: true})
+	result, err := s.runAdapter(ctx, tool, execution, input, trace)
+	if result != nil && result.Execution != nil {
+		return &ApprovalReviewOutput{Approval: approval, Execution: result.Execution}, err
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &ApprovalReviewOutput{Approval: approval, Execution: execution}, nil
+}
+
+func (s *Service) authorizeApprovalReview(ctx context.Context, approvalID uuid.UUID, reviewedBy *uuid.UUID) (*ToolApproval, *ToolExecution, *ToolDefinition, error) {
+	if reviewedBy == nil || *reviewedBy == uuid.Nil {
+		return nil, nil, nil, fmt.Errorf("%w: reviewed_by human is required", ErrValidation)
+	}
+	approval, err := s.repo.GetApproval(ctx, approvalID)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if approval.Status != ApprovalPending && approval.Status != ApprovalApproved {
+		return nil, nil, nil, fmt.Errorf("%w: approval is not pending", ErrValidation)
+	}
+	execution, err := s.repo.GetExecution(ctx, approval.ExecutionID)
+	if err != nil {
+		return nil, nil, nil, err
 	}
 	tool, err := s.repo.GetToolByID(ctx, execution.ToolID)
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
 	requiredTier := normalizeApprovalTier(tool.ApprovalTierRequired, approvalTierForCategory(tool.ToolCategory))
 	actualTier, err := s.repo.GetHumanAuthorityTier(ctx, *reviewedBy, execution.OrganizationID)
 	if err != nil {
-		return err
+		return nil, nil, nil, err
 	}
 	if !authorityTierAllows(actualTier, requiredTier) {
-		return fmt.Errorf("%w: %s approval requires %s authority", ErrForbidden, normalizeToolCategory(tool.ToolCategory), requiredTier)
+		return nil, nil, nil, fmt.Errorf("%w: %s approval requires %s authority", ErrForbidden, normalizeToolCategory(tool.ToolCategory), requiredTier)
 	}
-	return nil
+	return approval, execution, tool, nil
 }
 
 func (s *Service) runAdapter(ctx context.Context, tool *ToolDefinition, execution *ToolExecution, input ExecuteToolInput, trace *observability.Trace) (*ExecuteToolOutput, error) {
@@ -505,6 +612,88 @@ func normalizeApprovalTier(tier string, fallback string) string {
 	default:
 		return ""
 	}
+}
+
+func normalizeCreateInterfaceFileInput(input CreateInterfaceFileInput) (CreateInterfaceFileInput, error) {
+	input.Name = strings.TrimSpace(input.Name)
+	input.FileType = normalizeInterfaceFileType(input.FileType)
+	if input.Name == "" {
+		return input, fmt.Errorf("%w: name is required", ErrValidation)
+	}
+	if input.FileType == "" {
+		return input, fmt.Errorf("%w: file_type must be json, yaml, or markdown", ErrValidation)
+	}
+	if strings.TrimSpace(input.Content) == "" {
+		return input, fmt.Errorf("%w: content is required", ErrValidation)
+	}
+	if err := validateInterfaceContent(input.FileType, input.Content); err != nil {
+		return input, err
+	}
+	if input.Metadata == nil {
+		input.Metadata = map[string]any{}
+	}
+	return input, nil
+}
+
+func normalizeUpdateInterfaceFileInput(input UpdateInterfaceFileInput) (UpdateInterfaceFileInput, error) {
+	if input.Name != nil {
+		name := strings.TrimSpace(*input.Name)
+		if name == "" {
+			return input, fmt.Errorf("%w: name is required", ErrValidation)
+		}
+		input.Name = &name
+	}
+	if input.FileType != nil {
+		fileType := normalizeInterfaceFileType(*input.FileType)
+		if fileType == "" {
+			return input, fmt.Errorf("%w: file_type must be json, yaml, or markdown", ErrValidation)
+		}
+		input.FileType = &fileType
+	}
+	if input.Content != nil {
+		if strings.TrimSpace(*input.Content) == "" {
+			return input, fmt.Errorf("%w: content is required", ErrValidation)
+		}
+		if input.FileType != nil && *input.FileType == "json" {
+			if err := validateInterfaceContent(*input.FileType, *input.Content); err != nil {
+				return input, err
+			}
+		}
+	}
+	return input, nil
+}
+
+func normalizeInterfaceFileType(fileType string) string {
+	switch strings.ToLower(strings.TrimSpace(fileType)) {
+	case "json":
+		return "json"
+	case "yaml", "yml":
+		return "yaml"
+	case "markdown", "md":
+		return "markdown"
+	default:
+		return ""
+	}
+}
+
+func validateInterfaceContent(fileType string, content string) error {
+	if fileType != "json" {
+		return nil
+	}
+	var parsed any
+	if err := json.Unmarshal([]byte(content), &parsed); err != nil {
+		return fmt.Errorf("%w: content must be valid JSON", ErrValidation)
+	}
+	return nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func authorityTierAllows(actual string, required string) bool {

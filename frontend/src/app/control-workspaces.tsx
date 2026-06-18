@@ -44,6 +44,7 @@ interface Permission {
 
 interface AccessDecision {
   id: string
+  master_key: string
   actor_id: string
   actor_type: string
   action: string
@@ -462,7 +463,7 @@ export function GovernanceWorkspace({ token, currentUserId }: WorkspaceProps) {
             <div className="mt-4 rounded-lg border border-slate-200 bg-slate-50 p-3">
               <div className="flex items-center justify-between gap-3">
                 <StatusBadge label={latestDecision.decision} tone={latestDecision.allowed ? 'green' : 'amber'} />
-                <span className="text-sm font-semibold text-slate-700">{latestDecision.required_level}</span>
+                <span className="text-sm font-semibold text-slate-700">{latestDecision.master_key || latestDecision.required_level}</span>
               </div>
               <p className="mt-2 text-sm text-slate-600">{latestDecision.reason}</p>
             </div>
@@ -483,7 +484,7 @@ export function GovernanceWorkspace({ token, currentUserId }: WorkspaceProps) {
             {decisions.map((decision) => (
               <ListRow
                 key={decision.id}
-                title={`${decision.action} / ${decision.resource}`}
+                title={`${decision.master_key || decision.id} · ${decision.action} / ${decision.resource}`}
                 detail={`${decision.actor_type} · ${decision.decision} · ${decision.reason}`}
                 badge={decision.allowed ? 'allowed' : decision.decision}
               />

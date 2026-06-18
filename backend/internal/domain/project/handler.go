@@ -87,7 +87,7 @@ func (h *Handler) listRequirements(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getRequirement(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
@@ -96,7 +96,7 @@ func (h *Handler) getRequirement(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateRequirement(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
@@ -109,7 +109,7 @@ func (h *Handler) updateRequirement(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) uploadRequirementDocument(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
@@ -149,7 +149,7 @@ func (h *Handler) uploadRequirementDocument(w http.ResponseWriter, r *http.Reque
 }
 
 func (h *Handler) listRequirementDocuments(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
@@ -158,7 +158,7 @@ func (h *Handler) listRequirementDocuments(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) downloadRequirementDocument(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirement_documents")
 	if !ok {
 		return
 	}
@@ -177,7 +177,7 @@ func (h *Handler) downloadRequirementDocument(w http.ResponseWriter, r *http.Req
 }
 
 func (h *Handler) analyzeRequirement(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
@@ -190,7 +190,7 @@ func (h *Handler) analyzeRequirement(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) approveRequirement(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
@@ -203,7 +203,7 @@ func (h *Handler) approveRequirement(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) convertRequirement(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
@@ -216,7 +216,7 @@ func (h *Handler) convertRequirement(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) startRequirementAnalysisWorkflow(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
@@ -229,7 +229,7 @@ func (h *Handler) startRequirementAnalysisWorkflow(w http.ResponseWriter, r *htt
 }
 
 func (h *Handler) listRequirementAnalysisWorkflows(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
@@ -238,7 +238,7 @@ func (h *Handler) listRequirementAnalysisWorkflows(w http.ResponseWriter, r *htt
 }
 
 func (h *Handler) syncLatestRequirementAnalysisWorkflow(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
@@ -251,11 +251,11 @@ func (h *Handler) syncLatestRequirementAnalysisWorkflow(w http.ResponseWriter, r
 }
 
 func (h *Handler) syncRequirementAnalysisWorkflow(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "requirements")
 	if !ok {
 		return
 	}
-	workflowID, ok := parseURLID(w, r, "workflowID")
+	workflowID, ok := h.parseURLID(w, r, "workflowID", "workflow_instances")
 	if !ok {
 		return
 	}
@@ -283,7 +283,7 @@ func (h *Handler) listProjects(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getProject(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -292,7 +292,7 @@ func (h *Handler) getProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -305,7 +305,7 @@ func (h *Handler) updateProject(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) addProjectMember(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -318,7 +318,7 @@ func (h *Handler) addProjectMember(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listProjectMembers(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -327,7 +327,7 @@ func (h *Handler) listProjectMembers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) bindProjectWorkflow(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -340,7 +340,7 @@ func (h *Handler) bindProjectWorkflow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listProjectWorkflows(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -349,7 +349,7 @@ func (h *Handler) listProjectWorkflows(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) matchProjectActors(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -362,7 +362,7 @@ func (h *Handler) matchProjectActors(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateProjectStatus(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -375,7 +375,7 @@ func (h *Handler) updateProjectStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getProjectOverview(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -384,7 +384,7 @@ func (h *Handler) getProjectOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createDeliverable(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -397,7 +397,7 @@ func (h *Handler) createDeliverable(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listDeliverables(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -406,7 +406,7 @@ func (h *Handler) listDeliverables(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) updateDeliverable(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "deliverables")
 	if !ok {
 		return
 	}
@@ -431,7 +431,7 @@ func (h *Handler) rejectDeliverable(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) deliverableAction(w http.ResponseWriter, r *http.Request, action func(context.Context, uuid.UUID, DeliverableActionInput) (*Deliverable, error)) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "deliverables")
 	if !ok {
 		return
 	}
@@ -444,7 +444,7 @@ func (h *Handler) deliverableAction(w http.ResponseWriter, r *http.Request, acti
 }
 
 func (h *Handler) createCostEntry(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -457,7 +457,7 @@ func (h *Handler) createCostEntry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) listCostEntries(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -466,7 +466,7 @@ func (h *Handler) listCostEntries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) getCostSummary(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -475,7 +475,7 @@ func (h *Handler) getCostSummary(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) refreshCost(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -488,7 +488,7 @@ func (h *Handler) refreshCost(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) createProjectEvaluation(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -501,7 +501,7 @@ func (h *Handler) createProjectEvaluation(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) listProjectEvaluations(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -510,7 +510,7 @@ func (h *Handler) listProjectEvaluations(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) closeFeedback(w http.ResponseWriter, r *http.Request) {
-	id, ok := parseURLID(w, r, "id")
+	id, ok := h.parseURLID(w, r, "id", "projects")
 	if !ok {
 		return
 	}
@@ -531,9 +531,14 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {
 	return false
 }
 
-func parseURLID(w http.ResponseWriter, r *http.Request, param string) (uuid.UUID, bool) {
-	id, err := uuid.Parse(chi.URLParam(r, param))
+func (h *Handler) parseURLID(w http.ResponseWriter, r *http.Request, param string, sourceTable string) (uuid.UUID, bool) {
+	raw := chi.URLParam(r, param)
+	id, err := h.service.ResolveLegacyUUID(r.Context(), sourceTable, raw)
 	if err != nil {
+		writeJSON(w, statusFromError(err), map[string]string{"error": err.Error()})
+		return uuid.Nil, false
+	}
+	if id == uuid.Nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid id"})
 		return uuid.Nil, false
 	}

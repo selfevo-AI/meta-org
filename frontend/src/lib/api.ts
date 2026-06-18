@@ -214,16 +214,32 @@ export async function listTools(token: string): Promise<ToolDefinition[]> {
   return apiRequest<ToolDefinition[]>('/tools', { token })
 }
 
+export async function listInterfaceFiles(token: string): Promise<InterfaceFile[]> {
+  return apiRequest<InterfaceFile[]>('/interface-files', { token })
+}
+
+export async function getInterfaceFile(token: string, id: string): Promise<InterfaceFile> {
+  return apiRequest<InterfaceFile>(`/interface-files/${id}`, { token })
+}
+
+export async function createInterfaceFile(token: string, input: CreateInterfaceFileInput): Promise<InterfaceFile> {
+  return apiRequest<InterfaceFile>('/interface-files', { method: 'POST', token, body: input })
+}
+
+export async function updateInterfaceFile(token: string, id: string, input: UpdateInterfaceFileInput): Promise<InterfaceFile> {
+  return apiRequest<InterfaceFile>(`/interface-files/${id}`, { method: 'PATCH', token, body: input })
+}
+
 export async function listToolExecutions(token: string): Promise<ToolExecution[]> {
   return apiRequest<ToolExecution[]>('/tool-executions', { token })
 }
 
-export async function approveToolApproval(token: string, id: string, reason = 'approved from human review console'): Promise<ToolApproval> {
-  return apiRequest<ToolApproval>(`/tool-approvals/${id}/approve`, { method: 'POST', token, body: { reason } })
+export async function approveToolApproval(token: string, id: string, reason = 'approved from human review console'): Promise<ToolApprovalReviewResult> {
+  return apiRequest<ToolApprovalReviewResult>(`/tool-approvals/${id}/approve`, { method: 'POST', token, body: { reason } })
 }
 
-export async function rejectToolApproval(token: string, id: string, reason = 'rejected from human review console'): Promise<ToolApproval> {
-  return apiRequest<ToolApproval>(`/tool-approvals/${id}/reject`, { method: 'POST', token, body: { reason } })
+export async function rejectToolApproval(token: string, id: string, reason = 'rejected from human review console'): Promise<ToolApprovalReviewResult> {
+  return apiRequest<ToolApprovalReviewResult>(`/tool-approvals/${id}/reject`, { method: 'POST', token, body: { reason } })
 }
 
 export async function listInvocations(token: string): Promise<AIInvocation[]> {
@@ -1072,6 +1088,31 @@ export interface ToolDefinition {
   updated_at: string
 }
 
+export interface InterfaceFile {
+  id: string
+  name: string
+  file_type: 'json' | 'yaml' | 'markdown'
+  content: string
+  metadata: Record<string, unknown>
+  created_by?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateInterfaceFileInput {
+  name: string
+  file_type: 'json' | 'yaml' | 'markdown'
+  content: string
+  metadata?: Record<string, unknown>
+}
+
+export interface UpdateInterfaceFileInput {
+  name?: string
+  file_type?: 'json' | 'yaml' | 'markdown'
+  content?: string
+  metadata?: Record<string, unknown>
+}
+
 export interface ToolExecution {
   id: string
   tool_id: string
@@ -1098,6 +1139,11 @@ export interface ToolApproval {
   expires_at?: string
   created_at: string
   reviewed_at?: string
+}
+
+export interface ToolApprovalReviewResult {
+  approval: ToolApproval
+  execution: ToolExecution
 }
 
 export interface AIInvocation {

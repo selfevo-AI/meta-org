@@ -107,6 +107,63 @@ func (r *PostgresRepository) GetToolByName(ctx context.Context, name string) (*T
 	return tool, nil
 }
 
+func (r *PostgresRepository) CreateInterfaceFile(ctx context.Context, input CreateInterfaceFileInput, createdBy *uuid.UUID) (*InterfaceFile, error) {
+	file := &InterfaceFile{}
+	err := scanInterfaceFileRow(r.db.QueryRow(ctx, `
+		INSERT INTO interface_files (name, file_type, content, metadata, created_by)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, name, file_type, content, metadata, created_by, created_at, updated_at
+	`, input.Name, input.FileType, input.Content, mustJSON(input.Metadata), createdBy), file)
+	if err != nil {
+		return nil, fmt.Errorf("create interface file: %w", err)
+	}
+	return file, nil
+}
+
+func (r *PostgresRepository) ListInterfaceFiles(ctx context.Context, limit int) ([]InterfaceFile, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, name, file_type, content, metadata, created_by, created_at, updated_at
+		FROM interface_files
+		ORDER BY updated_at DESC, created_at DESC
+		LIMIT $1
+	`, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list interface files: %w", err)
+	}
+	defer rows.Close()
+	return scanInterfaceFiles(rows)
+}
+
+func (r *PostgresRepository) GetInterfaceFile(ctx context.Context, id uuid.UUID) (*InterfaceFile, error) {
+	file := &InterfaceFile{}
+	err := scanInterfaceFileRow(r.db.QueryRow(ctx, `
+		SELECT id, name, file_type, content, metadata, created_by, created_at, updated_at
+		FROM interface_files WHERE id = $1
+	`, id), file)
+	if err != nil {
+		return nil, fmt.Errorf("get interface file: %w", err)
+	}
+	return file, nil
+}
+
+func (r *PostgresRepository) UpdateInterfaceFile(ctx context.Context, id uuid.UUID, input UpdateInterfaceFileInput) (*InterfaceFile, error) {
+	file := &InterfaceFile{}
+	err := scanInterfaceFileRow(r.db.QueryRow(ctx, `
+		UPDATE interface_files
+		SET name = COALESCE($2, name),
+			file_type = COALESCE($3, file_type),
+			content = COALESCE($4, content),
+			metadata = CASE WHEN $5::jsonb IS NULL THEN metadata ELSE $5::jsonb END,
+			updated_at = NOW()
+		WHERE id = $1
+		RETURNING id, name, file_type, content, metadata, created_by, created_at, updated_at
+	`, id, input.Name, input.FileType, input.Content, nullableJSON(input.Metadata)), file)
+	if err != nil {
+		return nil, fmt.Errorf("update interface file: %w", err)
+	}
+	return file, nil
+}
+
 func (r *PostgresRepository) CreateExecution(ctx context.Context, input CreateExecutionInput) (*ToolExecution, error) {
 	execution := &ToolExecution{}
 	err := scanExecutionRow(r.db.QueryRow(ctx, `
@@ -279,7 +336,7 @@ func (r *PostgresRepository) UpdateApproval(ctx context.Context, id uuid.UUID, s
 		UPDATE tool_approvals
 		SET status = $2,
 			reviewed_by = $3,
-			approved_by_human_id = $3,
+			approved_by_human_id = CASE WHEN $2 = 'approved' THEN $3 ELSE approved_by_human_id END,
 			reason = COALESCE(NULLIF($4, ''), reason),
 			reviewed_at = NOW()
 		WHERE id = $1
@@ -289,8 +346,11 @@ func (r *PostgresRepository) UpdateApproval(ctx context.Context, id uuid.UUID, s
 		return nil, fmt.Errorf("update tool approval: %w", err)
 	}
 	executionStatus := ExecutionApproved
-	if status == ApprovalRejected {
+	switch status {
+	case ApprovalRejected:
 		executionStatus = ExecutionRejected
+	case ApprovalExpired:
+		executionStatus = ExecutionFailed
 	}
 	if _, err := tx.Exec(ctx, `UPDATE tool_executions SET status = $2, completed_at = NOW() WHERE id = $1`, approval.ExecutionID, executionStatus); err != nil {
 		return nil, fmt.Errorf("update approval execution status: %w", err)
@@ -375,6 +435,19 @@ func scanApprovalRow(row scanner, approval *ToolApproval) error {
 	return nil
 }
 
+func scanInterfaceFileRow(row scanner, file *InterfaceFile) error {
+	var metaJSON []byte
+	var createdBy pgtype.UUID
+	if err := row.Scan(&file.ID, &file.Name, &file.FileType, &file.Content, &metaJSON, &createdBy, &file.CreatedAt, &file.UpdatedAt); err != nil {
+		return err
+	}
+	file.CreatedBy = uuidPointer(createdBy)
+	if err := json.Unmarshal(metaJSON, &file.Metadata); err != nil {
+		return fmt.Errorf("unmarshal interface file metadata: %w", err)
+	}
+	return nil
+}
+
 func scanTools(rows pgx.Rows) ([]ToolDefinition, error) {
 	items := []ToolDefinition{}
 	for rows.Next() {
@@ -393,6 +466,18 @@ func scanExecutions(rows pgx.Rows) ([]ToolExecution, error) {
 		var item ToolExecution
 		if err := scanExecutionRow(rows, &item); err != nil {
 			return nil, fmt.Errorf("scan tool execution: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func scanInterfaceFiles(rows pgx.Rows) ([]InterfaceFile, error) {
+	items := []InterfaceFile{}
+	for rows.Next() {
+		var item InterfaceFile
+		if err := scanInterfaceFileRow(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan interface file: %w", err)
 		}
 		items = append(items, item)
 	}

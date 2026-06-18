@@ -154,6 +154,10 @@ type RunInput struct {
 	ReasoningEffort    string     `json:"reasoning_effort,omitempty"`
 }
 
+type ResumeInput struct {
+	ToolApprovalID uuid.UUID `json:"tool_approval_id"`
+}
+
 type RunEvent struct {
 	Type    string         `json:"type"`
 	Session *Session       `json:"session,omitempty"`

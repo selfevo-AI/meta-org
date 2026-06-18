@@ -24,6 +24,10 @@ func NewHandler(service *Service) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
+	r.Post("/interface-files", h.createInterfaceFile)
+	r.Get("/interface-files", h.listInterfaceFiles)
+	r.Get("/interface-files/{id}", h.getInterfaceFile)
+	r.Patch("/interface-files/{id}", h.updateInterfaceFile)
 	r.Post("/tools", h.createTool)
 	r.Get("/tools", h.listTools)
 	r.Patch("/tools/{id}", h.updateTool)
@@ -58,6 +62,42 @@ func (h *Handler) updateTool(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.service.UpdateTool(r.Context(), id, input)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) createInterfaceFile(w http.ResponseWriter, r *http.Request) {
+	var input CreateInterfaceFileInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.CreateInterfaceFile(r.Context(), input, humanUserIDFromContext(r))
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) listInterfaceFiles(w http.ResponseWriter, r *http.Request) {
+	result, err := h.service.ListInterfaceFiles(r.Context(), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) getInterfaceFile(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	result, err := h.service.GetInterfaceFile(r.Context(), id)
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) updateInterfaceFile(w http.ResponseWriter, r *http.Request) {
+	id, ok := parseID(w, r, "id")
+	if !ok {
+		return
+	}
+	var input UpdateInterfaceFileInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.UpdateInterfaceFile(r.Context(), id, input)
 	writeResult(w, http.StatusOK, result, err)
 }
 
@@ -118,7 +158,7 @@ func (h *Handler) reviewApproval(w http.ResponseWriter, r *http.Request, status 
 		return
 	}
 	var (
-		result    *ToolApproval
+		result    *ApprovalReviewOutput
 		reviewErr error
 	)
 	if status == ApprovalApproved {
@@ -127,6 +167,18 @@ func (h *Handler) reviewApproval(w http.ResponseWriter, r *http.Request, status 
 		result, reviewErr = h.service.Reject(r.Context(), id, &reviewedBy, input.Reason)
 	}
 	writeResult(w, http.StatusOK, result, reviewErr)
+}
+
+func humanUserIDFromContext(r *http.Request) *uuid.UUID {
+	user, ok := middleware.UserFromContext(r.Context())
+	if !ok || user.Type != "human" {
+		return nil
+	}
+	id, err := uuid.Parse(user.ID)
+	if err != nil {
+		return nil
+	}
+	return &id
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dest any) bool {

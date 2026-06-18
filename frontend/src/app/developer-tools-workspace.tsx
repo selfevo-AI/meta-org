@@ -1,15 +1,17 @@
 'use client'
 
-import { Activity, Bot, FileCode2, Gauge, KeyRound, ListChecks, Network, RefreshCw, Route, ServerCog, Wrench } from 'lucide-react'
+import { Activity, Bot, FileCode2, Gauge, KeyRound, Network, Plus, RefreshCw, Route, ServerCog, Wrench } from 'lucide-react'
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
 import {
   createModel,
+  createInterfaceFile,
   createModelProvider,
   createProviderChannel,
   createRoutingRule,
   getAICostSummary,
   getAIUsageAnalysis,
+  listInterfaceFiles,
   listInvocations,
   listModelProviders,
   listModels,
@@ -21,9 +23,11 @@ import {
   rotateProviderChannelKey,
   testModelProvider,
   testProviderChannel,
+  updateInterfaceFile,
   type AICostSummary,
   type AIInvocation,
   type AIRoutingRule,
+  type InterfaceFile,
   type AIUsageAnalysis,
   type ModelCatalogItem,
   type ModelProvider,
@@ -38,6 +42,14 @@ interface DeveloperToolsWorkspaceProps {
 }
 
 type TabID = 'providers' | 'channels' | 'models' | 'routing' | 'invocations' | 'analysis' | 'tools' | 'interfaces'
+type InterfaceFileType = InterfaceFile['file_type']
+
+const emptyInterfaceForm = {
+  name: '',
+  file_type: 'json' as InterfaceFileType,
+  content: '',
+  metadata: '{}',
+}
 
 const tabs: Array<{ id: TabID; label: string; icon: typeof ServerCog }> = [
   { id: 'providers', label: 'developer.providers', icon: ServerCog },
@@ -62,12 +74,14 @@ export function DeveloperToolsWorkspace({ token }: DeveloperToolsWorkspaceProps)
   const [models, setModels] = useState<ModelCatalogItem[]>([])
   const [rules, setRules] = useState<AIRoutingRule[]>([])
   const [tools, setTools] = useState<ToolDefinition[]>([])
+  const [interfaceFiles, setInterfaceFiles] = useState<InterfaceFile[]>([])
   const [executions, setExecutions] = useState<ToolExecution[]>([])
   const [invocations, setInvocations] = useState<AIInvocation[]>([])
   const [cost, setCost] = useState<AICostSummary | null>(null)
   const [usageAnalysis, setUsageAnalysis] = useState<AIUsageAnalysis | null>(null)
   const [selectedProviderID, setSelectedProviderID] = useState('')
   const [selectedChannelID, setSelectedChannelID] = useState('')
+  const [selectedInterfaceFileID, setSelectedInterfaceFileID] = useState('')
   const [notice, setNotice] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -124,6 +138,7 @@ export function DeveloperToolsWorkspace({ token }: DeveloperToolsWorkspaceProps)
     model_pattern: '*',
     priority: '100',
   })
+  const [interfaceForm, setInterfaceForm] = useState(emptyInterfaceForm)
   const [secretInput, setSecretInput] = useState('')
   const [channelSecretInput, setChannelSecretInput] = useState('')
   const [testModel, setTestModel] = useState('')
@@ -139,17 +154,17 @@ export function DeveloperToolsWorkspace({ token }: DeveloperToolsWorkspaceProps)
     () => channels.find((channel) => channel.id === selectedChannelID) ?? channels[0],
     [channels, selectedChannelID],
   )
-
   const loadAll = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
-      const [providerData, channelData, modelData, ruleData, toolData, executionData, invocationData, costData, analysisData] = await Promise.all([
+      const [providerData, channelData, modelData, ruleData, toolData, interfaceFileData, executionData, invocationData, costData, analysisData] = await Promise.all([
         listModelProviders(token),
         listProviderChannels(token),
         listModels(token),
         listRoutingRules(token),
         listTools(token),
+        listInterfaceFiles(token),
         listToolExecutions(token),
         listInvocations(token),
         getAICostSummary(token),
@@ -160,6 +175,7 @@ export function DeveloperToolsWorkspace({ token }: DeveloperToolsWorkspaceProps)
       setModels(modelData)
       setRules(ruleData)
       setTools(toolData)
+      setInterfaceFiles(interfaceFileData)
       setExecutions(executionData)
       setInvocations(invocationData)
       setCost(costData)
@@ -288,6 +304,59 @@ export function DeveloperToolsWorkspace({ token }: DeveloperToolsWorkspaceProps)
         }).then(() => setRoutingForm((current) => ({ ...current, name: '', match_value: '' }))),
       'developer.routingRuleCreated',
     )
+  }
+
+  function startNewInterfaceFile() {
+    setSelectedInterfaceFileID('')
+    setInterfaceForm(emptyInterfaceForm)
+  }
+
+  function selectInterfaceFile(file: InterfaceFile) {
+    setSelectedInterfaceFileID(file.id)
+    setInterfaceForm({
+      name: file.name,
+      file_type: file.file_type,
+      content: file.content,
+      metadata: JSON.stringify(file.metadata ?? {}, null, 2),
+    })
+  }
+
+  function applyInterfaceTemplate(nameKey: string, value: unknown) {
+    setSelectedInterfaceFileID('')
+    setInterfaceForm({
+      name: t(nameKey),
+      file_type: 'json',
+      content: JSON.stringify(value, null, 2),
+      metadata: JSON.stringify({ template: nameKey }, null, 2),
+    })
+  }
+
+  async function submitInterfaceFile(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const metadata = parseJSONMap(interfaceForm.metadata)
+    if (!metadata) {
+      setError(t('developer.metadataInvalid'))
+      setNotice('')
+      return
+    }
+    const payload = {
+      name: interfaceForm.name,
+      file_type: interfaceForm.file_type,
+      content: interfaceForm.content,
+      metadata,
+    }
+    await run(async () => {
+      const saved = selectedInterfaceFileID
+        ? await updateInterfaceFile(token, selectedInterfaceFileID, payload)
+        : await createInterfaceFile(token, payload)
+      setSelectedInterfaceFileID(saved.id)
+      setInterfaceForm({
+        name: saved.name,
+        file_type: saved.file_type,
+        content: saved.content,
+        metadata: JSON.stringify(saved.metadata ?? {}, null, 2),
+      })
+    }, selectedInterfaceFileID ? 'developer.interfaceFileSaved' : 'developer.interfaceFileCreated')
   }
 
   async function rotateKey() {
@@ -616,14 +685,66 @@ export function DeveloperToolsWorkspace({ token }: DeveloperToolsWorkspaceProps)
       )}
 
       {activeTab === 'interfaces' && (
-        <Panel title="developer.interfaceFiles">
-          <div className="grid gap-4 lg:grid-cols-2">
-            <JsonTemplate title="developer.providerContract" value={providerContract()} />
-            <JsonTemplate title="developer.channelContract" value={channelContract()} />
-            <JsonTemplate title="developer.routingContract" value={routingContract()} />
-            <JsonTemplate title="developer.toolContract" value={toolContract()} />
+        <div className="space-y-5">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_460px]">
+            <Panel title="developer.interfaceFiles">
+              <div className="mb-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={startNewInterfaceFile}
+                  className="inline-flex h-9 items-center gap-2 rounded-md border border-slate-300 px-3 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t('developer.newInterfaceFile')}
+                </button>
+              </div>
+              <div className="divide-y divide-slate-100">
+                {interfaceFiles.map((file) => (
+                  <button
+                    key={file.id}
+                    type="button"
+                    onClick={() => selectInterfaceFile(file)}
+                    className={`grid w-full gap-2 py-3 text-left md:grid-cols-[1fr_auto] ${
+                      selectedInterfaceFileID === file.id ? 'text-slate-950' : 'text-slate-700'
+                    }`}
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold">{file.name}</p>
+                      <p className="mt-1 truncate text-xs text-slate-500">{file.updated_at}</p>
+                    </div>
+                    <StatusBadge label={`developer.fileType.${file.file_type}`} />
+                  </button>
+                ))}
+                {interfaceFiles.length === 0 && <EmptyText>{t('developer.noInterfaceFiles')}</EmptyText>}
+              </div>
+            </Panel>
+
+            <Panel title="developer.interfaceEditor">
+              <form className="space-y-3" onSubmit={submitInterfaceFile}>
+                <TextInput label="common.name" value={interfaceForm.name} onChange={(value) => setInterfaceForm({ ...interfaceForm, name: value })} />
+                <SelectInput
+                  label="developer.fileType"
+                  value={interfaceForm.file_type}
+                  onChange={(value) => setInterfaceForm({ ...interfaceForm, file_type: value as InterfaceFileType })}
+                  options={['json', 'yaml', 'markdown']}
+                  labels={interfaceFileTypeLabels(t)}
+                />
+                <TextAreaInput label="developer.content" value={interfaceForm.content} onChange={(value) => setInterfaceForm({ ...interfaceForm, content: value })} minRows={16} />
+                <TextAreaInput label="developer.metadataJson" value={interfaceForm.metadata} onChange={(value) => setInterfaceForm({ ...interfaceForm, metadata: value })} minRows={5} />
+                <SubmitButton loading={loading} label={selectedInterfaceFileID ? 'developer.saveInterfaceFile' : 'developer.createInterfaceFile'} />
+              </form>
+            </Panel>
           </div>
-        </Panel>
+
+          <Panel title="developer.interfaceTemplates">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <JsonTemplate title="developer.providerContract" value={providerContract()} onUse={() => applyInterfaceTemplate('developer.providerContract', providerContract())} />
+              <JsonTemplate title="developer.channelContract" value={channelContract()} onUse={() => applyInterfaceTemplate('developer.channelContract', channelContract())} />
+              <JsonTemplate title="developer.routingContract" value={routingContract()} onUse={() => applyInterfaceTemplate('developer.routingContract', routingContract())} />
+              <JsonTemplate title="developer.toolContract" value={toolContract()} onUse={() => applyInterfaceTemplate('developer.toolContract', toolContract())} />
+            </div>
+          </Panel>
+        </div>
       )}
     </div>
   )
@@ -682,6 +803,31 @@ function SelectInput({
           </option>
         ))}
       </select>
+    </label>
+  )
+}
+
+function TextAreaInput({
+  label,
+  value,
+  onChange,
+  minRows = 4,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  minRows?: number
+}) {
+  const { t } = useI18n()
+  return (
+    <label className="block">
+      <span className="text-xs font-semibold text-slate-500">{t(label)}</span>
+      <textarea
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        rows={minRows}
+        className="mt-1 w-full resize-y rounded-lg border border-slate-300 px-3 py-2 font-mono text-sm outline-none focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+      />
     </label>
   )
 }
@@ -755,11 +901,22 @@ function Breakdown({ title, values, currency = 'CNY' }: { title: string; values:
   )
 }
 
-function JsonTemplate({ title, value }: { title: string; value: unknown }) {
+function JsonTemplate({ title, value, onUse }: { title: string; value: unknown; onUse?: () => void }) {
   const { t } = useI18n()
   return (
     <div>
-      <p className="text-sm font-semibold text-slate-950">{t(title)}</p>
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-950">{t(title)}</p>
+        {onUse && (
+          <button
+            type="button"
+            onClick={onUse}
+            className="inline-flex h-8 items-center rounded-md border border-slate-300 px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+          >
+            {t('developer.useTemplate')}
+          </button>
+        )}
+      </div>
       <pre className="mt-2 min-h-[220px] overflow-auto rounded-lg border border-slate-200 bg-slate-950 p-3 text-xs text-slate-50">
         {JSON.stringify(value, null, 2)}
       </pre>
@@ -816,10 +973,32 @@ function parseMapping(value: string): Record<string, string> {
   }
 }
 
+function parseJSONMap(value: string): Record<string, unknown> | null {
+  const trimmed = value.trim()
+  if (!trimmed) return {}
+  try {
+    const parsed = JSON.parse(trimmed)
+    if (!parsed || Array.isArray(parsed) || typeof parsed !== 'object') {
+      return null
+    }
+    return parsed as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
 function numberOrUndefined(value: string): number | undefined {
   if (value.trim() === '') return undefined
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function interfaceFileTypeLabels(t: (key: string) => string): Record<string, string> {
+  return {
+    json: t('developer.fileType.json'),
+    yaml: t('developer.fileType.yaml'),
+    markdown: t('developer.fileType.markdown'),
+  }
 }
 
 function scopeLabels(t: (key: string) => string): Record<string, string> {

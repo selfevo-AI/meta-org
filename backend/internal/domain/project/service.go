@@ -87,6 +87,10 @@ func NewService(repo *Repository, opts ...ServiceOption) *Service {
 	return s
 }
 
+func (s *Service) ResolveLegacyUUID(ctx context.Context, sourceTable string, key string) (uuid.UUID, error) {
+	return s.repo.ResolveLegacyUUID(ctx, sourceTable, key)
+}
+
 func (s *Service) CreateRequirement(ctx context.Context, input CreateRequirementInput) (*Requirement, error) {
 	if input.Title == "" {
 		return nil, fmt.Errorf("%w: title is required", ErrValidation)
@@ -420,11 +424,8 @@ func (s *Service) ConvertRequirementToProject(ctx context.Context, id uuid.UUID,
 	if err := s.requireAccess(ctx, actorID, actorType, "project.create", "project", nil, req.OrganizationID, req.DepartmentID, nil, req.RequiredLevel, req.RiskLevel, nil); err != nil {
 		return nil, err
 	}
-	if err := validateRequirementStatus(req.Status, "convert"); err != nil {
-		return nil, err
-	}
 	if existing, err := s.repo.GetProjectByRequirement(ctx, id); err == nil && existing != nil {
-		return nil, fmt.Errorf("%w: requirement is already converted to project %s", ErrConflict, existing.ID)
+		return existing, nil
 	} else if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return nil, err
 	}
@@ -498,9 +499,6 @@ func (s *Service) CreateProject(ctx context.Context, input CreateProjectInput) (
 	}
 	if input.RequirementID != nil {
 		if req, err := s.repo.GetRequirement(ctx, *input.RequirementID); err == nil {
-			if err := validateRequirementStatus(req.Status, "convert"); err != nil {
-				return nil, err
-			}
 			if input.OrganizationID == nil {
 				input.OrganizationID = req.OrganizationID
 			}
@@ -1626,7 +1624,7 @@ func isValidProjectStatus(status string) bool {
 func validateRequirementStatus(status string, action string) error {
 	switch action {
 	case "analyze", "sync_analysis":
-		if status == "draft" || status == "analyzed" {
+		if status == "draft" || status == "analyzed" || status == "converted" {
 			return nil
 		}
 	case "approve":
@@ -1634,9 +1632,7 @@ func validateRequirementStatus(status string, action string) error {
 			return nil
 		}
 	case "convert":
-		if status == "approved" {
-			return nil
-		}
+		return nil
 	}
 	return fmt.Errorf("%w: requirement status %q cannot %s", ErrConflict, status, action)
 }

@@ -3,6 +3,7 @@ package aigateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -332,6 +333,9 @@ func (r *PostgresRepository) ResolveInvocationTarget(ctx context.Context, input 
 			&priorityInputPrice, &priorityOutputPrice, &priorityCacheReadPrice, &longContextThreshold, &longContextInputMultiplier,
 			&longContextOutputMultiplier, &billingMode, &pricingSource, &currency, &target.MaxOutputTokens)
 	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return target, fmt.Errorf("%w: no active model matches provider/model selection", ErrUnavailable)
+		}
 		return target, fmt.Errorf("resolve invocation target: %w", err)
 	}
 	if priceVersionID.Valid {

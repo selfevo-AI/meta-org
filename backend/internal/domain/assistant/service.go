@@ -25,6 +25,8 @@ type AIInvoker interface {
 type ToolExecutor interface {
 	ExecuteTool(context.Context, toolruntime.ExecuteToolInput) (*toolruntime.ExecuteToolOutput, error)
 	ListTools(context.Context, int) ([]toolruntime.ToolDefinition, error)
+	GetApproval(context.Context, uuid.UUID) (*toolruntime.ToolApproval, error)
+	GetExecution(context.Context, uuid.UUID) (*toolruntime.ToolExecution, error)
 }
 
 type ProposalApplicator interface {
@@ -322,6 +324,28 @@ func (s *Service) Run(ctx context.Context, sessionID uuid.UUID, actorID uuid.UUI
 	return events, nil
 }
 
+func (s *Service) Resume(ctx context.Context, sessionID uuid.UUID, actorID uuid.UUID, actorType string, input ResumeInput) (<-chan RunEvent, error) {
+	if input.ToolApprovalID == uuid.Nil {
+		return nil, fmt.Errorf("%w: tool_approval_id is required", ErrValidation)
+	}
+	if s.ai == nil {
+		return nil, fmt.Errorf("%w: ai gateway is not configured", ErrValidation)
+	}
+	if s.tools == nil {
+		return nil, fmt.Errorf("%w: tool runtime is not configured", ErrValidation)
+	}
+	session, err := s.repo.GetSession(ctx, sessionID, actorID, actorType)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.repo.UpdateSessionStatus(ctx, session.ID, StatusRunning, ""); err != nil {
+		return nil, err
+	}
+	events := make(chan RunEvent)
+	go s.resumeLoop(ctx, events, session, input)
+	return events, nil
+}
+
 func (s *Service) runLoop(ctx context.Context, events chan<- RunEvent, session *Session, input RunInput) {
 	defer close(events)
 	send := func(event RunEvent) bool {
@@ -376,7 +400,119 @@ func (s *Service) runLoop(ctx context.Context, events chan<- RunEvent, session *
 		return
 	}
 
-	for turn := 1; turn <= s.maxTurns; turn++ {
+	s.continueAssistantTurns(ctx, send, fail, session, messages, workContext, tools, providerID, channelID, providerType, model, serviceTier, effort, 1)
+}
+
+func (s *Service) resumeLoop(ctx context.Context, events chan<- RunEvent, session *Session, input ResumeInput) {
+	defer close(events)
+	send := func(event RunEvent) bool {
+		select {
+		case <-ctx.Done():
+			return false
+		case events <- event:
+			return true
+		}
+	}
+	fail := func(err error, turn int) {
+		_ = s.repo.UpdateSessionStatus(context.Background(), session.ID, StatusFailed, err.Error())
+		step, _ := s.repo.AddStep(context.Background(), session, AddStepInput{StepType: StepError, Status: StatusFailed, Summary: err.Error(), Turn: turn})
+		send(RunEvent{Type: "error", Step: step, Error: err.Error(), Done: true})
+	}
+
+	approval, err := s.tools.GetApproval(ctx, input.ToolApprovalID)
+	if err != nil {
+		fail(err, 0)
+		return
+	}
+	if approval.Status != toolruntime.ApprovalApproved {
+		fail(fmt.Errorf("%w: tool approval is not approved", ErrValidation), 0)
+		return
+	}
+	execution, err := s.tools.GetExecution(ctx, approval.ExecutionID)
+	if err != nil {
+		fail(err, 0)
+		return
+	}
+	if execution.Status != toolruntime.ExecutionCompleted {
+		fail(fmt.Errorf("%w: approved tool execution is %s", ErrValidation, execution.Status), 0)
+		return
+	}
+	steps, err := s.repo.ListSteps(ctx, session.ID, s.maxHistory)
+	if err != nil {
+		fail(err, 0)
+		return
+	}
+	callID, toolName, turn := approvalStepContext(steps, input.ToolApprovalID, execution.ID)
+	payload := map[string]any{"status": execution.Status, "summary": execution.ResultSummary, "result": execution.Result, "error": execution.ErrorMessage}
+	resultStep, err := s.repo.AddStep(ctx, session, AddStepInput{
+		ToolExecutionID: &execution.ID,
+		ToolApprovalID:  &approval.ID,
+		StepType:        StepToolResult,
+		Status:          execution.Status,
+		Summary:         execution.ResultSummary,
+		Data:            payload,
+		Turn:            turn,
+	})
+	if err != nil {
+		fail(err, turn)
+		return
+	}
+	if !send(RunEvent{Type: "tool_result", Step: resultStep, Data: payload}) {
+		return
+	}
+	toolContent := marshalToolContent(payload)
+	if _, err := s.repo.AddMessage(ctx, session.ID, "tool", toolContent, callID, toolName, payload); err != nil {
+		fail(err, turn)
+		return
+	}
+
+	scope := sessionScope(session)
+	memories, err := s.repo.ListScopedMemories(ctx, scope, session.ActorID, session.ActorType, 12)
+	if err != nil {
+		fail(err, turn)
+		return
+	}
+	workContext := WorkRecordContext{ModuleKey: session.ModuleKey}
+	if s.contextResolver != nil {
+		workContext = s.contextResolver.Resolve(ctx, session)
+	}
+	history, err := s.repo.ListMessages(ctx, session.ID, s.maxHistory)
+	if err != nil {
+		fail(err, turn)
+		return
+	}
+	toolDefs, err := s.tools.ListTools(ctx, 100)
+	if err != nil {
+		fail(err, turn)
+		return
+	}
+	messages := buildAIMessages(session, memories, history, workContext)
+	tools := gatewayTools(toolDefs)
+	providerID, channelID, providerType, model, serviceTier, effort := runModelConfig(session, RunInput{})
+	if (providerID == nil && providerType == "") || model == "" {
+		fail(fmt.Errorf("%w: model provider and model are required", ErrValidation), turn)
+		return
+	}
+	s.continueAssistantTurns(ctx, send, fail, session, messages, workContext, tools, providerID, channelID, providerType, model, serviceTier, effort, turn+1)
+}
+
+func (s *Service) continueAssistantTurns(
+	ctx context.Context,
+	send func(RunEvent) bool,
+	fail func(error, int),
+	session *Session,
+	messages []aigateway.Message,
+	workContext WorkRecordContext,
+	tools []aigateway.ToolDefinition,
+	providerID *uuid.UUID,
+	channelID *uuid.UUID,
+	providerType string,
+	model string,
+	serviceTier string,
+	effort string,
+	startTurn int,
+) {
+	for turn := startTurn; turn <= s.maxTurns; turn++ {
 		output, err := s.ai.Invoke(ctx, aigateway.InvokeInput{
 			ProviderID:         providerID,
 			PreferredChannelID: channelID,
@@ -484,7 +620,7 @@ func (s *Service) runLoop(ctx context.Context, events chan<- RunEvent, session *
 					Turn:            turn,
 				})
 				_ = s.repo.UpdateSessionStatus(ctx, session.ID, StatusApprovalRequired, "")
-				send(RunEvent{Type: "approval_required", Step: step, Done: true, Data: step.Data})
+				send(RunEvent{Type: "approval_required", Step: step, Data: step.Data})
 				return
 			}
 			payload := map[string]any{"status": status, "summary": result.Execution.ResultSummary, "result": result.Execution.Result, "error": result.Execution.ErrorMessage}
@@ -726,6 +862,25 @@ func toolCallID(call aigateway.ToolCall, index int) string {
 	return fmt.Sprintf("tool_call_%d", index+1)
 }
 
+func approvalStepContext(steps []Step, approvalID uuid.UUID, executionID uuid.UUID) (string, string, int) {
+	for i := len(steps) - 1; i >= 0; i-- {
+		step := steps[i]
+		if (step.ToolApprovalID != nil && *step.ToolApprovalID == approvalID) ||
+			(step.ToolExecutionID != nil && *step.ToolExecutionID == executionID) {
+			callID := stringFromMap(step.Data, "tool_call_id")
+			if callID == "" {
+				callID = approvalID.String()
+			}
+			toolName := stringFromMap(step.Data, "tool_name")
+			if toolName == "" {
+				toolName = executionID.String()
+			}
+			return callID, toolName, step.Turn
+		}
+	}
+	return approvalID.String(), executionID.String(), 1
+}
+
 func actorIDForAttribution(session *Session) *uuid.UUID {
 	if session.ActorType == "human" || session.ActorType == "internal_human" || session.ActorType == "external_human" {
 		return &session.ActorID
@@ -741,6 +896,17 @@ func uuidString(id *uuid.UUID) string {
 }
 
 func stringFromInput(input map[string]any, key string) string {
+	value, ok := input[key]
+	if !ok {
+		return ""
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
+}
+
+func stringFromMap(input map[string]any, key string) string {
 	value, ok := input[key]
 	if !ok {
 		return ""

@@ -628,7 +628,7 @@ export function FinanceWorkspace({ token, mode = 'all' }: FinanceWorkspaceProps)
       )}
 
       {currentTab === 'ingestion' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-5">
           <Panel title="finance.ingestion">
             <form className="space-y-3" onSubmit={submitExpense}>
               <SelectInput
@@ -687,7 +687,7 @@ export function FinanceWorkspace({ token, mode = 'all' }: FinanceWorkspaceProps)
       )}
 
       {currentTab === 'imports' && (
-        <div className="grid gap-5 xl:grid-cols-2">
+        <div className="space-y-5">
           <Panel title="finance.importBatches">
             <Table
               headers={['finance.sourceType', 'developer.status', 'finance.totalRecords', 'finance.failedRecords']}
@@ -709,7 +709,7 @@ export function FinanceWorkspace({ token, mode = 'all' }: FinanceWorkspaceProps)
       )}
 
       {currentTab === 'receivables' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="space-y-5">
           <div className="space-y-5">
             <Panel title="finance.settlementOrders">
               <Table
@@ -787,7 +787,7 @@ export function FinanceWorkspace({ token, mode = 'all' }: FinanceWorkspaceProps)
       )}
 
       {currentTab === 'receipts' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
+        <div className="space-y-5">
           <Panel title="finance.receipts">
             <Table
               headers={['finance.receiptNumber', 'finance.customer', 'finance.amount', 'developer.status']}
@@ -814,7 +814,7 @@ export function FinanceWorkspace({ token, mode = 'all' }: FinanceWorkspaceProps)
       )}
 
       {currentTab === 'payables' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-5">
           <Panel title="finance.payables">
             <Table
               headers={['finance.invoiceNumber', 'finance.vendor', 'finance.employee', 'finance.amount', 'developer.status']}
@@ -850,7 +850,7 @@ export function FinanceWorkspace({ token, mode = 'all' }: FinanceWorkspaceProps)
       )}
 
       {currentTab === 'payments' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-5">
           <Panel title="finance.payments">
             <Table
               headers={['finance.paymentNumber', 'finance.vendor', 'finance.employee', 'finance.amount', 'developer.status']}
@@ -888,7 +888,7 @@ export function FinanceWorkspace({ token, mode = 'all' }: FinanceWorkspaceProps)
       )}
 
       {currentTab === 'adapters' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-5">
           <Panel title="finance.adapters">
             <Table
               headers={['common.name', 'finance.adapterType', 'finance.direction', 'finance.authType', 'developer.status']}
@@ -972,7 +972,7 @@ export function FinanceWorkspace({ token, mode = 'all' }: FinanceWorkspaceProps)
       )}
 
       {currentTab === 'batches' && (
-        <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="space-y-5">
           <Panel title="finance.accountingBatches">
             <Table
               headers={[

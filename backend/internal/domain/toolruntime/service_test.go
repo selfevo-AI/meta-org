@@ -1,6 +1,14 @@
 package toolruntime
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/google/uuid"
+)
 
 func TestEffectivePolicyGovernanceOverridesAuto(t *testing.T) {
 	policy := EffectivePolicy("auto", GovernanceResult{Decision: "approve", Allowed: false})
@@ -21,4 +29,345 @@ func TestEffectivePolicyNotifyOverridesAuto(t *testing.T) {
 	if policy != "notify" {
 		t.Fatalf("policy = %q, want notify", policy)
 	}
+}
+
+func TestApproveRunsApprovedToolOnce(t *testing.T) {
+	ctx := context.Background()
+	toolID := uuid.New()
+	executionID := uuid.New()
+	approvalID := uuid.New()
+	actorID := uuid.New()
+	reviewerID := uuid.New()
+	expiresAt := time.Now().Add(time.Hour)
+	repo := &fakeApprovalRepository{
+		tool: ToolDefinition{
+			ID:                   toolID,
+			Name:                 "project.summarize",
+			DefaultPolicy:        PolicyApprove,
+			RiskLevel:            "high",
+			RequiredLevel:        "L3",
+			ToolCategory:         ToolCategoryBusinessApproval,
+			ApprovalTierRequired: ApprovalTierReviewer,
+			IsActive:             true,
+		},
+		execution: ToolExecution{
+			ID:                 executionID,
+			ToolID:             toolID,
+			ActorID:            actorID,
+			ActorType:          "internal_human",
+			IdempotencyKey:     "idem-1",
+			Policy:             PolicyApprove,
+			GovernanceDecision: "approve",
+			Status:             ExecutionApprovalRequired,
+			Arguments:          map[string]any{"project_id": "p-1"},
+			Result:             map[string]any{},
+		},
+		approval: ToolApproval{
+			ID:          approvalID,
+			ExecutionID: executionID,
+			Status:      ApprovalPending,
+			ExpiresAt:   &expiresAt,
+		},
+		tier: ApprovalTierReviewer,
+	}
+	calls := 0
+	svc := NewService(repo, nil, map[string]ToolAdapter{
+		"project.summarize": func(_ context.Context, input ExecuteToolInput) (ToolResult, error) {
+			calls++
+			if input.Arguments["project_id"] != "p-1" {
+				t.Fatalf("project_id = %v, want p-1", input.Arguments["project_id"])
+			}
+			return ToolResult{Summary: "summarized", Data: map[string]any{"ok": true}}, nil
+		},
+	})
+
+	first, err := svc.Approve(ctx, approvalID, &reviewerID, "looks good")
+	if err != nil {
+		t.Fatalf("Approve returned error: %v", err)
+	}
+	if first.Approval.Status != ApprovalApproved {
+		t.Fatalf("approval status = %q, want approved", first.Approval.Status)
+	}
+	if first.Execution.Status != ExecutionCompleted {
+		t.Fatalf("execution status = %q, want completed", first.Execution.Status)
+	}
+	if calls != 1 {
+		t.Fatalf("adapter calls = %d, want 1", calls)
+	}
+
+	second, err := svc.Approve(ctx, approvalID, &reviewerID, "duplicate")
+	if err != nil {
+		t.Fatalf("duplicate Approve returned error: %v", err)
+	}
+	if second.Execution.Status != ExecutionCompleted {
+		t.Fatalf("duplicate execution status = %q, want completed", second.Execution.Status)
+	}
+	if calls != 1 {
+		t.Fatalf("adapter calls after duplicate = %d, want 1", calls)
+	}
+}
+
+func TestCreateInterfaceFileValidation(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name    string
+		input   CreateInterfaceFileInput
+		wantErr string
+	}{
+		{
+			name:    "name required",
+			input:   CreateInterfaceFileInput{FileType: "json", Content: "{}"},
+			wantErr: "name is required",
+		},
+		{
+			name:    "type required",
+			input:   CreateInterfaceFileInput{Name: "contract", FileType: "txt", Content: "{}"},
+			wantErr: "file_type must be json, yaml, or markdown",
+		},
+		{
+			name:    "content required",
+			input:   CreateInterfaceFileInput{Name: "contract", FileType: "markdown", Content: " "},
+			wantErr: "content is required",
+		},
+		{
+			name:    "json validated",
+			input:   CreateInterfaceFileInput{Name: "contract", FileType: "json", Content: "{invalid"},
+			wantErr: "content must be valid JSON",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := NewService(&fakeApprovalRepository{}, nil, nil)
+			_, err := svc.CreateInterfaceFile(ctx, tt.input, nil)
+			if err == nil {
+				t.Fatalf("CreateInterfaceFile returned nil error")
+			}
+			if !errors.Is(err, ErrValidation) || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("CreateInterfaceFile error = %v, want validation containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCreateInterfaceFileNormalizesInput(t *testing.T) {
+	ctx := context.Background()
+	createdBy := uuid.New()
+	repo := &fakeApprovalRepository{}
+	svc := NewService(repo, nil, nil)
+
+	file, err := svc.CreateInterfaceFile(ctx, CreateInterfaceFileInput{
+		Name:     "  Provider Contract  ",
+		FileType: "yml",
+		Content:  "provider: openai",
+	}, &createdBy)
+	if err != nil {
+		t.Fatalf("CreateInterfaceFile returned error: %v", err)
+	}
+	if file.Name != "Provider Contract" {
+		t.Fatalf("file name = %q, want trimmed name", file.Name)
+	}
+	if file.FileType != "yaml" {
+		t.Fatalf("file type = %q, want yaml", file.FileType)
+	}
+	if file.Metadata == nil {
+		t.Fatalf("metadata is nil, want empty map")
+	}
+	if file.CreatedBy == nil || *file.CreatedBy != createdBy {
+		t.Fatalf("created_by = %v, want %s", file.CreatedBy, createdBy)
+	}
+}
+
+func TestUpdateInterfaceFileValidatesExistingJSON(t *testing.T) {
+	ctx := context.Background()
+	fileID := uuid.New()
+	repo := &fakeApprovalRepository{
+		interfaceFiles: []InterfaceFile{
+			{
+				ID:       fileID,
+				Name:     "Tool Contract",
+				FileType: "json",
+				Content:  `{"ok": true}`,
+				Metadata: map[string]any{},
+			},
+		},
+	}
+	svc := NewService(repo, nil, nil)
+	invalid := "{invalid"
+
+	_, err := svc.UpdateInterfaceFile(ctx, fileID, UpdateInterfaceFileInput{Content: &invalid})
+	if err == nil {
+		t.Fatalf("UpdateInterfaceFile returned nil error")
+	}
+	if !errors.Is(err, ErrValidation) || !strings.Contains(err.Error(), "content must be valid JSON") {
+		t.Fatalf("UpdateInterfaceFile error = %v, want JSON validation", err)
+	}
+}
+
+func TestUpdateInterfaceFile(t *testing.T) {
+	ctx := context.Background()
+	fileID := uuid.New()
+	repo := &fakeApprovalRepository{
+		interfaceFiles: []InterfaceFile{
+			{
+				ID:       fileID,
+				Name:     "Tool Contract",
+				FileType: "json",
+				Content:  `{"ok": true}`,
+				Metadata: map[string]any{"kind": "tool"},
+			},
+		},
+	}
+	svc := NewService(repo, nil, nil)
+	name := "Updated Contract"
+	content := "# Updated"
+	fileType := "md"
+
+	file, err := svc.UpdateInterfaceFile(ctx, fileID, UpdateInterfaceFileInput{
+		Name:     &name,
+		FileType: &fileType,
+		Content:  &content,
+		Metadata: map[string]any{"kind": "agent"},
+	})
+	if err != nil {
+		t.Fatalf("UpdateInterfaceFile returned error: %v", err)
+	}
+	if file.Name != name || file.FileType != "markdown" || file.Content != content {
+		t.Fatalf("updated file = %#v", file)
+	}
+	if file.Metadata["kind"] != "agent" {
+		t.Fatalf("metadata kind = %v, want agent", file.Metadata["kind"])
+	}
+}
+
+type fakeApprovalRepository struct {
+	tool           ToolDefinition
+	execution      ToolExecution
+	approval       ToolApproval
+	tier           string
+	interfaceFiles []InterfaceFile
+}
+
+func (f *fakeApprovalRepository) CreateTool(context.Context, CreateToolInput) (*ToolDefinition, error) {
+	return &f.tool, nil
+}
+
+func (f *fakeApprovalRepository) ListTools(context.Context, int) ([]ToolDefinition, error) {
+	return []ToolDefinition{f.tool}, nil
+}
+
+func (f *fakeApprovalRepository) UpdateTool(context.Context, uuid.UUID, UpdateToolInput) (*ToolDefinition, error) {
+	return &f.tool, nil
+}
+
+func (f *fakeApprovalRepository) GetToolByID(context.Context, uuid.UUID) (*ToolDefinition, error) {
+	return &f.tool, nil
+}
+
+func (f *fakeApprovalRepository) GetToolByName(context.Context, string) (*ToolDefinition, error) {
+	return &f.tool, nil
+}
+
+func (f *fakeApprovalRepository) CreateInterfaceFile(_ context.Context, input CreateInterfaceFileInput, createdBy *uuid.UUID) (*InterfaceFile, error) {
+	file := InterfaceFile{
+		ID:        uuid.New(),
+		Name:      input.Name,
+		FileType:  input.FileType,
+		Content:   input.Content,
+		Metadata:  input.Metadata,
+		CreatedBy: createdBy,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	f.interfaceFiles = append(f.interfaceFiles, file)
+	return &f.interfaceFiles[len(f.interfaceFiles)-1], nil
+}
+
+func (f *fakeApprovalRepository) ListInterfaceFiles(context.Context, int) ([]InterfaceFile, error) {
+	return f.interfaceFiles, nil
+}
+
+func (f *fakeApprovalRepository) GetInterfaceFile(_ context.Context, id uuid.UUID) (*InterfaceFile, error) {
+	for index := range f.interfaceFiles {
+		if f.interfaceFiles[index].ID == id {
+			return &f.interfaceFiles[index], nil
+		}
+	}
+	return nil, ErrNotFound
+}
+
+func (f *fakeApprovalRepository) UpdateInterfaceFile(_ context.Context, id uuid.UUID, input UpdateInterfaceFileInput) (*InterfaceFile, error) {
+	file, err := f.GetInterfaceFile(context.Background(), id)
+	if err != nil {
+		return nil, err
+	}
+	if input.Name != nil {
+		file.Name = *input.Name
+	}
+	if input.FileType != nil {
+		file.FileType = *input.FileType
+	}
+	if input.Content != nil {
+		file.Content = *input.Content
+	}
+	if input.Metadata != nil {
+		file.Metadata = input.Metadata
+	}
+	file.UpdatedAt = time.Now()
+	return file, nil
+}
+
+func (f *fakeApprovalRepository) CreateExecution(context.Context, CreateExecutionInput) (*ToolExecution, error) {
+	return &f.execution, nil
+}
+
+func (f *fakeApprovalRepository) CompleteExecution(_ context.Context, _ uuid.UUID, input CompleteExecutionInput) (*ToolExecution, error) {
+	f.execution.Status = input.Status
+	f.execution.ResultSummary = input.ResultSummary
+	f.execution.Result = input.Result
+	f.execution.ErrorMessage = input.ErrorMessage
+	now := time.Now()
+	f.execution.CompletedAt = &now
+	return &f.execution, nil
+}
+
+func (f *fakeApprovalRepository) CreateApproval(context.Context, uuid.UUID, *uuid.UUID, string) (*ToolApproval, error) {
+	return &f.approval, nil
+}
+
+func (f *fakeApprovalRepository) ListExecutions(context.Context, int) ([]ToolExecution, error) {
+	return []ToolExecution{f.execution}, nil
+}
+
+func (f *fakeApprovalRepository) GetExecution(context.Context, uuid.UUID) (*ToolExecution, error) {
+	return &f.execution, nil
+}
+
+func (f *fakeApprovalRepository) GetApproval(context.Context, uuid.UUID) (*ToolApproval, error) {
+	return &f.approval, nil
+}
+
+func (f *fakeApprovalRepository) GetHumanAuthorityTier(context.Context, uuid.UUID, *uuid.UUID) (string, error) {
+	return f.tier, nil
+}
+
+func (f *fakeApprovalRepository) UpdateApproval(_ context.Context, _ uuid.UUID, status string, reviewedBy *uuid.UUID, reason string) (*ToolApproval, error) {
+	f.approval.Status = status
+	f.approval.ReviewedBy = reviewedBy
+	if status == ApprovalApproved {
+		f.approval.ApprovedByHumanID = reviewedBy
+	}
+	if reason != "" {
+		f.approval.Reason = reason
+	}
+	now := time.Now()
+	f.approval.ReviewedAt = &now
+	switch status {
+	case ApprovalApproved:
+		f.execution.Status = ExecutionApproved
+	case ApprovalRejected:
+		f.execution.Status = ExecutionRejected
+	case ApprovalExpired:
+		f.execution.Status = ExecutionFailed
+	}
+	return &f.approval, nil
 }

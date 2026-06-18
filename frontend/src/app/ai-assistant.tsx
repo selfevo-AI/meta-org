@@ -1,13 +1,15 @@
 'use client'
 
-import { Bot, CircleStop, ListChecks, Send } from 'lucide-react'
+import { Bot, CheckCircle2, CircleStop, ListChecks, Send, XCircle } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   API_BASE,
+  approveToolApproval,
   createAssistantSession,
   getAIInvocation,
   listModelProviders,
   listModels,
+  rejectToolApproval,
   type AssistantStep,
   type CostBreakdown,
   type ModelCatalogItem,
@@ -136,6 +138,7 @@ export function AIAssistant({
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [invocationID, setInvocationID] = useState('')
   const [sessionID, setSessionID] = useState('')
+  const [pendingApprovalID, setPendingApprovalID] = useState('')
   const [steps, setSteps] = useState<AssistantStep[]>([])
   const [usage, setUsage] = useState<AssistantUsage>({})
   const [cost, setCost] = useState<AssistantCost>({ currency: 'CNY' })
@@ -147,12 +150,21 @@ export function AIAssistant({
     Promise.all([listModels(token), listModelProviders(token)])
       .then(([modelItems, providerItems]) => {
         if (cancelled) return
-        const activeModels = modelItems.filter((item) => item.status === 'active')
-        const nextModels = activeModels.length > 0 ? activeModels : modelItems
+        const activeProviderIDs = new Set(
+          providerItems.filter((provider) => provider.status === 'active').map((provider) => provider.id),
+        )
+        const activeModels = modelItems.filter(
+          (item) => item.status === 'active' && activeProviderIDs.has(item.provider_id),
+        )
+        const nextModels = activeModels
         const preferences = loadModelPreferences()
         setModels(nextModels)
         setProviders(providerItems)
-        setSelectedModelID((current) => current || preferences[contextType] || nextModels[0]?.id || '')
+        setSelectedModelID((current) => {
+          const preferredID = current || preferences[contextType] || ''
+          if (nextModels.some((model) => model.id === preferredID)) return preferredID
+          return nextModels[0]?.id || ''
+        })
       })
       .catch(() => {
         if (!cancelled) {
@@ -171,6 +183,7 @@ export function AIAssistant({
     [models, selectedModelID],
   )
   const providerByID = useMemo(() => Object.fromEntries(providers.map((provider) => [provider.id, provider])), [providers])
+  const hasRunnableModel = autoModel || !!selectedModel
 
   function changeModel(modelID: string) {
     setSelectedModelID(modelID)
@@ -192,12 +205,13 @@ export function AIAssistant({
 
   async function send(messageOverride?: string) {
     const trimmed = (messageOverride ?? prompt).trim()
-    if (!trimmed || state === 'streaming') return
+    if (!trimmed || state === 'streaming' || !hasRunnableModel) return
     const controller = new AbortController()
     abortRef.current = controller
     setState('streaming')
     setInvocationID('')
     setSessionID('')
+    setPendingApprovalID('')
     setSteps([])
     setUsage({})
     setCost({ currency: 'CNY' })
@@ -210,6 +224,7 @@ export function AIAssistant({
     const provider = selectedModel ? providerByID[selectedModel.provider_id] : undefined
     const modelKey = selectedModel?.model_key || 'gpt-4o-mini'
     let currentInvocationID = ''
+    let stoppedForApproval = false
 
     try {
       const session = await createAssistantSession(token, {
@@ -281,6 +296,13 @@ export function AIAssistant({
             }))
           }
           if (data.step?.status === 'approval_required') setState('approval_required')
+          if (data.step?.status === 'approval_required') {
+            stoppedForApproval = true
+            const approvalID =
+              data.step.tool_approval_id ||
+              (typeof data.data?.approval_id === 'string' ? data.data.approval_id : '')
+            setPendingApprovalID(approvalID)
+          }
           if (data.error) {
             const denied = data.error.toLowerCase().includes('denied') || data.error.toLowerCase().includes('forbidden')
             setState(denied ? 'governance_denied' : 'provider_error')
@@ -290,7 +312,7 @@ export function AIAssistant({
               ),
             )
           }
-          if (data.done) setState(completedState)
+          if (data.done && !stoppedForApproval) setState(completedState)
         },
         controller.signal,
       )
@@ -311,7 +333,7 @@ export function AIAssistant({
           setCost((current) => current)
         }
       }
-      setState(completedState)
+      setState(stoppedForApproval ? 'approval_required' : completedState)
     } catch (err) {
       if (controller.signal.aborted) {
         setState('cancelled')
@@ -327,6 +349,140 @@ export function AIAssistant({
       )
     } finally {
       abortRef.current = null
+    }
+  }
+
+  async function resumeAfterApproval(approvalID: string) {
+    if (!sessionID || !approvalID) return
+    const controller = new AbortController()
+    abortRef.current = controller
+    setState('streaming')
+    setPendingApprovalID('')
+    const assistantMessage: ChatMessage = { id: `assistant-resume-${Date.now()}`, role: 'assistant', content: '' }
+    setMessages((current) => [...current, assistantMessage])
+    let currentInvocationID = ''
+    let stoppedForApproval = false
+    try {
+      await streamSSEPost<GatewayStreamData>(
+        `${API_BASE}/assistant/sessions/${sessionID}/resume`,
+        token,
+        { tool_approval_id: approvalID },
+        ({ data }) => {
+          const nextInvocationID = data.invocation_id || data.step?.invocation_id
+          if (nextInvocationID) {
+            currentInvocationID = nextInvocationID
+            setInvocationID(nextInvocationID)
+          }
+          if (data.step) {
+            setSteps((current) => {
+              if (current.some((step) => step.id === data.step?.id)) return current
+              return [...current, data.step as AssistantStep]
+            })
+          }
+          if (data.delta) {
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantMessage.id ? { ...message, content: message.content + data.delta } : message,
+              ),
+            )
+          }
+          if (data.step?.status === 'approval_required') {
+            stoppedForApproval = true
+            const nextApprovalID =
+              data.step.tool_approval_id ||
+              (typeof data.data?.approval_id === 'string' ? data.data.approval_id : '')
+            setPendingApprovalID(nextApprovalID)
+            setState('approval_required')
+          }
+          if (data.error) {
+            const denied = data.error.toLowerCase().includes('denied') || data.error.toLowerCase().includes('forbidden')
+            setState(denied ? 'governance_denied' : 'provider_error')
+            setMessages((current) =>
+              current.map((message) =>
+                message.id === assistantMessage.id ? { ...message, content: data.error || t('assistant.error') } : message,
+              ),
+            )
+          }
+          if (data.done && !stoppedForApproval) setState(completedState)
+        },
+        controller.signal,
+      )
+      if (currentInvocationID) {
+        try {
+          const invocation = await getAIInvocation(token, currentInvocationID)
+          setUsage({
+            input_tokens: invocation.input_tokens,
+            output_tokens: invocation.output_tokens,
+            cache_creation_tokens: invocation.cache_creation_tokens,
+            cache_read_tokens: invocation.cache_read_tokens,
+            cache_creation_5m_tokens: invocation.cache_creation_5m_tokens,
+            cache_creation_1h_tokens: invocation.cache_creation_1h_tokens,
+            image_output_tokens: invocation.image_output_tokens,
+          })
+          setCost({ final: invocation.cost_amount, currency: invocation.currency, breakdown: invocation.cost_breakdown })
+        } catch {
+          setCost((current) => current)
+        }
+      }
+      setState(stoppedForApproval ? 'approval_required' : completedState)
+    } catch (err) {
+      if (controller.signal.aborted) {
+        setState('cancelled')
+        return
+      }
+      setState('provider_error')
+      setMessages((current) =>
+        current.map((message) =>
+          message.id === assistantMessage.id
+            ? { ...message, content: err instanceof Error ? err.message : t('assistant.error') }
+            : message,
+        ),
+      )
+    } finally {
+      abortRef.current = null
+    }
+  }
+
+  async function approvePendingApproval() {
+    if (!pendingApprovalID || state === 'streaming') return
+    setState('streaming')
+    try {
+      const result = await approveToolApproval(token, pendingApprovalID, 'approved from assistant')
+      if (result.execution.status !== 'completed') {
+        setState('provider_error')
+        setMessages((current) => [
+          ...current,
+          { id: `assistant-approval-error-${Date.now()}`, role: 'assistant', content: result.execution.error_message || t('assistant.approvalExecutionFailed') },
+        ])
+        return
+      }
+      await resumeAfterApproval(result.approval.id)
+    } catch (err) {
+      setState('provider_error')
+      setMessages((current) => [
+        ...current,
+        { id: `assistant-approval-error-${Date.now()}`, role: 'assistant', content: err instanceof Error ? err.message : t('assistant.approvalExecutionFailed') },
+      ])
+    }
+  }
+
+  async function rejectPendingApproval() {
+    if (!pendingApprovalID || state === 'streaming') return
+    setState('streaming')
+    try {
+      await rejectToolApproval(token, pendingApprovalID, 'rejected from assistant')
+      setPendingApprovalID('')
+      setState('cancelled')
+      setMessages((current) => [
+        ...current,
+        { id: `assistant-approval-rejected-${Date.now()}`, role: 'assistant', content: t('assistant.approvalRejected') },
+      ])
+    } catch (err) {
+      setState('provider_error')
+      setMessages((current) => [
+        ...current,
+        { id: `assistant-approval-error-${Date.now()}`, role: 'assistant', content: err instanceof Error ? err.message : t('assistant.error') },
+      ])
     }
   }
 
@@ -423,7 +579,7 @@ export function AIAssistant({
             <button
               type="button"
               onClick={() => void send()}
-              disabled={!prompt.trim()}
+              disabled={!prompt.trim() || !hasRunnableModel}
               className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-[#AD4714] text-[#fffaf5] transition hover:bg-[#B84F18] disabled:cursor-not-allowed disabled:opacity-50"
               aria-label={t('assistant.send')}
             >
@@ -431,6 +587,26 @@ export function AIAssistant({
             </button>
           )}
         </div>
+        {state === 'approval_required' && pendingApprovalID && (
+          <div className="mt-3 flex gap-2">
+            <button
+              type="button"
+              onClick={() => void approvePendingApproval()}
+              className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-3 text-sm font-semibold text-white transition hover:bg-emerald-700"
+            >
+              <CheckCircle2 className="h-4 w-4" />
+              {t('assistant.approveAndContinue')}
+            </button>
+            <button
+              type="button"
+              onClick={() => void rejectPendingApproval()}
+              className="inline-flex h-9 flex-1 items-center justify-center gap-2 rounded-lg border border-slate-300 px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100"
+            >
+              <XCircle className="h-4 w-4" />
+              {t('assistant.rejectApproval')}
+            </button>
+          </div>
+        )}
         {steps.length > 0 && (
           <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
             <div className="mb-2 flex items-center gap-2 text-xs font-semibold text-slate-600">

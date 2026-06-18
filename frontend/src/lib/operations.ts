@@ -1517,6 +1517,9 @@ export const apiOperations: ApiOperation[] = [
     title: '创建项目',
     method: 'POST',
     path: '/projects',
+    operationKind: 'direct',
+    dangerLevel: 'low',
+    requiresEntityContext: false,
     bodyTemplate: {
       requirement_id: null,
       organization_id: null,

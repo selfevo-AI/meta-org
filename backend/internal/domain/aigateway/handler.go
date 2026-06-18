@@ -416,6 +416,8 @@ func statusFromError(err error) int {
 		return http.StatusBadGateway
 	case errors.Is(err, ErrValidation):
 		return http.StatusBadRequest
+	case errors.Is(err, ErrUnavailable):
+		return http.StatusServiceUnavailable
 	case dberrors.IsUniqueViolation(err):
 		return http.StatusConflict
 	case errors.Is(err, ErrNotFound), errors.Is(err, pgx.ErrNoRows):

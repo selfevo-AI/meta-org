@@ -35,6 +35,11 @@ interface WorkspaceProps {
   token: string
   currentUserId?: string | null
   mode: LifecycleMode
+  externalSelection?: {
+    targetType: string
+    targetID?: string
+    record?: Record<string, unknown>
+  } | null
   onOperationContextChange?: (context: Record<string, string>) => void
 }
 
@@ -53,6 +58,7 @@ interface Department {
 
 interface Requirement {
   id: string
+  master_key?: string
   title: string
   description: string
   source: string
@@ -69,6 +75,7 @@ interface Requirement {
 
 interface RequirementDocument {
   id: string
+  master_key?: string
   requirement_id: string
   file_name: string
   content_type: string
@@ -79,6 +86,7 @@ interface RequirementDocument {
 
 interface RequirementAnalysisWorkflow {
   id: string
+  master_key?: string
   requirement_id: string
   workflow_id: string
   workflow_template_id: string
@@ -97,6 +105,7 @@ interface WorkflowTemplate {
 
 interface Project {
   id: string
+  master_key?: string
   requirement_id?: string
   organization_id?: string
   department_id?: string
@@ -113,6 +122,7 @@ interface Project {
 
 interface ProjectMember {
   id: string
+  master_key?: string
   project_id: string
   actor_id: string
   actor_type: string
@@ -127,6 +137,7 @@ interface ProjectMember {
 
 interface ProjectWorkflow {
   id: string
+  master_key?: string
   project_id: string
   workflow_id: string
   workflow_template_id?: string
@@ -136,6 +147,7 @@ interface ProjectWorkflow {
 
 interface Deliverable {
   id: string
+  master_key?: string
   project_id: string
   name: string
   deliverable_type: string
@@ -150,6 +162,7 @@ interface Deliverable {
 
 interface CostEntry {
   id: string
+  master_key?: string
   project_id: string
   source_type: string
   actor_id?: string
@@ -172,6 +185,7 @@ interface CostSummary {
 
 interface ProjectEvaluation {
   id: string
+  master_key?: string
   project_id: string
   actor_id?: string
   actor_type?: string
@@ -254,6 +268,40 @@ const projectDefaults = {
   budget_amount: '5000',
   organization_id: '',
   department_id: '',
+}
+
+function requirementToForm(requirement: Requirement, current: typeof requirementDefaults = requirementDefaults) {
+  return {
+    ...current,
+    title: requirement.title,
+    description: requirement.description,
+    source: requirement.source,
+    priority: requirement.priority,
+    risk_level: requirement.risk_level,
+    required_level: requirement.required_level,
+    organization_id: requirement.organization_id ?? '',
+    department_id: requirement.department_id ?? '',
+  }
+}
+
+function recordKey(record: { id: string; master_key?: string }) {
+  return record.master_key || record.id
+}
+
+function projectToForm(project: Project, current: typeof projectDefaults = projectDefaults) {
+  return {
+    ...current,
+    requirement_id: project.requirement_id ?? '',
+    name: project.name,
+    description: project.description,
+    status: project.status,
+    priority: project.priority,
+    risk_level: project.risk_level,
+    required_level: project.required_level,
+    budget_amount: String(project.budget_amount ?? 0),
+    organization_id: project.organization_id ?? '',
+    department_id: project.department_id ?? '',
+  }
 }
 
 const memberDefaults = {
@@ -354,7 +402,19 @@ function actionForStatus(status: string): string {
   return actions[status] ?? status
 }
 
-export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperationContextChange }: WorkspaceProps) {
+function canRunRequirementAction(status: string, action: 'analyze' | 'approve' | 'convert' | 'sync_analysis'): boolean {
+  switch (action) {
+    case 'analyze':
+    case 'sync_analysis':
+      return status === 'draft' || status === 'analyzed' || status === 'converted'
+    case 'approve':
+      return status === 'analyzed'
+    case 'convert':
+      return true
+  }
+}
+
+export function ProjectLifecycleWorkspace({ token, currentUserId, mode, externalSelection, onOperationContextChange }: WorkspaceProps) {
   const { t } = useI18n()
   const [requirements, setRequirements] = useState<Requirement[]>([])
   const [requirementDocuments, setRequirementDocuments] = useState<RequirementDocument[]>([])
@@ -383,12 +443,12 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
   const [error, setError] = useState<string | null>(null)
 
   const selectedProject = useMemo(
-    () => projects.find((project) => project.id === selectedProjectId) ?? overview?.project ?? null,
+    () => projects.find((project) => recordKey(project) === selectedProjectId || project.id === selectedProjectId) ?? overview?.project ?? null,
     [overview, projects, selectedProjectId],
   )
 
   const selectedRequirement = useMemo(
-    () => requirements.find((requirement) => requirement.id === selectedRequirementId) ?? overview?.requirement ?? null,
+    () => requirements.find((requirement) => recordKey(requirement) === selectedRequirementId || requirement.id === selectedRequirementId) ?? overview?.requirement ?? null,
     [overview, requirements, selectedRequirementId],
   )
 
@@ -398,6 +458,18 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
       project_id: selectedProjectId,
     })
   }, [onOperationContextChange, selectedProjectId, selectedRequirementId])
+
+  useEffect(() => {
+    if (!externalSelection?.targetID) return
+    if (externalSelection.targetType === 'requirement') {
+      setSelectedRequirementId(externalSelection.targetID)
+    }
+    if (externalSelection.targetType === 'project') {
+      setSelectedProjectId(externalSelection.targetID)
+      const requirementID = typeof externalSelection.record?.requirement_id === 'string' ? externalSelection.record.requirement_id : ''
+      if (requirementID) setSelectedRequirementId(requirementID)
+    }
+  }, [externalSelection?.targetID, externalSelection?.targetType, externalSelection?.record])
 
   useEffect(() => {
     let cancelled = false
@@ -418,8 +490,8 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
         setProjects(safeProjects)
         setOrganizations(safeOrganizations)
         setWorkflowTemplates(safeWorkflowTemplates)
-        setSelectedRequirementId((current) => current || safeRequirements[0]?.id || '')
-        setSelectedProjectId((current) => current || safeProjects[0]?.id || '')
+        setSelectedRequirementId((current) => current || (safeRequirements[0] ? recordKey(safeRequirements[0]) : ''))
+        setSelectedProjectId((current) => current || (safeProjects[0] ? recordKey(safeProjects[0]) : ''))
         setRequirementForm((current) => ({
           ...current,
           organization_id: current.organization_id || safeOrganizations[0]?.id || '',
@@ -542,8 +614,8 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
     setProjects(safeProjects)
     setOrganizations(asArray(organizationData))
     setWorkflowTemplates(asArray(workflowTemplateData))
-    setSelectedRequirementId((current) => current || safeRequirements[0]?.id || '')
-    setSelectedProjectId((current) => current || safeProjects[0]?.id || '')
+    setSelectedRequirementId((current) => current || (safeRequirements[0] ? recordKey(safeRequirements[0]) : ''))
+    setSelectedProjectId((current) => current || (safeProjects[0] ? recordKey(safeProjects[0]) : ''))
     if (selectedRequirementId) {
       await loadRequirementDetail(selectedRequirementId)
     }
@@ -592,6 +664,22 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
     }
   }
 
+  function selectRequirement(requirementID: string) {
+    setSelectedRequirementId(requirementID)
+    const requirement = requirements.find((item) => recordKey(item) === requirementID || item.id === requirementID)
+    if (requirement) {
+      setRequirementForm((current) => requirementToForm(requirement, current))
+    }
+  }
+
+  function selectProject(projectID: string) {
+    setSelectedProjectId(projectID)
+    const project = projects.find((item) => recordKey(item) === projectID || item.id === projectID) ?? (overview?.project && (recordKey(overview.project) === projectID || overview.project.id === projectID) ? overview.project : null)
+    if (project) {
+      setProjectForm((current) => projectToForm(project, current))
+    }
+  }
+
   async function createRequirement(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     await run(async () => {
@@ -612,9 +700,33 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
           metadata: { source_ui: 'project_lifecycle_workspace' },
         },
       })
-      setSelectedRequirementId(req.id)
+      setSelectedRequirementId(recordKey(req))
       await loadLifecycle()
     }, '需求已创建')
+  }
+
+  async function updateRequirement(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!selectedRequirementId) return
+    await run(async () => {
+      const req = await apiRequest<Requirement>(`/requirements/${selectedRequirementId}`, {
+        method: 'PATCH',
+        token,
+        body: {
+          title: requirementForm.title,
+          description: requirementForm.description,
+          source: requirementForm.source,
+          priority: requirementForm.priority,
+          risk_level: requirementForm.risk_level,
+          required_level: requirementForm.required_level,
+          metadata: { source_ui: 'project_lifecycle_workspace', direct_edit: true },
+        },
+      })
+      setSelectedRequirementId(recordKey(req))
+      setRequirementForm((current) => requirementToForm(req, current))
+      await loadLifecycle()
+      await loadRequirementDetail(recordKey(req))
+    }, '需求已更新')
   }
 
   async function uploadRequirementDocument(event: FormEvent<HTMLFormElement>) {
@@ -698,7 +810,7 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
         token,
         body: { notes: requirementForm.analysis_notes },
       })
-      setSelectedRequirementId(req.id)
+      setSelectedRequirementId(recordKey(req))
       await loadLifecycle()
     }, '需求分析已完成')
   }
@@ -726,9 +838,9 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
           metadata: { source_ui: 'requirement_convert' },
         },
       })
-      setSelectedProjectId(proj.id)
+      setSelectedProjectId(recordKey(proj))
       await loadLifecycle()
-      await loadProjectDetail(proj.id)
+      await loadProjectDetail(recordKey(proj))
     }, '需求已转为项目')
   }
 
@@ -752,10 +864,35 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
           metadata: { source_ui: 'project_workspace' },
         },
       })
-      setSelectedProjectId(proj.id)
+      setSelectedProjectId(recordKey(proj))
       await loadLifecycle()
-      await loadProjectDetail(proj.id)
+      await loadProjectDetail(recordKey(proj))
     }, '项目已创建')
+  }
+
+  async function updateProject(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!selectedProjectId) return
+    await run(async () => {
+      const proj = await apiRequest<Project>(`/projects/${selectedProjectId}`, {
+        method: 'PATCH',
+        token,
+        body: {
+          name: projectForm.name,
+          description: projectForm.description,
+          status: projectForm.status,
+          priority: projectForm.priority,
+          risk_level: projectForm.risk_level,
+          required_level: projectForm.required_level,
+          budget_amount: Number(projectForm.budget_amount),
+          metadata: { source_ui: 'project_workspace', direct_edit: true },
+        },
+      })
+      setSelectedProjectId(recordKey(proj))
+      setProjectForm((current) => projectToForm(proj, current))
+      await loadLifecycle()
+      await loadProjectDetail(recordKey(proj))
+    }, '项目已更新')
   }
 
   async function updateProjectStatus(status: string) {
@@ -980,11 +1117,12 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
           selectedDocument={selectedDocument}
           analysisWorkflowForm={analysisWorkflowForm}
           loading={loading}
-          onSelectRequirement={setSelectedRequirementId}
+          onSelectRequirement={selectRequirement}
           onFormChange={setRequirementForm}
           onDocumentChange={setSelectedDocument}
           onAnalysisWorkflowFormChange={setAnalysisWorkflowForm}
           onCreate={createRequirement}
+          onUpdate={updateRequirement}
           onUploadDocument={uploadRequirementDocument}
           onDownloadDocument={downloadRequirementDocument}
           onStartAnalysisWorkflow={startRequirementAnalysisWorkflow}
@@ -1010,12 +1148,13 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
           workflowForm={workflowForm}
           matchForm={matchForm}
           loading={loading}
-          onSelectProject={setSelectedProjectId}
+          onSelectProject={selectProject}
           onProjectFormChange={setProjectForm}
           onMemberFormChange={setMemberForm}
           onWorkflowFormChange={setWorkflowForm}
           onMatchFormChange={setMatchForm}
           onCreateProject={createProject}
+          onUpdateProject={updateProject}
           onStatus={updateProjectStatus}
           onAddMember={addProjectMember}
           onBindWorkflow={bindWorkflow}
@@ -1030,7 +1169,7 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
           deliverables={asArray(overview?.deliverables)}
           form={deliverableForm}
           loading={loading}
-          onSelectProject={setSelectedProjectId}
+          onSelectProject={selectProject}
           onFormChange={setDeliverableForm}
           onCreate={createDeliverable}
           onAction={changeDeliverable}
@@ -1045,7 +1184,7 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
           entries={costEntries}
           form={costForm}
           loading={loading}
-          onSelectProject={setSelectedProjectId}
+          onSelectProject={selectProject}
           onFormChange={setCostForm}
           onCreate={createCostEntry}
           onRefreshCost={refreshCost}
@@ -1060,7 +1199,7 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, onOperat
           evaluations={asArray(overview?.evaluations)}
           form={evaluationForm}
           loading={loading}
-          onSelectProject={setSelectedProjectId}
+          onSelectProject={selectProject}
           onFormChange={setEvaluationForm}
           onCreate={createEvaluation}
           onClose={closeFeedback}
@@ -1089,6 +1228,7 @@ function RequirementView({
   onDocumentChange,
   onAnalysisWorkflowFormChange,
   onCreate,
+  onUpdate,
   onUploadDocument,
   onDownloadDocument,
   onStartAnalysisWorkflow,
@@ -1114,6 +1254,7 @@ function RequirementView({
   onDocumentChange: (file: File | null) => void
   onAnalysisWorkflowFormChange: (value: { workflow_template_id: string; purpose: string }) => void
   onCreate: (event: FormEvent<HTMLFormElement>) => void
+  onUpdate: (event: FormEvent<HTMLFormElement>) => void
   onUploadDocument: (event: FormEvent<HTMLFormElement>) => void
   onDownloadDocument: (documentID: string, fileName: string) => void
   onStartAnalysisWorkflow: (event: FormEvent<HTMLFormElement>) => void
@@ -1123,59 +1264,96 @@ function RequirementView({
   onConvert: (id?: string) => void
 }) {
   const { t } = useI18n()
+  const selectedCanAnalyze = selectedRequirement ? canRunRequirementAction(selectedRequirement.status, 'analyze') : false
+  const selectedCanApprove = selectedRequirement ? canRunRequirementAction(selectedRequirement.status, 'approve') : false
+  const selectedCanConvert = selectedRequirement ? canRunRequirementAction(selectedRequirement.status, 'convert') : false
   return (
-    <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-      <Panel icon={Plus} title="创建需求">
-        <form className="space-y-3" onSubmit={onCreate}>
-          <TextInput label="标题" value={form.title} onChange={(value) => onFormChange({ ...form, title: value })} />
-          <TextArea label="描述" value={form.description} onChange={(value) => onFormChange({ ...form, description: value })} />
-          <div className="grid gap-3 sm:grid-cols-3">
-            <SelectInput label="优先级" value={form.priority} options={['low', 'medium', 'high', 'critical']} onChange={(value) => onFormChange({ ...form, priority: value })} />
-            <SelectInput label="风险" value={form.risk_level} options={['low', 'medium', 'high', 'critical']} onChange={(value) => onFormChange({ ...form, risk_level: value })} />
-            <SelectInput label="权限级别" value={form.required_level} options={['L1', 'L2', 'L3', 'L4']} onChange={(value) => onFormChange({ ...form, required_level: value })} />
-          </div>
-          <div className="grid gap-3 sm:grid-cols-2">
-            <SelectInput
-              label="组织"
-              value={form.organization_id}
-              options={['', ...organizations.map((item) => item.id)]}
-              labels={{ '': '未选择', ...Object.fromEntries(organizations.map((item) => [item.id, item.name])) }}
-              onChange={(value) => onFormChange({ ...form, organization_id: value, department_id: '' })}
-            />
-            <SelectInput
-              label="部门"
-              value={form.department_id}
-              options={['', ...departments.map((item) => item.id)]}
-              labels={{ '': '未选择', ...Object.fromEntries(departments.map((item) => [item.id, item.name])) }}
-              onChange={(value) => onFormChange({ ...form, department_id: value })}
-            />
-          </div>
-          <SubmitButton loading={loading} label="创建需求" />
-        </form>
+    <div className="space-y-5">
+      <Panel icon={ClipboardList} title="需求主表">
+        <ConfigurableRecordTable
+          tableName="requirements"
+          rows={requirements}
+          selectedId={selectedRequirementId}
+          onSelect={onSelectRequirement}
+          columns={[
+            { key: 'title', label: '标题', render: (requirement) => <span className="font-semibold text-slate-900">{requirement.title}</span> },
+            { key: 'status', label: '状态', render: (requirement) => <StatusBadge label={requirement.status} tone="green" /> },
+            { key: 'priority', label: '优先级', render: (requirement) => requirement.priority },
+            { key: 'risk_level', label: '风险', render: (requirement) => requirement.risk_level },
+            { key: 'required_level', label: '权限级别', render: (requirement) => requirement.required_level },
+            { key: 'created_at', label: '创建时间', render: (requirement) => formatDate(requirement.created_at) },
+          ]}
+          actions={(requirement) => {
+            const canAnalyze = canRunRequirementAction(requirement.status, 'analyze')
+            const canApprove = canRunRequirementAction(requirement.status, 'approve')
+            const canConvert = canRunRequirementAction(requirement.status, 'convert')
+            return (
+              <div className="flex flex-wrap justify-end gap-2">
+                <ActionButton icon={Search} loading={loading} disabled={!canAnalyze} onClick={() => onAnalyze(recordKey(requirement))} label="分析需求" variant="secondary" />
+                <ActionButton icon={CheckCircle2} loading={loading} disabled={!canApprove} onClick={() => onApprove(recordKey(requirement))} label="审批需求" variant="secondary" />
+                <ActionButton icon={GitBranch} loading={loading} disabled={!canConvert} onClick={() => onConvert(recordKey(requirement))} label="转为项目" variant="secondary" />
+              </div>
+            )
+          }}
+        />
       </Panel>
 
-      <Panel icon={Bot} title="分析与转项目">
-        <div className="space-y-3">
-          <SelectInput
-            label="需求"
-            value={selectedRequirementId}
-            options={requirements.map((item) => item.id)}
-            labels={Object.fromEntries(requirements.map((item) => [item.id, item.title]))}
-            onChange={onSelectRequirement}
-          />
+      <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
+        <Panel icon={Plus} title={selectedRequirementId ? '需求详情编辑' : '创建需求'}>
+          <form className="space-y-3" onSubmit={selectedRequirementId ? onUpdate : onCreate}>
+            <TextInput label="标题" value={form.title} onChange={(value) => onFormChange({ ...form, title: value })} />
+            <TextArea label="描述" value={form.description} onChange={(value) => onFormChange({ ...form, description: value })} />
+            <div className="grid gap-3 sm:grid-cols-3">
+              <SelectInput label="优先级" value={form.priority} options={['low', 'medium', 'high', 'critical']} onChange={(value) => onFormChange({ ...form, priority: value })} />
+              <SelectInput label="风险" value={form.risk_level} options={['low', 'medium', 'high', 'critical']} onChange={(value) => onFormChange({ ...form, risk_level: value })} />
+              <SelectInput label="权限级别" value={form.required_level} options={['L1', 'L2', 'L3', 'L4']} onChange={(value) => onFormChange({ ...form, required_level: value })} />
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <SelectInput
+                label="组织"
+                value={form.organization_id}
+                options={['', ...organizations.map((item) => item.id)]}
+                labels={{ '': '未选择', ...Object.fromEntries(organizations.map((item) => [item.id, item.name])) }}
+                onChange={(value) => onFormChange({ ...form, organization_id: value, department_id: '' })}
+              />
+              <SelectInput
+                label="部门"
+                value={form.department_id}
+                options={['', ...departments.map((item) => item.id)]}
+                labels={{ '': '未选择', ...Object.fromEntries(departments.map((item) => [item.id, item.name])) }}
+                onChange={(value) => onFormChange({ ...form, department_id: value })}
+              />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <SubmitButton loading={loading} label={selectedRequirementId ? '保存需求' : '创建需求'} />
+            </div>
+          </form>
+        </Panel>
+
+        <Panel icon={Bot} title="需求操作">
+          <div className="space-y-3">
+            {selectedRequirement ? (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <ListRow title={selectedRequirement.title} detail={`${selectedRequirement.status} · ${selectedRequirement.priority} · ${selectedRequirement.required_level}`} badge={selectedRequirement.risk_level} />
+              </div>
+            ) : (
+              <EmptyText>请选择需求</EmptyText>
+            )}
           <TextArea label="分析备注" value={form.analysis_notes} onChange={(value) => onFormChange({ ...form, analysis_notes: value })} />
           <TextInput label="转项目预算" value={form.convert_budget} onChange={(value) => onFormChange({ ...form, convert_budget: value })} />
           <div className="flex flex-wrap gap-2">
-            <ActionButton icon={Search} loading={loading} disabled={!selectedRequirementId} onClick={() => onAnalyze()} label="分析需求" />
-            <ActionButton icon={CheckCircle2} loading={loading} disabled={!selectedRequirementId} onClick={() => onApprove()} label="审批需求" variant="secondary" />
-            <ActionButton icon={GitBranch} loading={loading} disabled={!selectedRequirementId} onClick={() => onConvert()} label="转为项目" variant="secondary" />
+            <ActionButton icon={Search} loading={loading} disabled={!selectedRequirementId || !selectedCanAnalyze} onClick={() => onAnalyze()} label="分析需求" />
+            <ActionButton icon={CheckCircle2} loading={loading} disabled={!selectedRequirementId || !selectedCanApprove} onClick={() => onApprove()} label="审批需求" variant="secondary" />
+            <ActionButton icon={GitBranch} loading={loading} disabled={!selectedRequirementId || !selectedCanConvert} onClick={() => onConvert()} label="转为项目" variant="secondary" />
           </div>
           {selectedRequirement && <JsonBlock value={selectedRequirement.analysis} />}
-        </div>
-      </Panel>
+          </div>
+        </Panel>
+      </div>
 
-      <Panel icon={Upload} title="需求文档">
-        <form className="space-y-3" onSubmit={onUploadDocument}>
+      <div className="grid gap-5 xl:grid-cols-2">
+        <Panel icon={Upload} title="需求文档明细">
+          <form className="space-y-3" onSubmit={onUploadDocument}>
           <label className="block">
             <span className="text-sm font-medium text-slate-700">{t('上传文档')}</span>
             <input
@@ -1198,14 +1376,14 @@ function RequirementView({
               { key: 'uploaded_by_type', label: '上传方', render: (document) => document.uploaded_by_type || 'human' },
             ]}
             actions={(document) => (
-              <ActionButton icon={Download} loading={false} onClick={() => onDownloadDocument(document.id, document.file_name)} label="下载" variant="secondary" />
+              <ActionButton icon={Download} loading={false} onClick={() => onDownloadDocument(recordKey(document), document.file_name)} label="下载" variant="secondary" />
             )}
           />
-        </div>
-      </Panel>
+          </div>
+        </Panel>
 
-      <Panel icon={Play} title="工作流需求分析">
-        <form className="space-y-3" onSubmit={onStartAnalysisWorkflow}>
+        <Panel icon={Play} title="需求分析流程明细">
+          <form className="space-y-3" onSubmit={onStartAnalysisWorkflow}>
           <SelectInput
             label="分析流程模板"
             value={analysisWorkflowForm.workflow_template_id}
@@ -1218,7 +1396,7 @@ function RequirementView({
             value={analysisWorkflowForm.purpose}
             onChange={(value) => onAnalysisWorkflowFormChange({ ...analysisWorkflowForm, purpose: value })}
           />
-          <SubmitButton loading={loading || !selectedRequirementId || !analysisWorkflowForm.workflow_template_id} label="启动分析流程" />
+          <SubmitButton loading={loading} disabled={!selectedRequirementId || !analysisWorkflowForm.workflow_template_id || !selectedCanAnalyze} label="启动分析流程" />
         </form>
         <div className="mt-4">
           <ConfigurableRecordTable
@@ -1231,27 +1409,12 @@ function RequirementView({
               { key: 'updated_at', label: '更新时间', render: (item) => formatDate(item.updated_at) },
             ]}
             actions={(item) => (
-              <ActionButton icon={RefreshCw} loading={loading} onClick={() => onSyncAnalysisWorkflow(item.workflow_id)} label="同步结果" variant="secondary" />
+              <ActionButton icon={RefreshCw} loading={loading} disabled={!selectedCanAnalyze} onClick={() => onSyncAnalysisWorkflow(item.workflow_id)} label="同步结果" variant="secondary" />
             )}
           />
-        </div>
-      </Panel>
-
-      <Panel icon={ClipboardList} title="需求列表">
-        <ConfigurableRecordTable
-          tableName="requirements"
-          rows={requirements}
-          selectedId={selectedRequirementId}
-          onSelect={onSelectRequirement}
-          columns={[
-            { key: 'title', label: '标题', render: (requirement) => <span className="font-semibold text-slate-900">{requirement.title}</span> },
-            { key: 'status', label: '状态', render: (requirement) => <StatusBadge label={requirement.status} tone="green" /> },
-            { key: 'priority', label: '优先级', render: (requirement) => requirement.priority },
-            { key: 'required_level', label: '权限级别', render: (requirement) => requirement.required_level },
-            { key: 'created_at', label: '创建时间', render: (requirement) => formatDate(requirement.created_at) },
-          ]}
-        />
-      </Panel>
+          </div>
+        </Panel>
+      </div>
     </div>
   )
 }
@@ -1276,6 +1439,7 @@ function ProjectView({
   onWorkflowFormChange,
   onMatchFormChange,
   onCreateProject,
+  onUpdateProject,
   onStatus,
   onAddMember,
   onBindWorkflow,
@@ -1300,6 +1464,7 @@ function ProjectView({
   onWorkflowFormChange: (value: typeof workflowDefaults) => void
   onMatchFormChange: (value: typeof matchDefaults) => void
   onCreateProject: (event: FormEvent<HTMLFormElement>) => void
+  onUpdateProject: (event: FormEvent<HTMLFormElement>) => void
   onStatus: (status: string) => void
   onAddMember: (event: FormEvent<HTMLFormElement>) => void
   onBindWorkflow: (event: FormEvent<HTMLFormElement>) => void
@@ -1309,9 +1474,32 @@ function ProjectView({
   const allowedActions = new Set(lifecycle?.allowed_actions ?? [])
   return (
     <div className="space-y-5">
+      <Panel icon={GitBranch} title="项目主表">
+        <ConfigurableRecordTable
+          tableName="projects"
+          rows={projects}
+          selectedId={selectedProjectId}
+          onSelect={onSelectProject}
+          columns={[
+            { key: 'name', label: '项目名', render: (project) => <span className="font-semibold text-slate-900">{project.name}</span> },
+            { key: 'status', label: '状态', render: (project) => <StatusBadge label={project.status} tone="green" /> },
+            { key: 'risk_level', label: '风险', render: (project) => project.risk_level },
+            { key: 'budget_amount', label: '预算', render: (project) => money(project.budget_amount) },
+            { key: 'created_at', label: '创建时间', render: (project) => formatDate(project.created_at) },
+          ]}
+          actions={(project) => (
+            <div className="flex flex-wrap justify-end gap-2">
+              {['active', 'delivering', 'completed', 'closed'].map((status) => (
+                <ActionButton key={status} icon={CheckCircle2} loading={loading} disabled={selectedProjectId !== recordKey(project) || !allowedActions.has(actionForStatus(status))} onClick={() => onStatus(status)} label={`lifecycle.status.${status}`} variant="secondary" />
+              ))}
+            </div>
+          )}
+        />
+      </Panel>
+
       <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-        <Panel icon={Plus} title="创建项目">
-          <form className="space-y-3" onSubmit={onCreateProject}>
+        <Panel icon={Plus} title={selectedProjectId ? '项目详情编辑' : '创建项目'}>
+          <form className="space-y-3" onSubmit={selectedProjectId ? onUpdateProject : onCreateProject}>
             <TextInput label="项目名" value={projectForm.name} onChange={(value) => onProjectFormChange({ ...projectForm, name: value })} />
             <TextArea label="描述" value={projectForm.description} onChange={(value) => onProjectFormChange({ ...projectForm, description: value })} />
             <SelectInput
@@ -1342,11 +1530,11 @@ function ProjectView({
                 onChange={(value) => onProjectFormChange({ ...projectForm, department_id: value })}
               />
             </div>
-            <SubmitButton loading={loading} label="创建项目" />
+            <SubmitButton loading={loading} label={selectedProjectId ? '保存项目' : '创建项目'} />
           </form>
         </Panel>
 
-        <Panel icon={Activity} title="项目总览">
+        <Panel icon={Activity} title="项目详情与操作">
           {selectedProject ? (
             <div className="space-y-4">
               <ListRow title={selectedProject.name} detail={`${selectedProject.priority} · ${selectedProject.required_level} · ${money(selectedProject.budget_amount)}`} badge={selectedProject.status} />
@@ -1370,31 +1558,6 @@ function ProjectView({
       </div>
 
       <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
-        <Panel icon={GitBranch} title="项目列表">
-          <SelectInput
-            label="当前项目"
-            value={selectedProjectId}
-            options={projects.map((item) => item.id)}
-            labels={Object.fromEntries(projects.map((item) => [item.id, item.name]))}
-            onChange={onSelectProject}
-          />
-          <div className="mt-4">
-            <ConfigurableRecordTable
-              tableName="projects"
-              rows={projects}
-              selectedId={selectedProjectId}
-              onSelect={onSelectProject}
-              columns={[
-                { key: 'name', label: '项目名', render: (project) => <span className="font-semibold text-slate-900">{project.name}</span> },
-                { key: 'status', label: '状态', render: (project) => <StatusBadge label={project.status} tone="green" /> },
-                { key: 'risk_level', label: '风险', render: (project) => project.risk_level },
-                { key: 'budget_amount', label: '预算', render: (project) => money(project.budget_amount) },
-                { key: 'created_at', label: '创建时间', render: (project) => formatDate(project.created_at) },
-              ]}
-            />
-          </div>
-        </Panel>
-
         <Panel icon={Users} title="成员与流程">
           <div className="grid gap-5 xl:grid-cols-2">
             <form className="space-y-3" onSubmit={onAddMember}>
@@ -1491,10 +1654,32 @@ function DeliveryView({
   onAction: (id: string, action: 'submit' | 'accept' | 'reject') => void
 }) {
   return (
-    <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
-      <Panel icon={Plus} title="创建交付物">
-        <SelectInput label="项目" value={selectedProjectId} options={projects.map((item) => item.id)} labels={Object.fromEntries(projects.map((item) => [item.id, item.name]))} onChange={onSelectProject} />
-        <form className="mt-4 space-y-3" onSubmit={onCreate}>
+    <div className="space-y-5">
+      <Panel icon={FileCheck2} title="交付主表">
+        <SelectInput label="项目" value={selectedProjectId} options={projects.map(recordKey)} labels={Object.fromEntries(projects.map((item) => [recordKey(item), item.name]))} onChange={onSelectProject} />
+        <div className="mt-4">
+          <ConfigurableRecordTable
+            tableName="deliverables"
+            rows={deliverables}
+            columns={[
+              { key: 'name', label: '名称', render: (deliverable) => <span className="font-semibold text-slate-900">{deliverable.name}</span> },
+              { key: 'deliverable_type', label: '类型', render: (deliverable) => deliverable.deliverable_type },
+              { key: 'version', label: '版本', render: (deliverable) => deliverable.version },
+              { key: 'status', label: '状态', render: (deliverable) => <StatusBadge label={deliverable.status} tone="green" /> },
+              { key: 'created_at', label: '创建时间', render: (deliverable) => formatDate(deliverable.created_at) },
+            ]}
+            actions={(deliverable) => (
+              <div className="flex flex-wrap justify-end gap-2">
+                <ActionButton icon={Send} loading={loading} disabled={deliverable.status !== 'draft' && deliverable.status !== 'rejected'} onClick={() => onAction(recordKey(deliverable), 'submit')} label="提交" variant="secondary" />
+                <ActionButton icon={CheckCircle2} loading={loading} disabled={deliverable.status !== 'submitted'} onClick={() => onAction(recordKey(deliverable), 'accept')} label="验收" variant="secondary" />
+                <ActionButton icon={ClipboardCheck} loading={loading} disabled={deliverable.status !== 'submitted'} onClick={() => onAction(recordKey(deliverable), 'reject')} label="退回" variant="secondary" />
+              </div>
+            )}
+          />
+        </div>
+      </Panel>
+      <Panel icon={Plus} title="交付详情">
+        <form className="space-y-3" onSubmit={onCreate}>
           <TextInput label="名称" value={form.name} onChange={(value) => onFormChange({ ...form, name: value })} />
           <div className="grid gap-3 sm:grid-cols-2">
             <TextInput label="类型" value={form.deliverable_type} onChange={(value) => onFormChange({ ...form, deliverable_type: value })} />
@@ -1504,26 +1689,6 @@ function DeliveryView({
           <SelectInput label="状态" value={form.status} options={['draft', 'submitted']} onChange={(value) => onFormChange({ ...form, status: value })} />
           <SubmitButton loading={loading || !selectedProjectId} label="创建交付物" />
         </form>
-      </Panel>
-      <Panel icon={FileCheck2} title="交付台账">
-        <ConfigurableRecordTable
-          tableName="deliverables"
-          rows={deliverables}
-          columns={[
-            { key: 'name', label: '名称', render: (deliverable) => <span className="font-semibold text-slate-900">{deliverable.name}</span> },
-            { key: 'deliverable_type', label: '类型', render: (deliverable) => deliverable.deliverable_type },
-            { key: 'version', label: '版本', render: (deliverable) => deliverable.version },
-            { key: 'status', label: '状态', render: (deliverable) => <StatusBadge label={deliverable.status} tone="green" /> },
-            { key: 'created_at', label: '创建时间', render: (deliverable) => formatDate(deliverable.created_at) },
-          ]}
-          actions={(deliverable) => (
-            <div className="flex flex-wrap justify-end gap-2">
-              <ActionButton icon={Send} loading={loading} disabled={deliverable.status !== 'draft' && deliverable.status !== 'rejected'} onClick={() => onAction(deliverable.id, 'submit')} label="提交" variant="secondary" />
-              <ActionButton icon={CheckCircle2} loading={loading} disabled={deliverable.status !== 'submitted'} onClick={() => onAction(deliverable.id, 'accept')} label="验收" variant="secondary" />
-              <ActionButton icon={ClipboardCheck} loading={loading} disabled={deliverable.status !== 'submitted'} onClick={() => onAction(deliverable.id, 'reject')} label="退回" variant="secondary" />
-            </div>
-          )}
-        />
       </Panel>
     </div>
   )
@@ -1554,10 +1719,25 @@ function CostView({
 }) {
   return (
     <div className="space-y-5">
+      <Panel icon={Activity} title="成本主表">
+        <SelectInput label="项目" value={selectedProjectId} options={projects.map(recordKey)} labels={Object.fromEntries(projects.map((item) => [recordKey(item), item.name]))} onChange={onSelectProject} />
+        <div className="mt-4">
+          <ConfigurableRecordTable
+            tableName="project_cost_entries"
+            rows={entries}
+            columns={[
+              { key: 'amount', label: '金额', render: (entry) => <span className="font-semibold text-slate-900">{money(entry.amount, entry.currency)}</span> },
+              { key: 'source_type', label: '来源类型', render: (entry) => entry.source_type },
+              { key: 'actor_type', label: 'Actor 类型', render: (entry) => entry.actor_type || 'manual' },
+              { key: 'description', label: '说明', render: (entry) => entry.description },
+              { key: 'occurred_at', label: '发生时间', render: (entry) => formatDate(entry.occurred_at) },
+            ]}
+          />
+        </div>
+      </Panel>
       <div className="grid gap-5 xl:grid-cols-[0.85fr_1.15fr]">
         <Panel icon={Coins} title="成本入账">
-          <SelectInput label="项目" value={selectedProjectId} options={projects.map((item) => item.id)} labels={Object.fromEntries(projects.map((item) => [item.id, item.name]))} onChange={onSelectProject} />
-          <form className="mt-4 space-y-3" onSubmit={onCreate}>
+          <form className="space-y-3" onSubmit={onCreate}>
             <div className="grid gap-3 sm:grid-cols-2">
               <TextInput label="来源类型" value={form.source_type} onChange={(value) => onFormChange({ ...form, source_type: value })} />
               <TextInput label="金额" value={form.amount} onChange={(value) => onFormChange({ ...form, amount: value })} />
@@ -1592,19 +1772,6 @@ function CostView({
           )}
         </Panel>
       </div>
-      <Panel icon={Activity} title="成本明细">
-        <ConfigurableRecordTable
-          tableName="project_cost_entries"
-          rows={entries}
-          columns={[
-            { key: 'amount', label: '金额', render: (entry) => <span className="font-semibold text-slate-900">{money(entry.amount, entry.currency)}</span> },
-            { key: 'source_type', label: '来源类型', render: (entry) => entry.source_type },
-            { key: 'actor_type', label: 'Actor 类型', render: (entry) => entry.actor_type || 'manual' },
-            { key: 'description', label: '说明', render: (entry) => entry.description },
-            { key: 'occurred_at', label: '发生时间', render: (entry) => formatDate(entry.occurred_at) },
-          ]}
-        />
-      </Panel>
     </div>
   )
 }
@@ -1633,10 +1800,26 @@ function FeedbackView({
   onClose: () => void
 }) {
   return (
-    <div className="grid gap-5 xl:grid-cols-[0.9fr_1.1fr]">
-      <Panel icon={Star} title="能力反馈">
-        <SelectInput label="项目" value={selectedProjectId} options={projects.map((item) => item.id)} labels={Object.fromEntries(projects.map((item) => [item.id, item.name]))} onChange={onSelectProject} />
-        <form className="mt-4 space-y-3" onSubmit={onCreate}>
+    <div className="space-y-5">
+      <Panel icon={Activity} title="反馈主表">
+        <SelectInput label="项目" value={selectedProjectId} options={projects.map(recordKey)} labels={Object.fromEntries(projects.map((item) => [recordKey(item), item.name]))} onChange={onSelectProject} />
+        <div className="mt-4">
+          <ConfigurableRecordTable
+            tableName="project_evaluations"
+            rows={evaluations}
+            columns={[
+              { key: 'actor_id', label: 'Actor ID', render: (evaluation) => evaluation.actor_id || evaluation.capability_id || 'project' },
+              { key: 'evaluator_type', label: '评估方', render: (evaluation) => evaluation.evaluator_type },
+              { key: 'quality_score', label: '质量', render: (evaluation) => percent(evaluation.quality_score) },
+              { key: 'delivery_score', label: '交付', render: (evaluation) => percent(evaluation.delivery_score) },
+              { key: 'overall_score', label: '综合', render: (evaluation) => <span className="font-semibold text-slate-900">{percent(evaluation.overall_score)}</span> },
+              { key: 'created_at', label: '创建时间', render: (evaluation) => formatDate(evaluation.created_at) },
+            ]}
+          />
+        </div>
+      </Panel>
+      <Panel icon={Star} title="反馈详情">
+        <form className="space-y-3" onSubmit={onCreate}>
           <SelectInput
             label="被评估成员"
             value={form.evaluated_actor_id}
@@ -1664,20 +1847,6 @@ function FeedbackView({
           </div>
         </form>
       </Panel>
-      <Panel icon={Activity} title="评估记录">
-        <ConfigurableRecordTable
-          tableName="project_evaluations"
-          rows={evaluations}
-          columns={[
-            { key: 'actor_id', label: 'Actor ID', render: (evaluation) => evaluation.actor_id || evaluation.capability_id || 'project' },
-            { key: 'evaluator_type', label: '评估方', render: (evaluation) => evaluation.evaluator_type },
-            { key: 'quality_score', label: '质量', render: (evaluation) => percent(evaluation.quality_score) },
-            { key: 'delivery_score', label: '交付', render: (evaluation) => percent(evaluation.delivery_score) },
-            { key: 'overall_score', label: '综合', render: (evaluation) => <span className="font-semibold text-slate-900">{percent(evaluation.overall_score)}</span> },
-            { key: 'created_at', label: '创建时间', render: (evaluation) => formatDate(evaluation.created_at) },
-          ]}
-        />
-      </Panel>
     </div>
   )
 }
@@ -1701,7 +1870,7 @@ type RecordColumn<T> = {
   render: (row: T) => ReactNode
 }
 
-function ConfigurableRecordTable<T extends { id: string }>({
+function ConfigurableRecordTable<T extends { id: string; master_key?: string }>({
   tableName,
   rows,
   columns,
@@ -1807,9 +1976,10 @@ function ConfigurableRecordTable<T extends { id: string }>({
           </thead>
           <tbody className="divide-y divide-slate-100 bg-white">
             {rows.map((row) => {
-              const active = selectedId === row.id
+              const rowKey = recordKey(row)
+              const active = selectedId === rowKey || selectedId === row.id
               return (
-                <tr key={row.id} className={`${active ? 'bg-orange-50' : 'bg-white'} ${onSelect ? 'cursor-pointer hover:bg-slate-50' : ''}`} onClick={() => onSelect?.(row.id)}>
+                <tr key={rowKey} className={`${active ? 'bg-orange-50' : 'bg-white'} ${onSelect ? 'cursor-pointer hover:bg-slate-50' : ''}`} onClick={() => onSelect?.(rowKey)}>
                   {visibleColumns.map((column) => (
                     <td key={column.key} className="max-w-[18rem] px-3 py-2 align-top text-slate-700">
                       {column.render(row)}
@@ -1913,10 +2083,10 @@ function SelectInput({
   )
 }
 
-function SubmitButton({ loading, label }: { loading: boolean; label: string }) {
+function SubmitButton({ loading, disabled, label }: { loading: boolean; disabled?: boolean; label: string }) {
   const { t } = useI18n()
   return (
-    <button type="submit" disabled={loading} className="inline-flex h-10 items-center gap-2 rounded-lg bg-slate-950 px-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+    <button type="submit" disabled={loading || disabled} className="inline-flex h-10 items-center gap-2 rounded-lg bg-slate-950 px-3 text-sm font-semibold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
       {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
       {t(label)}
     </button>

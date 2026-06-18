@@ -204,13 +204,13 @@ func (r *Repository) CreateAccessDecision(ctx context.Context, input AccessDecis
 		    behavior, reason, matched_rules, weight_snapshot, context
 		 )
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-		 RETURNING id, actor_id, actor_type, action, resource, resource_id, organization_id, department_id,
+		 RETURNING id, master_key, actor_id, actor_type, action, resource, resource_id, organization_id, department_id,
 		           workflow_id, task_id, capability_id, required_level, risk_level, decision, allowed,
 		           behavior, reason, matched_rules, weight_snapshot, context, created_at`,
 		input.ActorID, input.ActorType, input.Action, input.Resource, input.ResourceID, input.OrganizationID, input.DepartmentID,
 		input.WorkflowID, input.TaskID, input.CapabilityID, input.RequiredLevel, input.RiskLevel, decision, allowed,
 		behavior, reason, rulesJSON, input.WeightSnapshot, contextJSON,
-	).Scan(&access.ID, &access.ActorID, &access.ActorType, &access.Action, &access.Resource, &access.ResourceID, &access.OrganizationID, &access.DepartmentID,
+	).Scan(&access.ID, &access.MasterKey, &access.ActorID, &access.ActorType, &access.Action, &access.Resource, &access.ResourceID, &access.OrganizationID, &access.DepartmentID,
 		&access.WorkflowID, &access.TaskID, &access.CapabilityID, &access.RequiredLevel, &access.RiskLevel, &access.Decision, &access.Allowed,
 		&access.Behavior, &access.Reason, &rulesJSON, &access.WeightSnapshot, &contextJSON, &access.CreatedAt)
 	if err != nil {
@@ -228,7 +228,7 @@ func (r *Repository) ListAccessDecisions(ctx context.Context, limit int) ([]Acce
 		limit = 100
 	}
 	rows, err := r.db.Query(ctx,
-		`SELECT id, actor_id, actor_type, action, resource, resource_id, organization_id, department_id,
+		`SELECT id, master_key, actor_id, actor_type, action, resource, resource_id, organization_id, department_id,
 		        workflow_id, task_id, capability_id, required_level, risk_level, decision, allowed,
 		        behavior, reason, matched_rules, weight_snapshot, context, created_at
 		 FROM access_decisions ORDER BY created_at DESC LIMIT $1`, limit)
@@ -241,7 +241,7 @@ func (r *Repository) ListAccessDecisions(ctx context.Context, limit int) ([]Acce
 	for rows.Next() {
 		var decision AccessDecision
 		var rulesJSON, contextJSON []byte
-		if err := rows.Scan(&decision.ID, &decision.ActorID, &decision.ActorType, &decision.Action, &decision.Resource, &decision.ResourceID, &decision.OrganizationID, &decision.DepartmentID,
+		if err := rows.Scan(&decision.ID, &decision.MasterKey, &decision.ActorID, &decision.ActorType, &decision.Action, &decision.Resource, &decision.ResourceID, &decision.OrganizationID, &decision.DepartmentID,
 			&decision.WorkflowID, &decision.TaskID, &decision.CapabilityID, &decision.RequiredLevel, &decision.RiskLevel, &decision.Decision, &decision.Allowed,
 			&decision.Behavior, &decision.Reason, &rulesJSON, &decision.WeightSnapshot, &contextJSON, &decision.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan access decision: %w", err)

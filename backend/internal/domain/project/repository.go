@@ -22,6 +22,26 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 	return &Repository{db: db}
 }
 
+func (r *Repository) ResolveLegacyUUID(ctx context.Context, sourceTable string, key string) (uuid.UUID, error) {
+	if id, err := uuid.Parse(key); err == nil {
+		return id, nil
+	}
+
+	var resolved *string
+	err := r.db.QueryRow(ctx, `SELECT resolve_legacy_uuid($1, $2)::TEXT`, sourceTable, key).Scan(&resolved)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("resolve %s business key: %w", sourceTable, err)
+	}
+	if resolved == nil || *resolved == "" {
+		return uuid.Nil, fmt.Errorf("%w: %s %q", ErrNotFound, sourceTable, key)
+	}
+	id, err := uuid.Parse(*resolved)
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("resolve %s business key returned invalid uuid: %w", sourceTable, err)
+	}
+	return id, nil
+}
+
 func (r *Repository) CreateRequirement(ctx context.Context, input CreateRequirementInput) (*Requirement, error) {
 	analysisJSON := marshalMap(input.Analysis)
 	metadataJSON := marshalMap(input.Metadata)
@@ -33,7 +53,7 @@ func (r *Repository) CreateRequirement(ctx context.Context, input CreateRequirem
 		    budget_currency, analysis, metadata
 		 )
 		 VALUES ($1, $2, $3, 'draft', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-		 RETURNING id, title, description, source, status, priority, risk_level, required_level,
+		 RETURNING id, master_key, title, description, source, status, priority, risk_level, required_level,
 		           organization_id, department_id, created_by_id, created_by_type, budget_amount,
 		           budget_currency, analysis, metadata,
 		           created_at, updated_at`,
@@ -50,7 +70,7 @@ func (r *Repository) CreateRequirement(ctx context.Context, input CreateRequirem
 func (r *Repository) ListRequirements(ctx context.Context, limit int) ([]Requirement, error) {
 	limit = normalizeLimit(limit)
 	rows, err := r.db.Query(ctx,
-		`SELECT id, title, description, source, status, priority, risk_level, required_level,
+		`SELECT id, master_key, title, description, source, status, priority, risk_level, required_level,
 		        organization_id, department_id, created_by_id, created_by_type, budget_amount,
 		        budget_currency, analysis, metadata,
 		        created_at, updated_at
@@ -77,7 +97,7 @@ func (r *Repository) ListRequirements(ctx context.Context, limit int) ([]Require
 func (r *Repository) GetRequirement(ctx context.Context, id uuid.UUID) (*Requirement, error) {
 	req := &Requirement{}
 	err := scanRequirement(r.db.QueryRow(ctx,
-		`SELECT id, title, description, source, status, priority, risk_level, required_level,
+		`SELECT id, master_key, title, description, source, status, priority, risk_level, required_level,
 		        organization_id, department_id, created_by_id, created_by_type, budget_amount,
 		        budget_currency, analysis, metadata,
 		        created_at, updated_at
@@ -97,7 +117,7 @@ func (r *Repository) CreateRequirementDocument(ctx context.Context, requirementI
 		    uploaded_by_type, content, metadata
 		 )
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-		 RETURNING id, requirement_id, file_name, content_type, size_bytes,
+		 RETURNING id, master_key, requirement_id, file_name, content_type, size_bytes,
 		           uploaded_by_id, uploaded_by_type, metadata, created_at`,
 		requirementID, input.FileName, input.ContentType, input.SizeBytes, uploadedByID, uploadedByType, input.Content, metadataJSON,
 	), doc)
@@ -109,7 +129,7 @@ func (r *Repository) CreateRequirementDocument(ctx context.Context, requirementI
 
 func (r *Repository) ListRequirementDocuments(ctx context.Context, requirementID uuid.UUID) ([]RequirementDocument, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, requirement_id, file_name, content_type, size_bytes,
+		`SELECT id, master_key, requirement_id, file_name, content_type, size_bytes,
 		        uploaded_by_id, uploaded_by_type, metadata, created_at
 		 FROM requirement_documents WHERE requirement_id = $1 ORDER BY created_at DESC`, requirementID)
 	if err != nil {
@@ -135,10 +155,10 @@ func (r *Repository) GetRequirementDocument(ctx context.Context, id uuid.UUID) (
 	doc := &RequirementDocumentContent{}
 	var metadataJSON []byte
 	err := r.db.QueryRow(ctx,
-		`SELECT id, requirement_id, file_name, content_type, size_bytes,
+		`SELECT id, master_key, requirement_id, file_name, content_type, size_bytes,
 		        uploaded_by_id, uploaded_by_type, metadata, created_at, content
 		 FROM requirement_documents WHERE id = $1`, id,
-	).Scan(&doc.ID, &doc.RequirementID, &doc.FileName, &doc.ContentType, &doc.SizeBytes, &doc.UploadedByID,
+	).Scan(&doc.ID, &doc.MasterKey, &doc.RequirementID, &doc.FileName, &doc.ContentType, &doc.SizeBytes, &doc.UploadedByID,
 		&doc.UploadedByType, &metadataJSON, &doc.CreatedAt, &doc.Content)
 	if err != nil {
 		return nil, fmt.Errorf("get requirement document: %w", err)
@@ -156,7 +176,7 @@ func (r *Repository) CreateRequirementAnalysisWorkflow(ctx context.Context, requ
 		    requirement_id, workflow_id, workflow_template_id, status, analysis_result, metadata
 		 )
 		 VALUES ($1, $2, $3, 'active', $4, $5)
-		 RETURNING id, requirement_id, workflow_id, workflow_template_id, status,
+		 RETURNING id, master_key, requirement_id, workflow_id, workflow_template_id, status,
 		           analysis_result, metadata, created_at, updated_at`,
 		requirementID, workflowID, input.WorkflowTemplateID, resultJSON, metadataJSON,
 	), analysis)
@@ -168,7 +188,7 @@ func (r *Repository) CreateRequirementAnalysisWorkflow(ctx context.Context, requ
 
 func (r *Repository) ListRequirementAnalysisWorkflows(ctx context.Context, requirementID uuid.UUID) ([]RequirementAnalysisWorkflow, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, requirement_id, workflow_id, workflow_template_id, status,
+		`SELECT id, master_key, requirement_id, workflow_id, workflow_template_id, status,
 		        analysis_result, metadata, created_at, updated_at
 		 FROM requirement_analysis_workflows WHERE requirement_id = $1 ORDER BY created_at DESC`, requirementID)
 	if err != nil {
@@ -193,7 +213,7 @@ func (r *Repository) ListRequirementAnalysisWorkflows(ctx context.Context, requi
 func (r *Repository) GetRequirementAnalysisWorkflow(ctx context.Context, requirementID uuid.UUID, workflowID uuid.UUID) (*RequirementAnalysisWorkflow, error) {
 	analysis := &RequirementAnalysisWorkflow{}
 	err := scanRequirementAnalysisWorkflow(r.db.QueryRow(ctx,
-		`SELECT id, requirement_id, workflow_id, workflow_template_id, status,
+		`SELECT id, master_key, requirement_id, workflow_id, workflow_template_id, status,
 		        analysis_result, metadata, created_at, updated_at
 		 FROM requirement_analysis_workflows WHERE requirement_id = $1 AND workflow_id = $2`,
 		requirementID, workflowID,
@@ -213,7 +233,7 @@ func (r *Repository) UpdateRequirementAnalysisWorkflow(ctx context.Context, id u
 		    metadata = metadata || COALESCE($4::jsonb, '{}'::jsonb),
 		    updated_at = NOW()
 		 WHERE id = $1
-		 RETURNING id, requirement_id, workflow_id, workflow_template_id, status,
+		 RETURNING id, master_key, requirement_id, workflow_id, workflow_template_id, status,
 		           analysis_result, metadata, created_at, updated_at`,
 		id, status, marshalMapOrNil(result), marshalMapOrNil(metadata),
 	), analysis)
@@ -240,7 +260,7 @@ func (r *Repository) UpdateRequirement(ctx context.Context, id uuid.UUID, input 
 		    metadata = COALESCE($12::jsonb, metadata),
 		    updated_at = NOW()
 		 WHERE id = $1
-		 RETURNING id, title, description, source, status, priority, risk_level, required_level,
+		 RETURNING id, master_key, title, description, source, status, priority, risk_level, required_level,
 		           organization_id, department_id, created_by_id, created_by_type, budget_amount,
 		           budget_currency, analysis, metadata,
 		           created_at, updated_at`,
@@ -263,7 +283,7 @@ func (r *Repository) CreateProject(ctx context.Context, input CreateProjectInput
 		    priority, risk_level, required_level, budget_amount, budget_currency, metadata
 		 )
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-		 RETURNING id, requirement_id, organization_id, department_id, name, description, status,
+		 RETURNING id, master_key, requirement_id, organization_id, department_id, name, description, status,
 		           priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at`,
 		input.RequirementID, input.OrganizationID, input.DepartmentID, input.Name, input.Description, input.Status,
 		input.Priority, input.RiskLevel, input.RequiredLevel, input.BudgetAmount, input.BudgetCurrency, metadataJSON,
@@ -277,7 +297,7 @@ func (r *Repository) CreateProject(ctx context.Context, input CreateProjectInput
 func (r *Repository) ListProjects(ctx context.Context, limit int) ([]Project, error) {
 	limit = normalizeLimit(limit)
 	rows, err := r.db.Query(ctx,
-		`SELECT id, requirement_id, organization_id, department_id, name, description, status,
+		`SELECT id, master_key, requirement_id, organization_id, department_id, name, description, status,
 		        priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at
 		 FROM projects ORDER BY created_at DESC LIMIT $1`, limit)
 	if err != nil {
@@ -302,7 +322,7 @@ func (r *Repository) ListProjects(ctx context.Context, limit int) ([]Project, er
 func (r *Repository) GetProject(ctx context.Context, id uuid.UUID) (*Project, error) {
 	proj := &Project{}
 	err := scanProject(r.db.QueryRow(ctx,
-		`SELECT id, requirement_id, organization_id, department_id, name, description, status,
+		`SELECT id, master_key, requirement_id, organization_id, department_id, name, description, status,
 		        priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at
 		 FROM projects WHERE id = $1`, id), proj)
 	if err != nil {
@@ -314,7 +334,7 @@ func (r *Repository) GetProject(ctx context.Context, id uuid.UUID) (*Project, er
 func (r *Repository) GetProjectByRequirement(ctx context.Context, requirementID uuid.UUID) (*Project, error) {
 	proj := &Project{}
 	err := scanProject(r.db.QueryRow(ctx,
-		`SELECT id, requirement_id, organization_id, department_id, name, description, status,
+		`SELECT id, master_key, requirement_id, organization_id, department_id, name, description, status,
 		        priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at
 		 FROM projects
 		 WHERE requirement_id = $1 AND status <> 'cancelled'
@@ -341,7 +361,7 @@ func (r *Repository) UpdateProject(ctx context.Context, id uuid.UUID, input Upda
 		    metadata = COALESCE($10::jsonb, metadata),
 		    updated_at = NOW()
 		 WHERE id = $1
-		 RETURNING id, requirement_id, organization_id, department_id, name, description, status,
+		 RETURNING id, master_key, requirement_id, organization_id, department_id, name, description, status,
 		           priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at`,
 		id, input.Name, input.Description, input.Status, input.Priority, input.RiskLevel, input.RequiredLevel,
 		input.BudgetAmount, input.BudgetCurrency, marshalMapOrNil(input.Metadata),
@@ -362,7 +382,7 @@ func (r *Repository) AddProjectMember(ctx context.Context, input AddProjectMembe
 		    permission_level, capabilities, status, metadata
 		 )
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		 RETURNING id, project_id, actor_id, actor_type, position_id, position_assignment_id, role, title, allocation_percent, cost_rate,
+		 RETURNING id, master_key, project_id, actor_id, actor_type, position_id, position_assignment_id, role, title, allocation_percent, cost_rate,
 		           permission_level, capabilities, status, metadata, created_at, updated_at`,
 		input.ProjectID, input.MemberActorID, input.MemberActorType, input.PositionID, input.PositionAssignmentID, input.Role, input.Title,
 		input.AllocationPercent, input.CostRate, input.PermissionLevel, capabilitiesJSON, input.Status, metadataJSON,
@@ -375,7 +395,7 @@ func (r *Repository) AddProjectMember(ctx context.Context, input AddProjectMembe
 
 func (r *Repository) ListProjectMembers(ctx context.Context, projectID uuid.UUID) ([]ProjectMember, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, project_id, actor_id, actor_type, position_id, position_assignment_id, role, title, allocation_percent, cost_rate,
+		`SELECT id, master_key, project_id, actor_id, actor_type, position_id, position_assignment_id, role, title, allocation_percent, cost_rate,
 		        permission_level, capabilities, status, metadata, created_at, updated_at
 		 FROM project_members WHERE project_id = $1 ORDER BY created_at DESC`, projectID)
 	if err != nil {
@@ -403,7 +423,7 @@ func (r *Repository) BindProjectWorkflow(ctx context.Context, input BindProjectW
 	err := scanProjectWorkflow(r.db.QueryRow(ctx,
 		`INSERT INTO project_workflows (project_id, workflow_id, workflow_template_id, purpose, status, metadata)
 		 VALUES ($1, $2, $3, $4, $5, $6)
-		 RETURNING id, project_id, workflow_id, workflow_template_id, purpose, status, metadata, created_at`,
+		 RETURNING id, master_key, project_id, workflow_id, workflow_template_id, purpose, status, metadata, created_at`,
 		projectID, workflowID, input.WorkflowTemplateID, input.Purpose, input.Status, metadataJSON,
 	), pw)
 	if err != nil {
@@ -414,7 +434,7 @@ func (r *Repository) BindProjectWorkflow(ctx context.Context, input BindProjectW
 
 func (r *Repository) ListProjectWorkflows(ctx context.Context, projectID uuid.UUID) ([]ProjectWorkflow, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, project_id, workflow_id, workflow_template_id, purpose, status, metadata, created_at
+		`SELECT id, master_key, project_id, workflow_id, workflow_template_id, purpose, status, metadata, created_at
 		 FROM project_workflows WHERE project_id = $1 ORDER BY created_at DESC`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list project workflows: %w", err)
@@ -453,7 +473,7 @@ func (r *Repository) CreateDeliverable(ctx context.Context, projectID uuid.UUID,
 		    submitted_by_type, submitted_at, evidence, metadata
 		 )
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CASE WHEN $6 = 'submitted' THEN NOW() ELSE NULL END, $9, $10)
-		 RETURNING id, project_id, name, deliverable_type, uri, version, status, submitted_by_id,
+		 RETURNING id, master_key, project_id, name, deliverable_type, uri, version, status, submitted_by_id,
 		           submitted_by_type, accepted_by_id, accepted_by_type, evidence, metadata, submitted_at,
 		           accepted_at, created_at, updated_at`,
 		projectID, input.Name, input.DeliverableType, input.URI, input.Version, input.Status,
@@ -468,7 +488,7 @@ func (r *Repository) CreateDeliverable(ctx context.Context, projectID uuid.UUID,
 func (r *Repository) GetDeliverable(ctx context.Context, id uuid.UUID) (*Deliverable, error) {
 	deliverable := &Deliverable{}
 	err := scanDeliverable(r.db.QueryRow(ctx,
-		`SELECT id, project_id, name, deliverable_type, uri, version, status, submitted_by_id,
+		`SELECT id, master_key, project_id, name, deliverable_type, uri, version, status, submitted_by_id,
 		        submitted_by_type, accepted_by_id, accepted_by_type, evidence, metadata, submitted_at,
 		        accepted_at, created_at, updated_at
 		 FROM deliverables WHERE id = $1`, id), deliverable)
@@ -480,7 +500,7 @@ func (r *Repository) GetDeliverable(ctx context.Context, id uuid.UUID) (*Deliver
 
 func (r *Repository) ListDeliverables(ctx context.Context, projectID uuid.UUID) ([]Deliverable, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, project_id, name, deliverable_type, uri, version, status, submitted_by_id,
+		`SELECT id, master_key, project_id, name, deliverable_type, uri, version, status, submitted_by_id,
 		        submitted_by_type, accepted_by_id, accepted_by_type, evidence, metadata, submitted_at,
 		        accepted_at, created_at, updated_at
 		 FROM deliverables WHERE project_id = $1 ORDER BY created_at DESC`, projectID)
@@ -516,7 +536,7 @@ func (r *Repository) UpdateDeliverable(ctx context.Context, id uuid.UUID, input 
 		    metadata = COALESCE($8::jsonb, metadata),
 		    updated_at = NOW()
 		 WHERE id = $1
-		 RETURNING id, project_id, name, deliverable_type, uri, version, status, submitted_by_id,
+		 RETURNING id, master_key, project_id, name, deliverable_type, uri, version, status, submitted_by_id,
 		           submitted_by_type, accepted_by_id, accepted_by_type, evidence, metadata, submitted_at,
 		           accepted_at, created_at, updated_at`,
 		id, input.Name, input.DeliverableType, input.URI, input.Version, input.Status,
@@ -543,7 +563,7 @@ func (r *Repository) UpdateDeliverableStatus(ctx context.Context, id uuid.UUID, 
 		    metadata = metadata || COALESCE($6::jsonb, '{}'::jsonb),
 		    updated_at = NOW()
 		 WHERE id = $1
-		 RETURNING id, project_id, name, deliverable_type, uri, version, status, submitted_by_id,
+		 RETURNING id, master_key, project_id, name, deliverable_type, uri, version, status, submitted_by_id,
 		           submitted_by_type, accepted_by_id, accepted_by_type, evidence, metadata, submitted_at,
 		           accepted_at, created_at, updated_at`,
 		id, status, actorID, actorType, marshalMapOrNil(evidence), marshalMapOrNil(metadata),
@@ -567,7 +587,7 @@ func (r *Repository) CreateCostEntry(ctx context.Context, projectID uuid.UUID, i
 		    currency, occurred_at, description, metadata
 		 )
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		 RETURNING id, project_id, source_type, source_id, actor_id, actor_type, amount,
+		 RETURNING id, master_key, project_id, source_type, source_id, actor_id, actor_type, amount,
 		           currency, occurred_at, description, metadata, created_at`,
 		projectID, input.SourceType, input.SourceID, input.EntryActorID, input.EntryActorType,
 		input.Amount, input.Currency, occurredAt, input.Description, metadataJSON,
@@ -581,7 +601,7 @@ func (r *Repository) CreateCostEntry(ctx context.Context, projectID uuid.UUID, i
 func (r *Repository) GetCostEntryBySource(ctx context.Context, sourceType string, sourceID uuid.UUID) (*CostEntry, error) {
 	entry := &CostEntry{}
 	err := scanCostEntry(r.db.QueryRow(ctx,
-		`SELECT id, project_id, source_type, source_id, actor_id, actor_type, amount,
+		`SELECT id, master_key, project_id, source_type, source_id, actor_id, actor_type, amount,
 		        currency, occurred_at, description, metadata, created_at
 		 FROM project_cost_entries
 		 WHERE source_type = $1 AND source_id = $2
@@ -596,7 +616,7 @@ func (r *Repository) GetCostEntryBySource(ctx context.Context, sourceType string
 func (r *Repository) GetMemberAllocationCostEntry(ctx context.Context, projectID uuid.UUID, memberID uuid.UUID, refreshPeriod string) (*CostEntry, error) {
 	entry := &CostEntry{}
 	err := scanCostEntry(r.db.QueryRow(ctx,
-		`SELECT id, project_id, source_type, source_id, actor_id, actor_type, amount,
+		`SELECT id, master_key, project_id, source_type, source_id, actor_id, actor_type, amount,
 		        currency, occurred_at, description, metadata, created_at
 		 FROM project_cost_entries
 		 WHERE project_id = $1
@@ -613,7 +633,7 @@ func (r *Repository) GetMemberAllocationCostEntry(ctx context.Context, projectID
 
 func (r *Repository) ListCostEntries(ctx context.Context, projectID uuid.UUID) ([]CostEntry, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, project_id, source_type, source_id, actor_id, actor_type, amount,
+		`SELECT id, master_key, project_id, source_type, source_id, actor_id, actor_type, amount,
 		        currency, occurred_at, description, metadata, created_at
 		 FROM project_cost_entries WHERE project_id = $1 ORDER BY occurred_at DESC, created_at DESC`, projectID)
 	if err != nil {
@@ -688,7 +708,7 @@ func (r *Repository) CreateProjectEvaluation(ctx context.Context, projectID uuid
 		    conclusion, evidence
 		 )
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		 RETURNING id, project_id, actor_id, actor_type, capability_id, evaluator_id, evaluator_type,
+		 RETURNING id, master_key, project_id, actor_id, actor_type, capability_id, evaluator_id, evaluator_type,
 		           quality_score, delivery_score, cost_score, collaboration_score, overall_score,
 		           conclusion, evidence, created_at`,
 		projectID, input.EvaluatedActorID, input.EvaluatedActorType, input.CapabilityID, evaluatorID, evaluatorType,
@@ -703,7 +723,7 @@ func (r *Repository) CreateProjectEvaluation(ctx context.Context, projectID uuid
 
 func (r *Repository) ListProjectEvaluations(ctx context.Context, projectID uuid.UUID) ([]ProjectEvaluation, error) {
 	rows, err := r.db.Query(ctx,
-		`SELECT id, project_id, actor_id, actor_type, capability_id, evaluator_id, evaluator_type,
+		`SELECT id, master_key, project_id, actor_id, actor_type, capability_id, evaluator_id, evaluator_type,
 		        quality_score, delivery_score, cost_score, collaboration_score, overall_score,
 		        conclusion, evidence, created_at
 		 FROM project_evaluations WHERE project_id = $1 ORDER BY created_at DESC`, projectID)
@@ -728,7 +748,7 @@ func (r *Repository) ListProjectEvaluations(ctx context.Context, projectID uuid.
 
 func scanRequirement(row scanner, req *Requirement) error {
 	var analysisJSON, metadataJSON []byte
-	if err := row.Scan(&req.ID, &req.Title, &req.Description, &req.Source, &req.Status, &req.Priority,
+	if err := row.Scan(&req.ID, &req.MasterKey, &req.Title, &req.Description, &req.Source, &req.Status, &req.Priority,
 		&req.RiskLevel, &req.RequiredLevel, &req.OrganizationID, &req.DepartmentID, &req.CreatedByID,
 		&req.CreatedByType, &req.BudgetAmount, &req.BudgetCurrency, &analysisJSON, &metadataJSON,
 		&req.CreatedAt, &req.UpdatedAt); err != nil {
@@ -741,7 +761,7 @@ func scanRequirement(row scanner, req *Requirement) error {
 
 func scanRequirementDocument(row scanner, doc *RequirementDocument) error {
 	var metadataJSON []byte
-	if err := row.Scan(&doc.ID, &doc.RequirementID, &doc.FileName, &doc.ContentType, &doc.SizeBytes,
+	if err := row.Scan(&doc.ID, &doc.MasterKey, &doc.RequirementID, &doc.FileName, &doc.ContentType, &doc.SizeBytes,
 		&doc.UploadedByID, &doc.UploadedByType, &metadataJSON, &doc.CreatedAt); err != nil {
 		return err
 	}
@@ -751,7 +771,7 @@ func scanRequirementDocument(row scanner, doc *RequirementDocument) error {
 
 func scanRequirementAnalysisWorkflow(row scanner, analysis *RequirementAnalysisWorkflow) error {
 	var resultJSON, metadataJSON []byte
-	if err := row.Scan(&analysis.ID, &analysis.RequirementID, &analysis.WorkflowID, &analysis.WorkflowTemplateID,
+	if err := row.Scan(&analysis.ID, &analysis.MasterKey, &analysis.RequirementID, &analysis.WorkflowID, &analysis.WorkflowTemplateID,
 		&analysis.Status, &resultJSON, &metadataJSON, &analysis.CreatedAt, &analysis.UpdatedAt); err != nil {
 		return err
 	}
@@ -762,7 +782,7 @@ func scanRequirementAnalysisWorkflow(row scanner, analysis *RequirementAnalysisW
 
 func scanProject(row scanner, proj *Project) error {
 	var metadataJSON []byte
-	if err := row.Scan(&proj.ID, &proj.RequirementID, &proj.OrganizationID, &proj.DepartmentID, &proj.Name,
+	if err := row.Scan(&proj.ID, &proj.MasterKey, &proj.RequirementID, &proj.OrganizationID, &proj.DepartmentID, &proj.Name,
 		&proj.Description, &proj.Status, &proj.Priority, &proj.RiskLevel, &proj.RequiredLevel,
 		&proj.BudgetAmount, &proj.BudgetCurrency, &metadataJSON, &proj.CreatedAt, &proj.UpdatedAt); err != nil {
 		return err
@@ -773,7 +793,7 @@ func scanProject(row scanner, proj *Project) error {
 
 func scanProjectMember(row scanner, member *ProjectMember) error {
 	var capabilitiesJSON, metadataJSON []byte
-	if err := row.Scan(&member.ID, &member.ProjectID, &member.ActorID, &member.ActorType, &member.PositionID, &member.PositionAssignmentID, &member.Role,
+	if err := row.Scan(&member.ID, &member.MasterKey, &member.ProjectID, &member.ActorID, &member.ActorType, &member.PositionID, &member.PositionAssignmentID, &member.Role,
 		&member.Title, &member.AllocationPercent, &member.CostRate, &member.PermissionLevel,
 		&capabilitiesJSON, &member.Status, &metadataJSON, &member.CreatedAt, &member.UpdatedAt); err != nil {
 		return err
@@ -785,7 +805,7 @@ func scanProjectMember(row scanner, member *ProjectMember) error {
 
 func scanProjectWorkflow(row scanner, wf *ProjectWorkflow) error {
 	var metadataJSON []byte
-	if err := row.Scan(&wf.ID, &wf.ProjectID, &wf.WorkflowID, &wf.WorkflowTemplateID, &wf.Purpose,
+	if err := row.Scan(&wf.ID, &wf.MasterKey, &wf.ProjectID, &wf.WorkflowID, &wf.WorkflowTemplateID, &wf.Purpose,
 		&wf.Status, &metadataJSON, &wf.CreatedAt); err != nil {
 		return err
 	}
@@ -795,7 +815,7 @@ func scanProjectWorkflow(row scanner, wf *ProjectWorkflow) error {
 
 func scanDeliverable(row scanner, deliverable *Deliverable) error {
 	var evidenceJSON, metadataJSON []byte
-	if err := row.Scan(&deliverable.ID, &deliverable.ProjectID, &deliverable.Name, &deliverable.DeliverableType,
+	if err := row.Scan(&deliverable.ID, &deliverable.MasterKey, &deliverable.ProjectID, &deliverable.Name, &deliverable.DeliverableType,
 		&deliverable.URI, &deliverable.Version, &deliverable.Status, &deliverable.SubmittedByID,
 		&deliverable.SubmittedByType, &deliverable.AcceptedByID, &deliverable.AcceptedByType,
 		&evidenceJSON, &metadataJSON, &deliverable.SubmittedAt, &deliverable.AcceptedAt,
@@ -809,7 +829,7 @@ func scanDeliverable(row scanner, deliverable *Deliverable) error {
 
 func scanCostEntry(row scanner, entry *CostEntry) error {
 	var metadataJSON []byte
-	if err := row.Scan(&entry.ID, &entry.ProjectID, &entry.SourceType, &entry.SourceID, &entry.ActorID,
+	if err := row.Scan(&entry.ID, &entry.MasterKey, &entry.ProjectID, &entry.SourceType, &entry.SourceID, &entry.ActorID,
 		&entry.ActorType, &entry.Amount, &entry.Currency, &entry.OccurredAt, &entry.Description,
 		&metadataJSON, &entry.CreatedAt); err != nil {
 		return err
@@ -820,7 +840,7 @@ func scanCostEntry(row scanner, entry *CostEntry) error {
 
 func scanProjectEvaluation(row scanner, eval *ProjectEvaluation) error {
 	var evidenceJSON []byte
-	if err := row.Scan(&eval.ID, &eval.ProjectID, &eval.ActorID, &eval.ActorType, &eval.CapabilityID,
+	if err := row.Scan(&eval.ID, &eval.MasterKey, &eval.ProjectID, &eval.ActorID, &eval.ActorType, &eval.CapabilityID,
 		&eval.EvaluatorID, &eval.EvaluatorType, &eval.QualityScore, &eval.DeliveryScore,
 		&eval.CostScore, &eval.CollaborationScore, &eval.OverallScore, &eval.Conclusion,
 		&evidenceJSON, &eval.CreatedAt); err != nil {

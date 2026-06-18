@@ -38,6 +38,7 @@ import type { DragEvent, FormEvent } from 'react'
 import {
   activateAssistantSkill,
   approveToolApproval,
+  apiRequest,
   confirmAssistantProposal,
   createAssistantSkill,
   getMetaOrgInbox,
@@ -136,6 +137,72 @@ type MenuGroup = {
   domains: string[]
 }
 
+type BusinessTargetType =
+  | 'requirement'
+  | 'project'
+  | 'organization'
+  | 'department'
+  | 'position'
+  | 'meta_resource'
+  | 'finance_settlement'
+  | 'finance_receivable'
+  | 'finance_payable'
+  | 'cost_rate_card'
+  | 'cost_budget'
+  | 'cost_ledger_entry'
+  | 'developer_record'
+  | 'api_operation'
+
+type BusinessRecord = Record<string, unknown>
+
+type BusinessTreeNode = {
+  id: string
+  domain: string
+  targetType: BusinessTargetType
+  targetID?: string
+  label: string
+  description?: string
+  status?: string
+  children?: BusinessTreeNode[]
+  record?: BusinessRecord
+}
+
+type BusinessSelection = BusinessTreeNode
+
+type OrganizationTreeRecord = {
+  id: string
+  name: string
+  description?: string
+  status?: string
+  created_at?: string
+  updated_at?: string
+}
+
+type DepartmentTreeRecord = {
+  id: string
+  organization_id: string
+  parent_id?: string
+  name: string
+  code?: string
+  description?: string
+  status?: string
+  children?: DepartmentTreeRecord[] | null
+  positions?: PositionTreeRecord[] | null
+}
+
+type PositionTreeRecord = {
+  id: string
+  organization_id: string
+  department_id: string
+  name: string
+  code?: string
+  description?: string
+  status?: string
+  permission_level?: string
+  required_capabilities?: string[]
+  assignments?: BusinessRecord[] | null
+}
+
 const lifecycleDomains = ['Requirement', 'Project', 'Delivery', 'Cost', 'Feedback']
 const virtualDomains = ['Costing', 'MetaResource']
 const dedicatedDomains = new Set([
@@ -223,6 +290,244 @@ function formatDate(value: string): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(new Date(value))
+}
+
+function asRecord(value: unknown): BusinessRecord {
+  return value && typeof value === 'object' ? (value as BusinessRecord) : {}
+}
+
+function asRecords(value: unknown): BusinessRecord[] {
+  return Array.isArray(value) ? value.map(asRecord) : []
+}
+
+function textValue(record: BusinessRecord, keys: string[], fallback = ''): string {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  }
+  return fallback
+}
+
+function numberValue(record: BusinessRecord, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  return null
+}
+
+function arrayCount(record: BusinessRecord, key: string): number {
+  const value = record[key]
+  return Array.isArray(value) ? value.length : 0
+}
+
+function recordBusinessKey(record: BusinessRecord): string {
+  return textValue(record, ['master_key', 'id'])
+}
+
+function buildOperationNodes(domain: string): BusinessTreeNode[] {
+  return apiOperations
+    .filter((operation) => operation.domain === domain)
+    .map((operation) => ({
+      id: `operation:${operation.id}`,
+      domain,
+      targetType: 'api_operation' as const,
+      targetID: operation.id,
+      label: operation.title,
+      description: `${operation.method} ${operation.path}`,
+      status: getOperationProfile(operation).requiresEntityContext ? 'operation.contextual' : 'operation.ready',
+      record: { ...operation },
+    }))
+}
+
+function buildRecordNodes(
+  domain: string,
+  records: BusinessRecord[],
+  targetType: BusinessTargetType,
+  options: {
+    labelKeys: string[]
+    descriptionKeys?: string[]
+    statusKeys?: string[]
+    idPrefix?: string
+  },
+): BusinessTreeNode[] {
+  return records.map((record) => {
+    const targetID = recordBusinessKey(record)
+    return {
+      id: `${options.idPrefix ?? targetType}:${targetID}`,
+      domain,
+      targetType,
+      targetID,
+      label: textValue(record, options.labelKeys, targetID),
+      description: textValue(record, options.descriptionKeys ?? ['description', 'code', 'source_type', 'source_id'], targetID),
+      status: textValue(record, options.statusKeys ?? ['status']),
+      record,
+    }
+  })
+}
+
+function buildDepartmentNodes(domain: string, departments: DepartmentTreeRecord[]): BusinessTreeNode[] {
+  return departments.map((department) => {
+    const record = asRecord(department)
+    const positionNodes = (department.positions ?? []).map((position) => ({
+      id: `position:${position.id}`,
+      domain,
+      targetType: 'position' as const,
+      targetID: position.id,
+      label: position.name,
+      description: position.code || position.permission_level || position.id,
+      status: position.status,
+      record: asRecord(position),
+    }))
+    return {
+      id: `department:${department.id}`,
+      domain,
+      targetType: 'department' as const,
+      targetID: department.id,
+      label: department.name,
+      description: department.code || department.description || department.id,
+      status: department.status,
+      record,
+      children: [...buildDepartmentNodes(domain, department.children ?? []), ...positionNodes],
+    }
+  })
+}
+
+function buildOrganizationNode(organization: OrganizationTreeRecord, departments: DepartmentTreeRecord[]): BusinessTreeNode {
+  return {
+    id: `organization:${organization.id}`,
+    domain: 'Organization',
+    targetType: 'organization',
+    targetID: organization.id,
+    label: organization.name,
+    description: organization.description || organization.id,
+    status: organization.status,
+    record: asRecord(organization),
+    children: buildDepartmentNodes('Organization', departments),
+  }
+}
+
+async function loadBusinessTreeNodes(token: string, domain: string): Promise<BusinessTreeNode[]> {
+  if (domain === 'Requirement') {
+    const data = await apiRequest<unknown>('/requirements?limit=100', { token })
+    return buildRecordNodes(domain, asRecords(data), 'requirement', {
+      labelKeys: ['title', 'name'],
+      descriptionKeys: ['description', 'source', 'id'],
+      statusKeys: ['status', 'priority'],
+    })
+  }
+
+  if (['Project', 'Delivery', 'Cost', 'Feedback'].includes(domain)) {
+    const data = await apiRequest<unknown>('/projects?limit=100', { token })
+    return buildRecordNodes(domain, asRecords(data), 'project', {
+      labelKeys: ['name', 'title'],
+      descriptionKeys: ['description', 'requirement_id', 'id'],
+      statusKeys: ['status', 'risk_level'],
+    })
+  }
+
+  if (domain === 'Organization') {
+    const organizations = (await apiRequest<OrganizationTreeRecord[]>('/organizations?limit=100', { token })) ?? []
+    const departmentTrees = await Promise.all(
+      organizations.map((organization) =>
+        apiRequest<DepartmentTreeRecord[]>(`/organizations/${organization.id}/departments/tree`, { token }).catch(() => []),
+      ),
+    )
+    return organizations.map((organization, index) => buildOrganizationNode(organization, departmentTrees[index] ?? []))
+  }
+
+  if (domain === 'MetaResource') {
+    const data = await apiRequest<unknown>('/meta-resources?limit=100', { token })
+    return buildRecordNodes(domain, asRecords(data), 'meta_resource', {
+      labelKeys: ['name'],
+      descriptionKeys: ['resource_type', 'source_type', 'id'],
+    })
+  }
+
+  if (domain === 'Finance' || domain === 'FinanceAccounting') {
+    const data = await apiRequest<unknown>('/finance/settlement-orders', { token })
+    return buildRecordNodes(domain, asRecords(data), 'finance_settlement', {
+      labelKeys: ['title', 'settlement_number'],
+      descriptionKeys: ['customer_name', 'description', 'id'],
+    })
+  }
+
+  if (domain === 'FinanceReceivables') {
+    const data = await apiRequest<unknown>('/finance/receivables', { token })
+    return buildRecordNodes(domain, asRecords(data), 'finance_receivable', {
+      labelKeys: ['invoice_number', 'external_receivable_id', 'customer_name'],
+      descriptionKeys: ['customer_name', 'account_name', 'source_type'],
+    })
+  }
+
+  if (domain === 'FinancePayables') {
+    const data = await apiRequest<unknown>('/finance/payables', { token })
+    return buildRecordNodes(domain, asRecords(data), 'finance_payable', {
+      labelKeys: ['invoice_number', 'external_payable_id', 'vendor_name'],
+      descriptionKeys: ['vendor_name', 'employee_name', 'account_name'],
+    })
+  }
+
+  if (domain === 'Costing' || domain === 'FinanceCostAccounting') {
+    const [rateCards, budgets, ledgerEntries] = await Promise.all([
+      apiRequest<unknown>('/costing/rate-cards', { token }).catch(() => []),
+      apiRequest<unknown>('/costing/budgets', { token }).catch(() => []),
+      apiRequest<unknown>('/costing/ledger-entries', { token }).catch(() => []),
+    ])
+    return [
+      {
+        id: `${domain}:rate-cards`,
+        domain,
+        targetType: 'cost_rate_card',
+        label: 'businessTree.costRateCards',
+        children: buildRecordNodes(domain, asRecords(rateCards), 'cost_rate_card', {
+          labelKeys: ['subject_id', 'subject_type', 'id'],
+          descriptionKeys: ['rate_type', 'scope_type'],
+        }),
+      },
+      {
+        id: `${domain}:budgets`,
+        domain,
+        targetType: 'cost_budget',
+        label: 'businessTree.costBudgets',
+        children: buildRecordNodes(domain, asRecords(budgets), 'cost_budget', {
+          labelKeys: ['scope_id', 'scope_type', 'id'],
+          descriptionKeys: ['currency', 'period_start'],
+        }),
+      },
+      {
+        id: `${domain}:ledger`,
+        domain,
+        targetType: 'cost_ledger_entry',
+        label: 'businessTree.costLedgerEntries',
+        children: buildRecordNodes(domain, asRecords(ledgerEntries), 'cost_ledger_entry', {
+          labelKeys: ['cost_category', 'source_type', 'id'],
+          descriptionKeys: ['source_id', 'ledger_type'],
+        }),
+      },
+    ]
+  }
+
+  if (domain === 'DeveloperTools') {
+    const [providers, models] = await Promise.all([
+      apiRequest<unknown>('/model-providers', { token }).catch(() => []),
+      apiRequest<unknown>('/models', { token }).catch(() => []),
+    ])
+    const providerNodes = buildRecordNodes(domain, asRecords(providers), 'developer_record', {
+      labelKeys: ['name', 'provider'],
+      descriptionKeys: ['provider_type', 'base_url', 'id'],
+      idPrefix: 'model-provider',
+    })
+    const modelNodes = buildRecordNodes(domain, asRecords(models), 'developer_record', {
+      labelKeys: ['model', 'name', 'model_name'],
+      descriptionKeys: ['provider', 'model_type', 'id'],
+      idPrefix: 'model',
+    })
+    return providerNodes.length + modelNodes.length > 0 ? [...providerNodes, ...modelNodes] : buildOperationNodes(domain)
+  }
+
+  return buildOperationNodes(domain)
 }
 
 function normalizeMenuGroups(input?: MenuGroup[]): MenuGroup[] {
@@ -358,7 +663,7 @@ function agentIntentForOperation(operation: ApiOperation, context: Record<string
     `业务域: ${operation.domain}`,
     `目标接口语义: ${operation.method} ${operation.path}`,
     `风险级别: ${profile.dangerLevel}`,
-    '执行要求: 这是人类在当前工作台主动调用 Agent 的操作。请先读取当前工作记录和历史数据，必要时调用工具执行；不要要求人类手动调用 API。涉及写入、财务、治理、模型配置或高风险动作时进入审批。',
+    '执行要求: 这是人类在当前工作台主动调用 Agent 的操作。请先读取当前工作记录和历史数据，必要时调用工具执行；不要要求人类手动调用 API。普通写入操作直接执行并记录结果；仅破坏性删除、密钥/模型供应商配置、资金实付或明确高风险动作需要进入审批。',
     contextLines ? `当前已选业务上下文:\n${contextLines}` : '当前没有选中记录，请先根据数据库工作记录识别可操作对象，无法确定时向人类提出审核问题。',
   ].join('\n')
 }
@@ -391,6 +696,11 @@ export default function Home() {
   const [assistantIntent, setAssistantIntent] = useState('')
   const [assistantIntentKey, setAssistantIntentKey] = useState('')
   const [operationContext, setOperationContext] = useState<Record<string, string>>({})
+  const [businessNodesByDomain, setBusinessNodesByDomain] = useState<Record<string, BusinessTreeNode[]>>({})
+  const [businessSelection, setBusinessSelection] = useState<BusinessSelection | null>(null)
+  const [businessTreeLoading, setBusinessTreeLoading] = useState(false)
+  const [businessTreeError, setBusinessTreeError] = useState<string | null>(null)
+  const [mobileBusinessOpen, setMobileBusinessOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -456,6 +766,36 @@ export default function Home() {
       cancelled = true
     }
   }, [t, token])
+
+  const activeDomain = workspaceView === 'overview' ? 'MetaOrg' : workspaceView.replace('domain:', '')
+
+  useEffect(() => {
+    if (!token || workspaceView === 'overview') return
+    if (businessNodesByDomain[activeDomain]) return
+    let cancelled = false
+
+    setBusinessTreeLoading(true)
+    setBusinessTreeError(null)
+    loadBusinessTreeNodes(token, activeDomain)
+      .then((nodes) => {
+        if (!cancelled) {
+          setBusinessNodesByDomain((current) => ({ ...current, [activeDomain]: nodes }))
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) {
+          setBusinessTreeError(err instanceof Error ? err.message : t('businessTree.loadFailed'))
+          setBusinessNodesByDomain((current) => ({ ...current, [activeDomain]: buildOperationNodes(activeDomain) }))
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setBusinessTreeLoading(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeDomain, businessNodesByDomain, t, token, workspaceView])
 
   const healthRatio = useMemo(() => {
     if (!overview) return 0
@@ -529,6 +869,8 @@ export default function Home() {
     setUserType(null)
     setOverview(null)
     setInbox([])
+    setBusinessNodesByDomain({})
+    setBusinessSelection(null)
     setError(null)
     setWorkspaceView('overview')
   }
@@ -568,13 +910,30 @@ export default function Home() {
 
   function handleViewChange(view: WorkspaceView) {
     setWorkspaceView(view)
+    setBusinessSelection(null)
     setMobileMenuOpen(false)
+    setMobileBusinessOpen(false)
   }
 
   function delegateOperationToAgent(operation: ApiOperation) {
     setAssistantIntent(agentIntentForOperation(operation, operationContext))
     setAssistantIntentKey(`${operation.id}-${Date.now()}`)
     setAssistantOpen(true)
+  }
+
+  function handleBusinessSelect(node: BusinessTreeNode) {
+    const view = node.domain === 'MetaOrg' ? 'overview' : (`domain:${node.domain}` as WorkspaceView)
+    setWorkspaceView(view)
+    setBusinessSelection(node)
+    setOperationContext((current) => ({
+      ...current,
+      domain: node.domain,
+      target_type: node.targetType,
+      target_id: node.targetID ?? '',
+      [`${node.targetType}_id`]: node.targetID ?? '',
+      operation_id: node.targetType === 'api_operation' ? node.targetID ?? '' : current.operation_id ?? '',
+    }))
+    setMobileBusinessOpen(false)
   }
 
   async function handleToolApproval(id: string, decision: 'approve' | 'reject') {
@@ -597,7 +956,6 @@ export default function Home() {
     }
   }
 
-  const activeDomain = workspaceView === 'overview' ? 'MetaOrg' : workspaceView.replace('domain:', '')
   const activeGroup = menuGroups.find((group) => group.domains.includes(activeDomain))
   const activeOperationCount =
     workspaceView === 'overview'
@@ -605,6 +963,8 @@ export default function Home() {
       : apiOperations.filter((operation) => operation.domain === activeDomain).length
   const activeOperations = apiOperations.filter((operation) => operation.domain === (workspaceView === 'overview' ? 'MetaOrg' : activeDomain))
   const assistantModule = assistantModuleForDomain(workspaceView === 'overview' ? 'MetaOrg' : activeDomain)
+  const activeBusinessNodes = workspaceView === 'overview' ? buildOperationNodes('MetaOrg') : businessNodesByDomain[activeDomain] ?? []
+  const activeBusinessSelection = businessSelection?.domain === activeDomain ? businessSelection : null
 
   return (
     <main className={`app-dark ${themeMode === 'light' ? 'theme-light' : ''}`}>
@@ -702,7 +1062,7 @@ export default function Home() {
           <RoleDirectory roles={roles} />
         </div>
       ) : (
-        <div className="grid min-h-screen lg:grid-cols-[248px_1fr]">
+        <div className="grid min-h-screen lg:grid-cols-[248px_300px_minmax(0,1fr)_340px]">
           <div
             className={`fixed inset-y-0 left-0 z-40 w-[248px] transform transition lg:static lg:translate-x-0 ${
               mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'
@@ -728,6 +1088,29 @@ export default function Home() {
             />
           )}
 
+          <div
+            className={`fixed inset-y-0 left-0 z-30 w-[300px] transform transition lg:static lg:translate-x-0 ${
+              mobileBusinessOpen ? 'translate-x-0' : '-translate-x-full'
+            }`}
+          >
+            <BusinessTreePanel
+              domain={activeDomain}
+              nodes={activeBusinessNodes}
+              selectedID={activeBusinessSelection?.id}
+              loading={businessTreeLoading}
+              error={businessTreeError}
+              onSelect={handleBusinessSelect}
+            />
+          </div>
+          {mobileBusinessOpen && (
+            <button
+              type="button"
+              aria-label={t('businessTree.close')}
+              className="fixed inset-0 z-20 bg-black/60 lg:hidden"
+              onClick={() => setMobileBusinessOpen(false)}
+            />
+          )}
+
           <section className="min-w-0">
             <Topbar
               activeTitle={workspaceView === 'overview' ? t('nav.overview') : t(domainLabels[activeDomain] ?? activeDomain)}
@@ -742,12 +1125,20 @@ export default function Home() {
               onRefresh={() => loadOverview()}
               onSignOut={handleSignOut}
               onOpenMenu={() => setMobileMenuOpen(true)}
+              onOpenBusiness={() => setMobileBusinessOpen(true)}
             />
             <div className="mx-auto max-w-7xl space-y-5 px-4 py-6 sm:px-6 lg:px-8">
               <WorkspaceHeader
-                title={workspaceView === 'overview' ? '总览' : domainLabels[activeDomain] ?? activeDomain}
-                domain={workspaceView === 'overview' ? 'Overview' : activeDomain}
+                title={activeBusinessSelection?.label ?? (workspaceView === 'overview' ? '总览' : domainLabels[activeDomain] ?? activeDomain)}
+                domain={
+                  activeBusinessSelection
+                    ? t(`businessTree.type.${activeBusinessSelection.targetType}`)
+                    : workspaceView === 'overview'
+                      ? 'Overview'
+                      : activeDomain
+                }
                 groupLabel={workspaceView === 'overview' ? '工作台' : activeGroup?.label ?? '功能台'}
+                selection={activeBusinessSelection}
                 operationCount={activeOperationCount}
                 operations={activeOperations}
                 dedicated={workspaceView === 'overview' || dedicatedDomains.has(activeDomain)}
@@ -778,7 +1169,7 @@ export default function Home() {
                   </div>
                 )
               ) : workspaceView === 'domain:Organization' ? (
-                <OrganizationWorkspace token={token} currentUserId={userId} />
+                <OrganizationWorkspace token={token} currentUserId={userId} externalSelection={activeBusinessSelection} />
               ) : workspaceView === 'domain:MetaResource' ? (
                 <MetaResourceWorkspace token={token} />
               ) : workspaceView === 'domain:Governance' ? (
@@ -799,6 +1190,7 @@ export default function Home() {
                   token={token}
                   currentUserId={userId}
                   mode={workspaceView.replace('domain:', '') as 'Requirement' | 'Project' | 'Delivery' | 'Cost' | 'Feedback'}
+                  externalSelection={activeBusinessSelection}
                   onOperationContextChange={handleOperationContextChange}
                 />
               ) : workspaceView === 'domain:DeveloperTools' ? (
@@ -814,8 +1206,14 @@ export default function Home() {
               ) : (
                 <AgentOnlyWorkspace domain={workspaceView.replace('domain:', '')} onAssistantOpen={() => setAssistantOpen(true)} />
               )}
+              <div className="xl:hidden">
+                <BusinessStatusPanel token={token} selection={activeBusinessSelection} operations={activeOperations} />
+              </div>
             </div>
           </section>
+          <aside className="hidden min-w-0 border-l border-slate-800 bg-[#121317] xl:block">
+            <BusinessStatusPanel token={token} selection={activeBusinessSelection} operations={activeOperations} />
+          </aside>
           {assistantOpen && (
             <div className="fixed inset-0 z-50">
               <button
@@ -870,6 +1268,7 @@ function Topbar({
   onRefresh,
   onSignOut,
   onOpenMenu,
+  onOpenBusiness,
 }: {
   activeTitle: string
   activeDomain: string
@@ -883,6 +1282,7 @@ function Topbar({
   onRefresh: () => void
   onSignOut: () => void
   onOpenMenu: () => void
+  onOpenBusiness: () => void
 }) {
   const { t } = useI18n()
   const activeWork = overview?.health.active_projects ?? 0
@@ -898,6 +1298,14 @@ function Topbar({
             className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-300 lg:hidden"
           >
             <Menu className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={onOpenBusiness}
+            className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-slate-700 text-slate-300 lg:hidden"
+            aria-label={t('businessTree.open')}
+          >
+            <GitBranch className="h-4 w-4" />
           </button>
           <div className="min-w-0 text-xs font-semibold">
             <span className="text-[#F6A66A]">{t('shell.breadcrumbRoot')}</span>
@@ -1131,10 +1539,120 @@ function SidebarButton({
   )
 }
 
+function BusinessTreePanel({
+  domain,
+  nodes,
+  selectedID,
+  loading,
+  error,
+  onSelect,
+}: {
+  domain: string
+  nodes: BusinessTreeNode[]
+  selectedID?: string
+  loading: boolean
+  error: string | null
+  onSelect: (node: BusinessTreeNode) => void
+}) {
+  const { t } = useI18n()
+  const Icon = domainIcons[domain] ?? GitBranch
+
+  return (
+    <aside className="flex h-full min-h-screen flex-col border-r border-slate-800 bg-[#17181d] px-3 py-4">
+      <div className="flex items-center justify-between gap-2 px-2 pb-4">
+        <div className="min-w-0">
+          <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#F6A66A]">{t('businessTree.title')}</p>
+          <h2 className="mt-1 flex min-w-0 items-center gap-2 text-base font-semibold text-white">
+            <Icon className="h-4 w-4 shrink-0 text-slate-400" />
+            <span className="truncate">{t(domainLabels[domain] ?? domain)}</span>
+          </h2>
+        </div>
+        {loading && <RefreshCw className="h-4 w-4 animate-spin text-slate-500" />}
+      </div>
+      {error && <div className="mx-2 mb-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div>}
+      <div className="flex-1 overflow-y-auto pr-1">
+        {nodes.length > 0 ? (
+          <div className="space-y-1">
+            {nodes.map((node) => (
+              <BusinessTreeNodeButton key={node.id} node={node} selectedID={selectedID} depth={0} onSelect={onSelect} />
+            ))}
+          </div>
+        ) : (
+          <div className="mx-2 rounded-lg border border-slate-800 bg-slate-950/30 px-3 py-4 text-sm text-slate-400">
+            {loading ? t('businessTree.loading') : t('businessTree.empty')}
+          </div>
+        )}
+      </div>
+    </aside>
+  )
+}
+
+function BusinessTreeNodeButton({
+  node,
+  selectedID,
+  depth,
+  onSelect,
+}: {
+  node: BusinessTreeNode
+  selectedID?: string
+  depth: number
+  onSelect: (node: BusinessTreeNode) => void
+}) {
+  const { t } = useI18n()
+  const [expanded, setExpanded] = useState(depth < 1)
+  const children = node.children ?? []
+  const active = selectedID === node.id
+
+  return (
+    <div>
+      <div className="flex items-start gap-1" style={{ paddingLeft: `${Math.min(depth * 14, 42)}px` }}>
+        {children.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            className="mt-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-slate-500 hover:bg-slate-800 hover:text-slate-200"
+          >
+            {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+          </button>
+        ) : (
+          <span className="h-6 w-6 shrink-0" />
+        )}
+        <button
+          type="button"
+          onClick={() => onSelect(node)}
+          className={`min-w-0 flex-1 rounded-lg border px-2.5 py-2 text-left transition ${
+            active
+              ? 'border-[#DF6A24]/50 bg-[#DF6A24]/10 text-white'
+              : 'border-transparent text-slate-300 hover:border-slate-700 hover:bg-slate-950/35'
+          }`}
+        >
+          <div className="flex min-w-0 items-center justify-between gap-2">
+            <span className="truncate text-sm font-semibold">{t(node.label)}</span>
+            {node.status && (
+              <span className="shrink-0 rounded-md border border-slate-700 px-1.5 py-0.5 text-[10px] font-semibold text-slate-400">
+                {t(node.status)}
+              </span>
+            )}
+          </div>
+          {node.description && <p className="mt-1 truncate text-xs text-slate-500">{t(node.description)}</p>}
+        </button>
+      </div>
+      {expanded && children.length > 0 && (
+        <div className="mt-1 space-y-1">
+          {children.map((child) => (
+            <BusinessTreeNodeButton key={child.id} node={child} selectedID={selectedID} depth={depth + 1} onSelect={onSelect} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function WorkspaceHeader({
   title,
   domain,
   groupLabel,
+  selection,
   operationCount,
   operations,
   dedicated,
@@ -1144,6 +1662,7 @@ function WorkspaceHeader({
   title: string
   domain: string
   groupLabel: string
+  selection?: BusinessSelection | null
   operationCount: number
   operations: ApiOperation[]
   dedicated: boolean
@@ -1164,6 +1683,7 @@ function WorkspaceHeader({
         <div className="min-w-0">
           <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t(groupLabel)}</p>
           <h2 className="mt-1 truncate text-xl font-semibold text-white">{t(title)}</h2>
+          {selection?.description && <p className="mt-1 truncate text-sm text-slate-400">{t(selection.description)}</p>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="studio-badge inline-flex h-8 items-center rounded-md px-2.5 text-xs font-semibold">
@@ -1255,6 +1775,158 @@ function OperationButton({ operation, onClick }: { operation: ApiOperation; onCl
       {profile.requiresEntityContext && <span className="text-[10px] opacity-70">*</span>}
     </button>
   )
+}
+
+function BusinessStatusPanel({
+  token,
+  selection,
+  operations,
+}: {
+  token: string
+  selection?: BusinessSelection | null
+  operations: ApiOperation[]
+}) {
+  const { t } = useI18n()
+  const [projectOverview, setProjectOverview] = useState<BusinessRecord | null>(null)
+  const operation =
+    selection?.targetType === 'api_operation' ? apiOperations.find((item) => item.id === selection.targetID) ?? null : null
+  const fields = selection ? getBusinessStatusFields(selection, operation, projectOverview) : []
+  const relatedOperations = selection
+    ? operations.filter((item) => item.domain === selection.domain).slice(0, 5)
+    : operations.slice(0, 5)
+
+  useEffect(() => {
+    if (selection?.targetType !== 'project' || !selection.targetID) {
+      setProjectOverview(null)
+      return
+    }
+    let cancelled = false
+    apiRequest<BusinessRecord>(`/projects/${selection.targetID}/overview`, { token })
+      .then((data) => {
+        if (!cancelled) setProjectOverview(data)
+      })
+      .catch(() => {
+        if (!cancelled) setProjectOverview(null)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selection?.targetID, selection?.targetType, token])
+
+  return (
+    <section className="sticky top-[60px] max-h-[calc(100vh-60px)] overflow-y-auto p-4">
+      <div className="rounded-lg border border-slate-800 bg-slate-950/35 p-4">
+        <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#F6A66A]">{t('businessStatus.title')}</p>
+        {selection ? (
+          <div className="mt-4 space-y-4">
+            <div>
+              <h2 className="truncate text-lg font-semibold text-white">{t(selection.label)}</h2>
+              <p className="mt-1 text-sm text-slate-400">{t(`businessTree.type.${selection.targetType}`)}</p>
+            </div>
+            <div className="grid gap-2">
+              {fields.map((field) => (
+                <div key={field.label} className="rounded-lg border border-slate-800 bg-[#17181d] px-3 py-2">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.12em] text-slate-500">{t(field.label)}</p>
+                  <p className="mt-1 break-words text-sm font-semibold text-slate-100">{field.value ? t(field.value) : t('common.none')}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : (
+          <div className="mt-4 rounded-lg border border-slate-800 bg-[#17181d] px-3 py-4 text-sm text-slate-400">
+            {t('businessStatus.noSelection')}
+          </div>
+        )}
+      </div>
+
+      <div className="mt-4 rounded-lg border border-slate-800 bg-slate-950/35 p-4">
+        <p className="text-xs font-bold uppercase tracking-[0.16em] text-slate-500">{t('businessStatus.actions')}</p>
+        <div className="mt-3 space-y-2">
+          {relatedOperations.map((item) => {
+            const profile = getOperationProfile(item)
+            return (
+              <div key={item.id} className="rounded-lg border border-slate-800 bg-[#17181d] px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="truncate text-sm font-semibold text-slate-100">{t(item.title)}</p>
+                  <span className="rounded-md border border-slate-700 px-1.5 py-0.5 text-[10px] font-bold text-slate-400">{item.method}</span>
+                </div>
+                <p className="mt-1 truncate text-xs text-slate-500">{item.path}</p>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  {profile.requiresEntityContext ? t('businessStatus.needsContext') : t('businessStatus.ready')}
+                </p>
+              </div>
+            )
+          })}
+          {relatedOperations.length === 0 && <p className="text-sm text-slate-500">{t('businessStatus.noActions')}</p>}
+        </div>
+      </div>
+    </section>
+  )
+}
+
+function getBusinessStatusFields(
+  selection: BusinessSelection,
+  operation: ApiOperation | null,
+  projectOverview: BusinessRecord | null,
+): Array<{ label: string; value: string }> {
+  const record = selection.record ?? {}
+  if (operation) {
+    return [
+      { label: 'businessStatus.method', value: operation.method },
+      { label: 'businessStatus.path', value: operation.path },
+      { label: 'businessStatus.context', value: getOperationProfile(operation).requiresEntityContext ? 'businessStatus.needsContext' : 'businessStatus.ready' },
+      { label: 'businessStatus.operationKind', value: `operation.kind.${getOperationProfile(operation).kind}` },
+    ]
+  }
+
+  if (selection.targetType === 'requirement') {
+    return [
+      { label: 'businessStatus.status', value: textValue(record, ['status']) },
+      { label: 'businessStatus.priority', value: textValue(record, ['priority']) },
+      { label: 'businessStatus.risk', value: textValue(record, ['risk_level']) },
+      { label: 'businessStatus.documents', value: String(arrayCount(record, 'documents')) },
+      { label: 'businessStatus.workflows', value: String(arrayCount(record, 'analysis_workflows')) },
+      { label: 'businessStatus.updated', value: textValue(record, ['updated_at', 'created_at']) },
+    ]
+  }
+
+  if (selection.targetType === 'project') {
+    const budget = numberValue(record, ['budget_amount'])
+    const costSummary = asRecord(projectOverview?.cost_summary)
+    const actualCost = numberValue(costSummary, ['total_amount', 'base_total_amount', 'actual_amount'])
+    return [
+      { label: 'businessStatus.lifecycle', value: textValue(record, ['status']) },
+      { label: 'businessStatus.priority', value: textValue(record, ['priority']) },
+      { label: 'businessStatus.risk', value: textValue(record, ['risk_level']) },
+      { label: 'businessStatus.budget', value: budget === null ? '' : formatMoney(budget, textValue(record, ['currency'], 'CNY')) },
+      { label: 'businessStatus.members', value: String(arrayCount(projectOverview ?? record, 'members')) },
+      { label: 'businessStatus.workflows', value: String(arrayCount(projectOverview ?? record, 'workflows')) },
+      { label: 'businessStatus.deliverables', value: String(arrayCount(projectOverview ?? record, 'deliverables')) },
+      { label: 'businessStatus.evaluations', value: String(arrayCount(projectOverview ?? record, 'evaluations')) },
+      { label: 'businessStatus.actualCost', value: actualCost === null ? '' : formatMoney(actualCost, textValue(costSummary, ['currency', 'base_currency'], 'CNY')) },
+      { label: 'businessStatus.updated', value: textValue(record, ['updated_at', 'created_at']) },
+    ]
+  }
+
+  if (['organization', 'department', 'position'].includes(selection.targetType)) {
+    return [
+      { label: 'businessStatus.status', value: textValue(record, ['status']) },
+      { label: 'businessStatus.code', value: textValue(record, ['code', 'id']) },
+      { label: 'businessStatus.members', value: String(arrayCount(record, 'members')) },
+      { label: 'businessStatus.positions', value: String(arrayCount(record, 'positions')) },
+      { label: 'businessStatus.resourceFit', value: String(arrayCount(record, 'assignments')) },
+      { label: 'businessStatus.updated', value: textValue(record, ['updated_at', 'created_at']) },
+    ]
+  }
+
+  const amount = numberValue(record, ['total_amount', 'amount', 'base_amount'])
+  return [
+    { label: 'businessStatus.status', value: textValue(record, ['status']) },
+    { label: 'businessStatus.type', value: textValue(record, ['resource_type', 'receivable_type', 'payable_type', 'ledger_type', 'subject_type', 'scope_type']) },
+    { label: 'businessStatus.owner', value: textValue(record, ['customer_name', 'vendor_name', 'owner_actor_id', 'organization_id', 'project_id']) },
+    { label: 'businessStatus.amount', value: amount === null ? '' : formatMoney(amount, textValue(record, ['currency', 'base_currency'], 'CNY')) },
+    { label: 'businessStatus.updated', value: textValue(record, ['updated_at', 'created_at', 'invoice_date']) },
+  ]
 }
 
 function AgentOnlyWorkspace({ domain, onAssistantOpen }: { domain: string; onAssistantOpen: () => void }) {
