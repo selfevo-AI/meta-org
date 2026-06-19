@@ -20,7 +20,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
-	"github.com/selfevo-AI/meta-org/backend/internal/domain/saas"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/singleorg"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/toolruntime"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/verification"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/workflow"
@@ -43,7 +43,7 @@ type Dependencies struct {
 	ProjectHandler       *project.Handler
 	FinanceHandler       *finance.Handler
 	ToolRuntimeHandler   *toolruntime.Handler
-	SaaSHandler          *saas.Handler
+	SingleOrgHandler     *singleorg.Handler
 	TenantResolver       middleware.TenantResolver
 	ObservabilityHandler *observability.Handler
 	VerificationHandler  *verification.Handler
@@ -63,21 +63,15 @@ func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
 		if deps.FinanceHandler != nil {
 			deps.FinanceHandler.RegisterPublicRoutes(r)
 		}
-		if deps.SaaSHandler != nil {
-			deps.SaaSHandler.RegisterPublicRoutes(r)
-		}
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.AuthMiddleware(deps.JWTSecret))
-			if deps.SaaSHandler != nil {
-				deps.SaaSHandler.RegisterAuthenticatedRoutes(r)
+			if deps.SingleOrgHandler != nil {
+				deps.SingleOrgHandler.RegisterAuthenticatedRoutes(r)
 			}
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.TenantMiddleware(deps.TenantResolver))
 				if deps.IdentityHandler != nil {
 					deps.IdentityHandler.RegisterProtectedRoutes(r)
-				}
-				if deps.SaaSHandler != nil {
-					deps.SaaSHandler.RegisterTenantRoutes(r)
 				}
 				if deps.OrganizationHandler != nil {
 					deps.OrganizationHandler.RegisterRoutes(r)

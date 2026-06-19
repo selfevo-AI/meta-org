@@ -103,9 +103,6 @@ func (s *Service) CreateOrganization(ctx context.Context, input CreateOrganizati
 	if input.Name == "" {
 		return nil, fmt.Errorf("%w: name is required", ErrValidation)
 	}
-	if tenant, ok := middleware.TenantFromContext(ctx); ok && tenant.Mode == "saas" && !tenant.IsPlatformAdmin {
-		return nil, fmt.Errorf("%w: only platform admins can create organizations outside onboarding", ErrForbidden)
-	}
 	return s.repo.CreateOrganization(ctx, input)
 }
 

@@ -24,7 +24,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
-	"github.com/selfevo-AI/meta-org/backend/internal/domain/saas"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/singleorg"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/toolruntime"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/verification"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/workflow"
@@ -56,15 +56,12 @@ func main() {
 		log.Fatalf("model secret key invalid: %v", err)
 	}
 
-	saasRepo := saas.NewRepository(db)
-	saasSvc := saas.NewService(saasRepo, cfg.MetaOrgMode)
-	if err := saasSvc.BootstrapPlatformAdmin(context.Background(), cfg.PlatformAdminEmail, cfg.PlatformAdminPasswordHash); err != nil {
-		log.Fatalf("platform admin bootstrap failed: %v", err)
-	}
-	saasHandler := saas.NewHandler(saasSvc)
+	singleOrgRepo := singleorg.NewRepository(db)
+	singleOrgSvc := singleorg.NewService(singleOrgRepo)
+	singleOrgHandler := singleorg.NewHandler(singleOrgSvc)
 
 	identRepo := identity.NewRepository(db)
-	identSvc := identity.NewService(identRepo, cfg.JWTSecret, identity.WithSessionProfileProvider(saasSvc))
+	identSvc := identity.NewService(identRepo, cfg.JWTSecret, identity.WithSessionProfileProvider(singleOrgSvc))
 	identHandler := identity.NewHandler(identSvc)
 
 	govRepo := governance.NewRepository(db)
@@ -185,8 +182,8 @@ func main() {
 		ProjectHandler:       projectHandler,
 		FinanceHandler:       financeHandler,
 		ToolRuntimeHandler:   toolHandler,
-		SaaSHandler:          saasHandler,
-		TenantResolver:       saasSvc,
+		SingleOrgHandler:     singleOrgHandler,
+		TenantResolver:       singleOrgSvc,
 		ObservabilityHandler: obsHandler,
 		VerificationHandler:  verHandler,
 		GovernanceHandler:    govHandler,

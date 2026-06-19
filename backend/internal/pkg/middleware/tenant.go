@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/google/uuid"
 )
@@ -67,86 +66,9 @@ func TenantMiddleware(resolver TenantResolver) func(http.Handler) http.Handler {
 				}
 				return
 			}
-			if moduleKey := moduleForPath(r.URL.Path); tenant.Mode == "saas" && moduleKey != "" && !tenant.EnabledModules[moduleKey] {
-				writeTenantError(w, http.StatusForbidden, "module_disabled")
-				return
-			}
 			ctx := context.WithValue(r.Context(), TenantContextKey, tenant)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
-	}
-}
-
-func moduleForPath(path string) string {
-	if isSaaSOrganizationAdminPath(path) {
-		return ""
-	}
-	switch {
-	case strings.HasPrefix(path, "/api/v1/organizations"),
-		strings.HasPrefix(path, "/api/v1/organization"),
-		strings.HasPrefix(path, "/api/v1/agents"),
-		strings.HasPrefix(path, "/api/v1/departments"),
-		strings.HasPrefix(path, "/api/v1/positions"),
-		strings.HasPrefix(path, "/api/v1/position-assignments"),
-		strings.HasPrefix(path, "/api/v1/memberships"),
-		strings.HasPrefix(path, "/api/v1/external-members"),
-		strings.HasPrefix(path, "/api/v1/muvrs"),
-		strings.HasPrefix(path, "/api/v1/relationships"):
-		return "organization"
-	case strings.HasPrefix(path, "/api/v1/requirements"),
-		strings.HasPrefix(path, "/api/v1/requirement-documents"),
-		strings.HasPrefix(path, "/api/v1/projects"),
-		strings.HasPrefix(path, "/api/v1/deliverables"):
-		return "project"
-	case strings.HasPrefix(path, "/api/v1/workflows"),
-		strings.HasPrefix(path, "/api/v1/tasks"),
-		strings.HasPrefix(path, "/api/v1/task-matrix-assignments"):
-		return "workflow"
-	case strings.HasPrefix(path, "/api/v1/governance"):
-		return "governance"
-	case strings.HasPrefix(path, "/api/v1/evolution"):
-		return "evolution"
-	case strings.HasPrefix(path, "/api/v1/capabilities"):
-		return "capability"
-	case strings.HasPrefix(path, "/api/v1/meta-resources"),
-		strings.HasPrefix(path, "/api/v1/demand-profiles"),
-		strings.HasPrefix(path, "/api/v1/pdca-"):
-		return "meta_resource"
-	case strings.HasPrefix(path, "/api/v1/assistant"):
-		return "assistant"
-	case strings.HasPrefix(path, "/api/v1/model-providers"),
-		strings.HasPrefix(path, "/api/v1/model-provider-channels"),
-		strings.HasPrefix(path, "/api/v1/models"),
-		strings.HasPrefix(path, "/api/v1/ai-gateway"):
-		return "ai_gateway"
-	case strings.HasPrefix(path, "/api/v1/tools"),
-		strings.HasPrefix(path, "/api/v1/tool-"),
-		strings.HasPrefix(path, "/api/v1/interface-files"):
-		return "toolruntime"
-	case strings.HasPrefix(path, "/api/v1/finance"):
-		return "finance"
-	case strings.HasPrefix(path, "/api/v1/costing"):
-		return "costing"
-	default:
-		return ""
-	}
-}
-
-func isSaaSOrganizationAdminPath(path string) bool {
-	const prefix = "/api/v1/organizations/"
-	if !strings.HasPrefix(path, prefix) {
-		return false
-	}
-	rest := strings.TrimPrefix(path, prefix)
-	parts := strings.SplitN(rest, "/", 3)
-	if len(parts) < 2 {
-		return false
-	}
-	switch parts[1] {
-	case "subscription", "entitlements", "modules", "invitations":
-		return true
-	default:
-		return false
 	}
 }
 

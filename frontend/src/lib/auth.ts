@@ -41,7 +41,7 @@ export function setSession(token: string, userId: string, userType: string, deta
   const nextOrgID = user.default_organization_id || user.organizations?.[0]?.id
   if (nextOrgID) {
     localStorage.setItem(ORGANIZATION_KEY, nextOrgID)
-  } else if (user.onboarding_required) {
+  } else {
     localStorage.removeItem(ORGANIZATION_KEY)
   }
 }

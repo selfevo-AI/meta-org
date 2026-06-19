@@ -4,9 +4,9 @@
 CREATE TABLE IF NOT EXISTS skill (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     skill_key TEXT NOT NULL,
-    scope_level TEXT NOT NULL DEFAULT 'saas_global'
+    scope_level TEXT NOT NULL DEFAULT 'deployment'
         CHECK (scope_level IN ('saas_global', 'organization', 'deployment')),
-    deployment_mode TEXT NOT NULL DEFAULT 'saas'
+    deployment_mode TEXT NOT NULL DEFAULT 'private'
         CHECK (deployment_mode IN ('saas', 'org_private', 'private')),
     organization_id UUID REFERENCES organizations(id) ON DELETE CASCADE,
     owner_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
@@ -56,8 +56,8 @@ INSERT INTO skill (
 SELECT
     abs.id,
     lower(regexp_replace(NULLIF(abs.name, ''), '[^a-zA-Z0-9]+', '_', 'g')) || '_' || left(abs.id::text, 8),
-    'saas_global',
-    'saas',
+    'deployment',
+    'private',
     NULL,
     abs.created_by,
     COALESCE(NULLIF(abs.module_key, ''), 'general'),
@@ -78,7 +78,7 @@ SELECT
     jsonb_build_object('source', 'legacy_assistant_business_skills', 'field_permission_catalog', true),
     jsonb_build_object('source', 'legacy_assistant_business_skills', 'context_engine_required', true),
     '{}'::jsonb,
-    jsonb_build_object('saas_global', 'platform_admin', 'organization', 'organization_admin', 'deployment', 'deployment_admin'),
+    jsonb_build_object('saas_global', 'platform_admin', 'organization', 'organization_admin', 'deployment', 'organization_admin'),
     COALESCE(abs.version, 1),
     COALESCE(NULLIF(abs.status, ''), 'draft'),
     abs.created_by,

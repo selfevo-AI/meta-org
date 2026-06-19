@@ -56,18 +56,6 @@ export async function getMe(token: string): Promise<UserProfile> {
   return apiRequest<UserProfile>('/auth/me', { token })
 }
 
-export async function listSaaSModules(token: string): Promise<SaaSModule[]> {
-  return apiRequest<SaaSModule[]>('/modules', { token })
-}
-
-export async function completeOnboarding(token: string, input: OnboardingOrganizationInput): Promise<OnboardingOrganizationResponse> {
-  return apiRequest<OnboardingOrganizationResponse>('/onboarding/organization', {
-    method: 'POST',
-    token,
-    body: input,
-  })
-}
-
 export async function listRoles(): Promise<Role[]> {
   return apiRequest<Role[]>('/roles')
 }
@@ -626,26 +614,6 @@ export interface UserProfile {
   platform_role?: string
   organizations: SessionOrganization[]
   enabled_modules?: Record<string, boolean>
-}
-
-export interface SaaSModule {
-  module_key: string
-  display_name: string
-  category: string
-  enabled_default: boolean
-  license_scope: 'mit' | 'commercial'
-  metadata: Record<string, unknown>
-}
-
-export interface OnboardingOrganizationInput {
-  organization_name: string
-  description?: string
-  enabled_modules?: string[]
-}
-
-export interface OnboardingOrganizationResponse {
-  profile: UserProfile
-  organization: SessionOrganization
 }
 
 export interface UserResponse {

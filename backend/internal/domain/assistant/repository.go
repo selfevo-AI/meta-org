@@ -409,7 +409,7 @@ func (r *PostgresRepository) CreateBusinessSkill(ctx context.Context, input Crea
 		)
 		VALUES (
 			COALESCE(NULLIF($1, ''), lower(regexp_replace($9, '[^a-zA-Z0-9]+', '_', 'g')) || '_' || left(gen_random_uuid()::text, 8)),
-			COALESCE(NULLIF($2, ''), 'saas_global'), COALESCE(NULLIF($3, ''), 'saas'), $4, $5,
+			COALESCE(NULLIF($2, ''), 'deployment'), COALESCE(NULLIF($3, ''), 'private'), $4, $5,
 			COALESCE(NULLIF($6, ''), 'general'), $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
 			$17, $18, $19, $20, $21, $22, $23, $24
 		)
@@ -443,6 +443,7 @@ func (r *PostgresRepository) ListBusinessSkills(ctx context.Context, moduleKey s
 			AND (
 				$5::boolean
 				OR (scope_level = 'saas_global' AND status = 'active')
+				OR (scope_level = 'deployment' AND status = 'active')
 				OR ($4::uuid IS NOT NULL AND organization_id IS NOT DISTINCT FROM $4)
 			)
 		ORDER BY status = 'active' DESC, updated_at DESC

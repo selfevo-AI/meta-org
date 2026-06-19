@@ -228,6 +228,40 @@ func TestBusinessSkillLifecycle(t *testing.T) {
 	}
 }
 
+func TestCreateBusinessSkillDefaultsToPrivateDeploymentScope(t *testing.T) {
+	orgID := uuid.New()
+	ctx := context.WithValue(context.Background(), middleware.TenantContextKey, &middleware.TenantContext{
+		Mode:           "single_org",
+		OrganizationID: &orgID,
+		AuthorityTier:  "organization_admin",
+	})
+	repo := &fakeRepository{}
+	svc := NewService(repo, nil, nil)
+
+	created, err := svc.CreateBusinessSkill(ctx, uuid.New(), "internal_human", CreateBusinessSkillInput{
+		ModuleKey:       "assistant",
+		Name:            "private deployment skill",
+		PromptTemplate:  "Run private deployment skill",
+		SkillComponents: validSkillComponents(),
+	})
+	if err != nil {
+		t.Fatalf("CreateBusinessSkill returned error: %v", err)
+	}
+
+	if created.ScopeLevel != SkillScopeDeployment {
+		t.Fatalf("scope level = %q, want %q", created.ScopeLevel, SkillScopeDeployment)
+	}
+	if created.DeploymentMode != SkillDeploymentPrivate {
+		t.Fatalf("deployment mode = %q, want %q", created.DeploymentMode, SkillDeploymentPrivate)
+	}
+	if created.OrganizationID != nil {
+		t.Fatalf("deployment skill organization = %v, want nil", created.OrganizationID)
+	}
+	if created.OwnerUserID == nil {
+		t.Fatalf("owner user id should be set for private deployment skill")
+	}
+}
+
 func TestCreateBusinessSkillValidatesComponents(t *testing.T) {
 	svc := NewService(&fakeRepository{}, nil, nil)
 	tooMany := append(validSkillComponents(), validSkillComponents()...)

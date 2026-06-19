@@ -952,11 +952,7 @@ func applySkillScopeDefaults(ctx context.Context, actorID uuid.UUID, input *Crea
 	input.SkillKey = strings.TrimSpace(input.SkillKey)
 	input.ScopeLevel = strings.TrimSpace(input.ScopeLevel)
 	if input.ScopeLevel == "" {
-		if currentTenantOrganizationID(ctx) != nil {
-			input.ScopeLevel = SkillScopeOrganization
-		} else {
-			input.ScopeLevel = SkillScopeSaaSGlobal
-		}
+		input.ScopeLevel = SkillScopeDeployment
 	}
 	switch input.ScopeLevel {
 	case SkillScopeSaaSGlobal, SkillScopeOrganization, SkillScopeDeployment:
@@ -965,7 +961,14 @@ func applySkillScopeDefaults(ctx context.Context, actorID uuid.UUID, input *Crea
 	}
 	input.DeploymentMode = strings.TrimSpace(input.DeploymentMode)
 	if input.DeploymentMode == "" {
-		input.DeploymentMode = SkillDeploymentSaaS
+		switch input.ScopeLevel {
+		case SkillScopeSaaSGlobal:
+			input.DeploymentMode = SkillDeploymentSaaS
+		case SkillScopeOrganization:
+			input.DeploymentMode = SkillDeploymentOrgPrivate
+		default:
+			input.DeploymentMode = SkillDeploymentPrivate
+		}
 	}
 	switch input.DeploymentMode {
 	case SkillDeploymentSaaS, SkillDeploymentOrgPrivate, SkillDeploymentPrivate:
@@ -983,6 +986,16 @@ func applySkillScopeDefaults(ctx context.Context, actorID uuid.UUID, input *Crea
 			}
 			id := *orgID
 			input.OrganizationID = &id
+		}
+		if input.OwnerUserID == nil {
+			id := actorID
+			input.OwnerUserID = &id
+		}
+	}
+	if input.ScopeLevel == SkillScopeDeployment {
+		orgID := currentTenantOrganizationID(ctx)
+		if input.OrganizationID != nil && orgID != nil && *input.OrganizationID != *orgID {
+			return fmt.Errorf("%w: skill organization must match current organization", ErrForbidden)
 		}
 		if input.OwnerUserID == nil {
 			id := actorID

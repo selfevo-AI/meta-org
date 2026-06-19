@@ -40,7 +40,6 @@ import {
   activateAssistantSkill,
   approveToolApproval,
   apiRequest,
-  completeOnboarding,
   confirmAssistantProposal,
   createAssistantSkill,
   getUserPreference,
@@ -52,7 +51,6 @@ import {
   listAssistantSkills,
   listModels,
   listRoles,
-  listSaaSModules,
   login,
   registerUser,
   rejectAssistantProposal,
@@ -69,7 +67,6 @@ import type {
   MetaOrgOverview,
   ModelCatalogItem,
   Role,
-  SaaSModule,
   SessionOrganization,
 } from '@/lib/api'
 import { clearSession, getCurrentOrganizationId, getSessionUser, getToken, setCurrentOrganizationId, setSession } from '@/lib/auth'
@@ -955,10 +952,6 @@ export default function Home() {
   const [onboardingRequired, setOnboardingRequired] = useState(false)
   const [organizations, setOrganizations] = useState<SessionOrganization[]>([])
   const [currentOrganizationID, setCurrentOrganizationID] = useState<string | null>(null)
-  const [saasModules, setSaaSModules] = useState<SaaSModule[]>([])
-  const [onboardingOrganizationName, setOnboardingOrganizationName] = useState('')
-  const [onboardingDescription, setOnboardingDescription] = useState('')
-  const [onboardingModules, setOnboardingModules] = useState<string[]>([])
   const [overview, setOverview] = useState<MetaOrgOverview | null>(null)
   const [inbox, setInbox] = useState<InboxItem[]>([])
   const [roles, setRoles] = useState<Role[]>([])
@@ -1057,18 +1050,12 @@ export default function Home() {
         setOnboardingRequired(false)
         setOrganizations([])
         setCurrentOrganizationID(null)
-        setSaaSModules([])
       })
       return
     }
     let cancelled = false
-    Promise.all([getMe(token).catch(() => null), listSaaSModules(token).catch(() => [])]).then(([profile, modules]) => {
+    getMe(token).then((profile) => {
       if (cancelled) return
-      setSaaSModules(modules)
-      if (modules.length > 0 && onboardingModules.length === 0) {
-        setOnboardingModules(modules.filter((item) => item.enabled_default).map((item) => item.module_key))
-      }
-      if (!profile) return
       setOnboardingRequired(profile.onboarding_required)
       setOrganizations(profile.organizations ?? [])
       const storedOrgID = getCurrentOrganizationId()
@@ -1081,11 +1068,11 @@ export default function Home() {
         setCurrentOrganizationId(null)
         setCurrentOrganizationID(null)
       }
-    })
+    }).catch(() => undefined)
     return () => {
       cancelled = true
     }
-  }, [onboardingModules.length, token])
+  }, [token])
 
   useEffect(() => {
     if (!orderedOverviewFunctions.some((item) => item.id === overviewFunctionID)) {
@@ -1312,53 +1299,6 @@ export default function Home() {
       setPassword('')
     } catch (err) {
       setError(err instanceof Error ? err.message : t('auth.failed'))
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  function toggleOnboardingModule(moduleKey: string) {
-    setOnboardingModules((current) =>
-      current.includes(moduleKey) ? current.filter((item) => item !== moduleKey) : [...current, moduleKey],
-    )
-  }
-
-  function saasModuleLabel(item: SaaSModule) {
-    const key = `saas.module.${item.module_key}`
-    const label = t(key)
-    return label === key ? item.display_name : label
-  }
-
-  async function handleOnboarding(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault()
-    if (!token) return
-    setLoading(true)
-    setError(null)
-    setNotice(null)
-    try {
-      const result = await completeOnboarding(token, {
-        organization_name: onboardingOrganizationName,
-        description: onboardingDescription,
-        enabled_modules: onboardingModules,
-      })
-      setSession(token, result.profile.id, 'human', {
-        onboarding_required: result.profile.onboarding_required,
-        default_organization_id: result.profile.default_organization_id,
-        platform_role: result.profile.platform_role,
-        organizations: result.profile.organizations,
-        enabled_modules: result.profile.enabled_modules,
-      })
-      const nextOrgID = result.profile.default_organization_id || result.organization.id
-      setCurrentOrganizationId(nextOrgID)
-      setCurrentOrganizationID(nextOrgID)
-      setOrganizations(result.profile.organizations ?? [])
-      setOnboardingRequired(false)
-      setBusinessNodesByDomain({})
-      setOverview(null)
-      setNotice(t('onboarding.created'))
-      await loadOverview(token)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : t('onboarding.failed'))
     } finally {
       setLoading(false)
     }
@@ -1738,100 +1678,6 @@ export default function Home() {
           </section>
 
           <RoleDirectory roles={roles} />
-        </div>
-      ) : onboardingRequired ? (
-        <div className="mx-auto grid min-h-screen max-w-5xl gap-5 px-4 py-8 sm:px-6 lg:grid-cols-[380px_1fr] lg:items-center lg:px-8">
-          <section className="studio-panel rounded-lg p-5">
-            <div className="mb-6 flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[#DF6A24]/25 bg-[#DF6A24]/10">
-                <Users className="h-5 w-5 text-[#F6A66A]" />
-              </div>
-              <div>
-                <p className="text-xs font-bold uppercase text-[#F6A66A]">{t('onboarding.kicker')}</p>
-                <h1 className="text-2xl font-semibold text-white">{t('onboarding.title')}</h1>
-              </div>
-            </div>
-            <form className="space-y-4" onSubmit={handleOnboarding}>
-              <label className="block">
-                <span className="text-sm font-medium text-slate-700">{t('onboarding.organizationName')}</span>
-                <input
-                  value={onboardingOrganizationName}
-                  onChange={(event) => setOnboardingOrganizationName(event.target.value)}
-                  className="mt-1 h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-                  required
-                />
-              </label>
-              <label className="block">
-                <span className="text-sm font-medium text-slate-700">{t('onboarding.description')}</span>
-                <textarea
-                  value={onboardingDescription}
-                  onChange={(event) => setOnboardingDescription(event.target.value)}
-                  className="mt-1 min-h-24 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
-                />
-              </label>
-
-              {error && (
-                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
-                  {error}
-                </div>
-              )}
-              {notice && (
-                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
-                  {notice}
-                </div>
-              )}
-
-              <div className="flex gap-2">
-                <button
-                  type="submit"
-                  disabled={loading}
-                  className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-lg bg-[#AD4714] px-4 text-sm font-semibold text-[#fffaf5] transition hover:bg-[#B84F18] disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <CheckCircle2 className="h-4 w-4" />
-                  {loading ? t('auth.processing') : t('onboarding.create')}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleSignOut}
-                  className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-                >
-                  <LogOut className="h-4 w-4" />
-                  {t('common.signOut')}
-                </button>
-              </div>
-            </form>
-          </section>
-
-          <section className="studio-panel rounded-lg p-5">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div>
-                <h2 className="text-lg font-semibold text-white">{t('onboarding.modules')}</h2>
-                <p className="text-sm text-slate-400">{t('onboarding.modulesSubtitle')}</p>
-              </div>
-              <Boxes className="h-5 w-5 text-[#F6A66A]" />
-            </div>
-            <div className="grid gap-2 sm:grid-cols-2">
-              {saasModules.map((item) => (
-                <label
-                  key={item.module_key}
-                  className="flex min-h-14 cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 transition hover:border-[#DF6A24]/60"
-                >
-                  <input
-                    type="checkbox"
-                    checked={onboardingModules.includes(item.module_key)}
-                    onChange={() => toggleOnboardingModule(item.module_key)}
-                    className="h-4 w-4 rounded border-slate-500 text-[#AD4714] focus:ring-[#DF6A24]"
-                  />
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate font-medium">{saasModuleLabel(item)}</span>
-                    <span className="block text-xs text-slate-400">
-                      {item.license_scope === 'commercial' ? t('onboarding.commercial') : t('onboarding.mit')}
-                    </span>
-                  </span>
-                </label>
-              ))}
-            </div>
-          </section>
         </div>
       ) : (
         <div className={`workspace-shell grid min-h-screen ${isOverview ? 'workspace-shell-overview' : ''}`} style={workspaceLayoutStyle(workspaceLayoutWidths)}>

@@ -18,65 +18,37 @@ func (r staticTenantResolver) ResolveTenant(ctx context.Context, user Authentica
 	return r.tenant, r.err
 }
 
-func TestTenantMiddlewareModuleGate(t *testing.T) {
+func TestTenantMiddlewareAttachesSingleOrgTenant(t *testing.T) {
 	orgID := uuid.New()
 	baseTenant := &TenantContext{
-		Mode:           "saas",
+		Mode:           "single_org",
 		UserID:         uuid.New(),
 		OrganizationID: &orgID,
-		EnabledModules: map[string]bool{
-			"organization": false,
-			"project":      false,
-		},
 	}
 
-	tests := []struct {
-		name       string
-		path       string
-		wantStatus int
-	}{
-		{
-			name:       "blocks disabled business module route",
-			path:       "/api/v1/projects",
-			wantStatus: http.StatusForbidden,
-		},
-		{
-			name:       "blocks disabled agent management route",
-			path:       "/api/v1/agents",
-			wantStatus: http.StatusForbidden,
-		},
-		{
-			name:       "allows saas module management route",
-			path:       "/api/v1/organizations/" + orgID.String() + "/modules",
-			wantStatus: http.StatusOK,
-		},
-		{
-			name:       "allows saas invitation route",
-			path:       "/api/v1/organizations/" + orgID.String() + "/invitations",
-			wantStatus: http.StatusOK,
-		},
-	}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tenant, ok := TenantFromContext(r.Context())
+		if !ok {
+			t.Fatalf("tenant context missing")
+		}
+		if tenant.Mode != "single_org" || tenant.OrganizationID == nil || *tenant.OrganizationID != orgID {
+			t.Fatalf("tenant = %#v, want single_org organization %s", tenant, orgID)
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	handler := TenantMiddleware(staticTenantResolver{tenant: baseTenant})(next)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/projects", nil)
+	req = req.WithContext(context.WithValue(req.Context(), UserContextKey, AuthenticatedUser{
+		ID:   uuid.New().String(),
+		Type: "human",
+		Name: "Tester",
+	}))
+	rr := httptest.NewRecorder()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
-			})
-			handler := TenantMiddleware(staticTenantResolver{tenant: baseTenant})(next)
-			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
-			req = req.WithContext(context.WithValue(req.Context(), UserContextKey, AuthenticatedUser{
-				ID:   uuid.New().String(),
-				Type: "human",
-				Name: "Tester",
-			}))
-			rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
 
-			handler.ServeHTTP(rr, req)
-
-			if rr.Code != tt.wantStatus {
-				t.Fatalf("status = %d, want %d", rr.Code, tt.wantStatus)
-			}
-		})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rr.Code, http.StatusOK)
 	}
 }
 
