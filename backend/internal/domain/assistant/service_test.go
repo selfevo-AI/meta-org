@@ -182,17 +182,24 @@ func TestConfirmProposalRequiresSessionAccess(t *testing.T) {
 }
 
 func TestBusinessSkillLifecycle(t *testing.T) {
+	orgID := uuid.New()
+	ctx := context.WithValue(context.Background(), middleware.TenantContextKey, &middleware.TenantContext{
+		OrganizationID: &orgID,
+		AuthorityTier:  "organization_admin",
+	})
 	repo := &fakeRepository{}
 	svc := NewService(repo, nil, nil)
 
-	created, err := svc.CreateBusinessSkill(context.Background(), uuid.New(), "internal_human", CreateBusinessSkillInput{
-		ModuleKey:      "project",
-		TargetType:     "project",
-		Name:           "project risk reviewer",
-		Description:    "review project delivery risk",
-		TriggerIntent:  "review risk",
-		PromptTemplate: "Review {{target.title}}",
-		ToolAllowlist:  []string{"project.update"},
+	created, err := svc.CreateBusinessSkill(ctx, uuid.New(), "internal_human", CreateBusinessSkillInput{
+		ScopeLevel:      SkillScopeOrganization,
+		ModuleKey:       "project",
+		TargetType:      "project",
+		Name:            "project risk reviewer",
+		Description:     "review project delivery risk",
+		TriggerIntent:   "review risk",
+		PromptTemplate:  "Review {{target.title}}",
+		ToolAllowlist:   []string{"project.update"},
+		SkillComponents: validSkillComponents(),
 	})
 	if err != nil {
 		t.Fatalf("CreateBusinessSkill returned error: %v", err)
@@ -200,8 +207,11 @@ func TestBusinessSkillLifecycle(t *testing.T) {
 	if created.Status != SkillDraft {
 		t.Fatalf("created status = %q, want %q", created.Status, SkillDraft)
 	}
+	if created.OrganizationID == nil || *created.OrganizationID != orgID {
+		t.Fatalf("created organization = %v, want %s", created.OrganizationID, orgID)
+	}
 
-	activated, err := svc.ActivateBusinessSkill(context.Background(), created.ID, uuid.New(), "internal_human")
+	activated, err := svc.ActivateBusinessSkill(ctx, created.ID, uuid.New(), "internal_human")
 	if err != nil {
 		t.Fatalf("ActivateBusinessSkill returned error: %v", err)
 	}
@@ -215,6 +225,100 @@ func TestBusinessSkillLifecycle(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != created.ID {
 		t.Fatalf("listed skills = %v, want created skill", items)
+	}
+}
+
+func TestCreateBusinessSkillValidatesComponents(t *testing.T) {
+	svc := NewService(&fakeRepository{}, nil, nil)
+	tooMany := append(validSkillComponents(), validSkillComponents()...)
+	tooMany = append(tooMany, validSkillComponents()...)
+	tooMany = append(tooMany, validSkillComponents()...)
+
+	tests := []struct {
+		name       string
+		components []SkillComponent
+	}{
+		{name: "too few", components: validSkillComponents()[:2]},
+		{name: "too many", components: tooMany},
+		{name: "non positive weight", components: []SkillComponent{
+			{Key: "intent", Weight: 0, Instruction: "read intent"},
+			{Key: "context", Weight: 1, Instruction: "read context"},
+			{Key: "action", Weight: 1, Instruction: "act"},
+		}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := svc.CreateBusinessSkill(context.Background(), uuid.New(), "internal_human", CreateBusinessSkillInput{
+				ModuleKey:       "project",
+				Name:            "invalid skill",
+				PromptTemplate:  "Review target",
+				SkillComponents: tt.components,
+			})
+			if !errors.Is(err, ErrValidation) {
+				t.Fatalf("CreateBusinessSkill error = %v, want ErrValidation", err)
+			}
+		})
+	}
+}
+
+func TestActivateBusinessSkillRequiresLayeredAuthority(t *testing.T) {
+	orgID := uuid.New()
+	skillID := uuid.New()
+	repo := &fakeRepository{
+		skill: &BusinessSkill{
+			ID:              skillID,
+			ScopeLevel:      SkillScopeOrganization,
+			OrganizationID:  &orgID,
+			ModuleKey:       "project",
+			Name:            "organization skill",
+			PromptTemplate:  "Review target",
+			SkillComponents: validSkillComponents(),
+			Status:          SkillDraft,
+		},
+	}
+	svc := NewService(repo, nil, nil)
+	executorCtx := context.WithValue(context.Background(), middleware.TenantContextKey, &middleware.TenantContext{
+		OrganizationID: &orgID,
+		AuthorityTier:  "executor",
+	})
+
+	if _, err := svc.ActivateBusinessSkill(executorCtx, skillID, uuid.New(), "internal_human"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("ActivateBusinessSkill executor error = %v, want ErrForbidden", err)
+	}
+
+	adminCtx := context.WithValue(context.Background(), middleware.TenantContextKey, &middleware.TenantContext{
+		OrganizationID: &orgID,
+		AuthorityTier:  "organization_admin",
+	})
+	if _, err := svc.ActivateBusinessSkill(adminCtx, skillID, uuid.New(), "internal_human"); err != nil {
+		t.Fatalf("ActivateBusinessSkill admin returned error: %v", err)
+	}
+}
+
+func TestActivateSaaSGlobalSkillRequiresPlatformAdmin(t *testing.T) {
+	skillID := uuid.New()
+	repo := &fakeRepository{
+		skill: &BusinessSkill{
+			ID:              skillID,
+			ScopeLevel:      SkillScopeSaaSGlobal,
+			DeploymentMode:  SkillDeploymentSaaS,
+			ModuleKey:       "assistant",
+			Name:            "global skill",
+			PromptTemplate:  "Review target",
+			SkillComponents: validSkillComponents(),
+			Status:          SkillDraft,
+		},
+	}
+	svc := NewService(repo, nil, nil)
+
+	if _, err := svc.ActivateBusinessSkill(context.Background(), skillID, uuid.New(), "internal_human"); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("ActivateBusinessSkill non-platform error = %v, want ErrForbidden", err)
+	}
+
+	platformCtx := context.WithValue(context.Background(), middleware.TenantContextKey, &middleware.TenantContext{IsPlatformAdmin: true})
+	if _, err := svc.ActivateBusinessSkill(platformCtx, skillID, uuid.New(), "internal_human"); err != nil {
+		t.Fatalf("ActivateBusinessSkill platform admin returned error: %v", err)
 	}
 }
 
@@ -257,12 +361,15 @@ func TestRunBusinessSkillRecordsSessionAndTargetContext(t *testing.T) {
 	targetID := uuid.New()
 	repo := &fakeRepository{
 		skill: &BusinessSkill{
-			ID:             skillID,
-			ModuleKey:      "finance",
-			TargetType:     "finance_receivable",
-			Name:           "receivable reviewer",
-			PromptTemplate: "Review receivable",
-			Status:         SkillActive,
+			ID:              skillID,
+			ScopeLevel:      SkillScopeSaaSGlobal,
+			DeploymentMode:  SkillDeploymentSaaS,
+			ModuleKey:       "finance",
+			TargetType:      "finance_receivable",
+			Name:            "receivable reviewer",
+			PromptTemplate:  "Review receivable",
+			SkillComponents: validSkillComponents(),
+			Status:          SkillActive,
 		},
 	}
 	svc := NewService(repo, nil, nil)
@@ -283,6 +390,33 @@ func TestRunBusinessSkillRecordsSessionAndTargetContext(t *testing.T) {
 	}
 	if run.TargetType != "finance_receivable" {
 		t.Fatalf("run target type = %q, want finance_receivable", run.TargetType)
+	}
+	if got := repo.lastSkillRun.Output["skill_components"]; got == nil {
+		t.Fatalf("run output missing skill_components snapshot: %#v", repo.lastSkillRun.Output)
+	}
+}
+
+func TestRunBusinessSkillRejectsCrossTenantOrganization(t *testing.T) {
+	orgID := uuid.New()
+	otherOrgID := uuid.New()
+	skillID := uuid.New()
+	repo := &fakeRepository{
+		skill: &BusinessSkill{
+			ID:              skillID,
+			ScopeLevel:      SkillScopeOrganization,
+			OrganizationID:  &otherOrgID,
+			ModuleKey:       "project",
+			Name:            "other organization skill",
+			PromptTemplate:  "Review target",
+			SkillComponents: validSkillComponents(),
+			Status:          SkillActive,
+		},
+	}
+	svc := NewService(repo, nil, nil)
+	ctx := context.WithValue(context.Background(), middleware.TenantContextKey, &middleware.TenantContext{OrganizationID: &orgID})
+
+	if _, err := svc.RunBusinessSkill(ctx, skillID, uuid.New(), "internal_human", map[string]any{}); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("RunBusinessSkill error = %v, want ErrForbidden", err)
 	}
 }
 
@@ -484,17 +618,30 @@ func (f *fakeRepository) MarkProposalRejected(_ context.Context, id uuid.UUID, r
 
 func (f *fakeRepository) CreateBusinessSkill(_ context.Context, input CreateBusinessSkillInput, actorID uuid.UUID, actorType string) (*BusinessSkill, error) {
 	f.skill = &BusinessSkill{
-		ID:             uuid.New(),
-		ModuleKey:      input.ModuleKey,
-		TargetType:     input.TargetType,
-		Name:           input.Name,
-		Description:    input.Description,
-		TriggerIntent:  input.TriggerIntent,
-		PromptTemplate: input.PromptTemplate,
-		ToolAllowlist:  input.ToolAllowlist,
-		Status:         SkillDraft,
-		CreatedBy:      &actorID,
-		CreatedByType:  actorType,
+		ID:                  uuid.New(),
+		SkillKey:            input.SkillKey,
+		ScopeLevel:          input.ScopeLevel,
+		DeploymentMode:      input.DeploymentMode,
+		OrganizationID:      input.OrganizationID,
+		OwnerUserID:         input.OwnerUserID,
+		ModuleKey:           input.ModuleKey,
+		TargetType:          input.TargetType,
+		BusinessFunctionKey: input.BusinessFunctionKey,
+		Name:                input.Name,
+		Description:         input.Description,
+		TriggerIntent:       input.TriggerIntent,
+		PromptTemplate:      input.PromptTemplate,
+		ToolAllowlist:       input.ToolAllowlist,
+		InputSchema:         input.InputSchema,
+		OutputSchema:        input.OutputSchema,
+		SkillComponents:     input.SkillComponents,
+		PermissionPolicy:    input.PermissionPolicy,
+		ContextPolicy:       input.ContextPolicy,
+		PricingPolicy:       input.PricingPolicy,
+		ActivationPolicy:    input.ActivationPolicy,
+		Status:              SkillDraft,
+		CreatedBy:           &actorID,
+		CreatedByType:       actorType,
 	}
 	return f.skill, nil
 }
@@ -506,6 +653,14 @@ func (f *fakeRepository) ListBusinessSkills(_ context.Context, moduleKey string,
 		return []BusinessSkill{}, nil
 	}
 	return []BusinessSkill{*f.skill}, nil
+}
+
+func validSkillComponents() []SkillComponent {
+	return []SkillComponent{
+		{Key: "intent", Label: map[string]string{"zh": "意图", "en": "Intent"}, Weight: 0.3, Instruction: "Identify the user intent"},
+		{Key: "context", Label: map[string]string{"zh": "上下文", "en": "Context"}, Weight: 0.4, Instruction: "Collect governed context", RequiredContext: []string{"target"}},
+		{Key: "action", Label: map[string]string{"zh": "动作", "en": "Action"}, Weight: 0.3, Instruction: "Produce the next action", PermissionTags: []string{"skill:run"}},
+	}
 }
 
 func (f *fakeRepository) GetBusinessSkill(context.Context, uuid.UUID) (*BusinessSkill, error) {

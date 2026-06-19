@@ -64,6 +64,7 @@ import type {
   AssistantBusinessSkill,
   AssistantContextTarget,
   AssistantProposal,
+  AssistantSkillComponent,
   InboxItem,
   MetaOrgOverview,
   ModelCatalogItem,
@@ -146,6 +147,33 @@ const domainIcons: Record<string, typeof Gauge> = {
   FinancePayables: ArrowUp,
   FinanceCostAccounting: CircleDollarSign,
   MetaResource: Boxes,
+}
+
+function defaultSkillComponents(prompt: string): AssistantSkillComponent[] {
+  return [
+    {
+      key: 'intent',
+      label: { zh: '意图', en: 'Intent' },
+      weight: 0.3,
+      instruction: 'Identify the business intent and expected outcome.',
+      permission_tags: ['skill:read'],
+    },
+    {
+      key: 'context',
+      label: { zh: '上下文', en: 'Context' },
+      weight: 0.4,
+      instruction: 'Use governed context for the selected module, function, and target.',
+      required_context: ['module', 'target'],
+      permission_tags: ['context:read'],
+    },
+    {
+      key: 'action',
+      label: { zh: '动作', en: 'Action' },
+      weight: 0.3,
+      instruction: prompt.trim() || 'Execute the skill prompt and produce the next business action.',
+      permission_tags: ['skill:run'],
+    },
+  ]
 }
 
 type MenuGroup = {
@@ -1516,6 +1544,7 @@ export default function Home() {
       const imported = await createAssistantSkill(token, {
         module_key: selectedOverviewFunction.moduleKey,
         target_type: selectedOverviewFunction.targetType,
+        business_function_key: selectedOverviewFunction.id,
         name: source.name,
         description: source.description,
         trigger_intent: source.trigger_intent,
@@ -1523,6 +1552,11 @@ export default function Home() {
         tool_allowlist: source.tool_allowlist,
         input_schema: source.input_schema,
         output_schema: source.output_schema,
+        skill_components: source.skill_components?.length ? source.skill_components : defaultSkillComponents(source.prompt_template),
+        permission_policy: source.permission_policy,
+        context_policy: source.context_policy,
+        pricing_policy: source.pricing_policy,
+        activation_policy: source.activation_policy,
         source_session_id: source.source_session_id,
         metadata: {
           ...(source.metadata || {}),
@@ -3566,8 +3600,10 @@ function GlobalBusinessInteraction({ token }: { token: string }) {
       const skill = await createAssistantSkill(token, {
         module_key: moduleKey,
         target_type: activeTargetType,
+        business_function_key: activeModule.id,
         name: skillName.trim(),
         prompt_template: skillPrompt.trim(),
+        skill_components: defaultSkillComponents(skillPrompt),
         source_session_id: sessionID || undefined,
         metadata: {
           source: 'global_business_interaction',

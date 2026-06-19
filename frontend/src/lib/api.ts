@@ -1370,8 +1370,14 @@ export interface AssistantProposal {
 
 export interface AssistantBusinessSkill {
   id: string
+  skill_key: string
+  scope_level: string
+  deployment_mode: string
+  organization_id?: string
+  owner_user_id?: string
   module_key: string
   target_type: string
+  business_function_key: string
   name: string
   description: string
   trigger_intent: string
@@ -1379,6 +1385,11 @@ export interface AssistantBusinessSkill {
   tool_allowlist: string[]
   input_schema: Record<string, unknown>
   output_schema: Record<string, unknown>
+  skill_components: AssistantSkillComponent[]
+  permission_policy: Record<string, unknown>
+  context_policy: Record<string, unknown>
+  pricing_policy: Record<string, unknown>
+  activation_policy: Record<string, unknown>
   version: number
   status: string
   created_by?: string
@@ -1390,9 +1401,27 @@ export interface AssistantBusinessSkill {
   updated_at: string
 }
 
+export interface AssistantSkillComponent {
+  key: string
+  label?: {
+    zh?: string
+    en?: string
+  }
+  weight: number
+  instruction: string
+  required_context?: string[]
+  permission_tags?: string[]
+}
+
 export interface CreateAssistantBusinessSkillInput {
+  skill_key?: string
+  scope_level?: string
+  deployment_mode?: string
+  organization_id?: string
+  owner_user_id?: string
   module_key: string
   target_type?: string
+  business_function_key?: string
   name: string
   description?: string
   trigger_intent?: string
@@ -1400,6 +1429,11 @@ export interface CreateAssistantBusinessSkillInput {
   tool_allowlist?: string[]
   input_schema?: Record<string, unknown>
   output_schema?: Record<string, unknown>
+  skill_components: AssistantSkillComponent[]
+  permission_policy?: Record<string, unknown>
+  context_policy?: Record<string, unknown>
+  pricing_policy?: Record<string, unknown>
+  activation_policy?: Record<string, unknown>
   source_session_id?: string
   metadata?: Record<string, unknown>
 }

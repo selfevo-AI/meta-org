@@ -300,16 +300,35 @@ func (s *Service) CreateBusinessSkill(ctx context.Context, actorID uuid.UUID, ac
 	}
 	input.ModuleKey = normalizedModule(input.ModuleKey)
 	input.TargetType = strings.TrimSpace(input.TargetType)
+	input.BusinessFunctionKey = strings.TrimSpace(input.BusinessFunctionKey)
 	input.Name = strings.TrimSpace(input.Name)
 	input.PromptTemplate = strings.TrimSpace(input.PromptTemplate)
 	if input.Name == "" || input.PromptTemplate == "" {
 		return nil, fmt.Errorf("%w: name and prompt_template are required", ErrValidation)
+	}
+	if err := applySkillScopeDefaults(ctx, actorID, &input); err != nil {
+		return nil, err
+	}
+	if err := validateSkillComponents(input.SkillComponents); err != nil {
+		return nil, err
 	}
 	if input.InputSchema == nil {
 		input.InputSchema = map[string]any{}
 	}
 	if input.OutputSchema == nil {
 		input.OutputSchema = map[string]any{}
+	}
+	if input.PermissionPolicy == nil {
+		input.PermissionPolicy = map[string]any{}
+	}
+	if input.ContextPolicy == nil {
+		input.ContextPolicy = map[string]any{}
+	}
+	if input.PricingPolicy == nil {
+		input.PricingPolicy = map[string]any{}
+	}
+	if input.ActivationPolicy == nil {
+		input.ActivationPolicy = map[string]any{}
 	}
 	if input.Metadata == nil {
 		input.Metadata = map[string]any{}
@@ -328,6 +347,13 @@ func (s *Service) ActivateBusinessSkill(ctx context.Context, id uuid.UUID, revie
 	if !isHumanActor(reviewerType) {
 		return nil, fmt.Errorf("%w: only human users can activate business skills", ErrValidation)
 	}
+	skill, err := s.repo.GetBusinessSkill(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := authorizeSkillActivation(ctx, skill); err != nil {
+		return nil, err
+	}
 	return s.repo.ActivateBusinessSkill(ctx, id, reviewerID)
 }
 
@@ -342,6 +368,9 @@ func (s *Service) RunBusinessSkill(ctx context.Context, id uuid.UUID, actorID uu
 	if skill.Status != SkillActive {
 		return nil, fmt.Errorf("%w: skill is not active", ErrValidation)
 	}
+	if err := authorizeSkillUse(ctx, skill); err != nil {
+		return nil, err
+	}
 	if input == nil {
 		input = map[string]any{}
 	}
@@ -349,9 +378,18 @@ func (s *Service) RunBusinessSkill(ctx context.Context, id uuid.UUID, actorID uu
 	targetID := uuidFromInput(input, "target_id")
 	targetType := firstNonEmpty(stringFromInput(input, "target_type"), skill.TargetType)
 	output := map[string]any{
-		"prompt_template": skill.PromptTemplate,
-		"trigger_intent":  skill.TriggerIntent,
-		"tool_allowlist":  skill.ToolAllowlist,
+		"prompt_template":   skill.PromptTemplate,
+		"trigger_intent":    skill.TriggerIntent,
+		"tool_allowlist":    skill.ToolAllowlist,
+		"skill_components":  skill.SkillComponents,
+		"permission_policy": skill.PermissionPolicy,
+		"context_policy":    skill.ContextPolicy,
+		"pricing_policy":    skill.PricingPolicy,
+		"activation_policy": skill.ActivationPolicy,
+		"scope_level":       skill.ScopeLevel,
+		"deployment_mode":   skill.DeploymentMode,
+		"organization_id":   uuidString(skill.OrganizationID),
+		"business_function": skill.BusinessFunctionKey,
 	}
 	return s.repo.CreateSkillRun(ctx, CreateSkillRunInput{
 		SkillID:       skill.ID,
@@ -910,6 +948,137 @@ func normalizedOptionalModule(value string) string {
 	return strings.TrimSpace(value)
 }
 
+func applySkillScopeDefaults(ctx context.Context, actorID uuid.UUID, input *CreateBusinessSkillInput) error {
+	input.SkillKey = strings.TrimSpace(input.SkillKey)
+	input.ScopeLevel = strings.TrimSpace(input.ScopeLevel)
+	if input.ScopeLevel == "" {
+		if currentTenantOrganizationID(ctx) != nil {
+			input.ScopeLevel = SkillScopeOrganization
+		} else {
+			input.ScopeLevel = SkillScopeSaaSGlobal
+		}
+	}
+	switch input.ScopeLevel {
+	case SkillScopeSaaSGlobal, SkillScopeOrganization, SkillScopeDeployment:
+	default:
+		return fmt.Errorf("%w: unsupported skill scope_level", ErrValidation)
+	}
+	input.DeploymentMode = strings.TrimSpace(input.DeploymentMode)
+	if input.DeploymentMode == "" {
+		input.DeploymentMode = SkillDeploymentSaaS
+	}
+	switch input.DeploymentMode {
+	case SkillDeploymentSaaS, SkillDeploymentOrgPrivate, SkillDeploymentPrivate:
+	default:
+		return fmt.Errorf("%w: unsupported skill deployment_mode", ErrValidation)
+	}
+	if input.ScopeLevel == SkillScopeOrganization {
+		orgID := currentTenantOrganizationID(ctx)
+		if input.OrganizationID != nil && orgID != nil && *input.OrganizationID != *orgID {
+			return fmt.Errorf("%w: skill organization must match current organization", ErrForbidden)
+		}
+		if input.OrganizationID == nil {
+			if orgID == nil {
+				return fmt.Errorf("%w: organization skill requires organization context", ErrValidation)
+			}
+			id := *orgID
+			input.OrganizationID = &id
+		}
+		if input.OwnerUserID == nil {
+			id := actorID
+			input.OwnerUserID = &id
+		}
+	}
+	if input.ScopeLevel == SkillScopeSaaSGlobal {
+		input.OrganizationID = nil
+	}
+	return nil
+}
+
+func validateSkillComponents(components []SkillComponent) error {
+	if len(components) < 3 || len(components) > 9 {
+		return fmt.Errorf("%w: skill_components must contain 3 to 9 components", ErrValidation)
+	}
+	for _, component := range components {
+		if strings.TrimSpace(component.Key) == "" {
+			return fmt.Errorf("%w: skill component key is required", ErrValidation)
+		}
+		if component.Weight <= 0 {
+			return fmt.Errorf("%w: skill component weight must be positive", ErrValidation)
+		}
+	}
+	return nil
+}
+
+func authorizeSkillActivation(ctx context.Context, skill *BusinessSkill) error {
+	if skill == nil {
+		return ErrNotFound
+	}
+	tenant, ok := middleware.TenantFromContext(ctx)
+	switch firstNonEmpty(skill.ScopeLevel, SkillScopeSaaSGlobal) {
+	case SkillScopeSaaSGlobal:
+		if !ok || !tenant.IsPlatformAdmin {
+			return fmt.Errorf("%w: platform admin is required to activate saas global skill", ErrForbidden)
+		}
+	case SkillScopeOrganization:
+		if !tenantMatchesOrganization(tenant, ok, skill.OrganizationID) || !tenantCanAdminOrganization(tenant) {
+			return fmt.Errorf("%w: organization admin is required to activate organization skill", ErrForbidden)
+		}
+	case SkillScopeDeployment:
+		if ok && (tenant.IsPlatformAdmin || tenantCanAdminOrganization(tenant)) {
+			return nil
+		}
+		return fmt.Errorf("%w: deployment skill activation requires admin authority", ErrForbidden)
+	default:
+		return fmt.Errorf("%w: unsupported skill scope_level", ErrValidation)
+	}
+	return nil
+}
+
+func authorizeSkillUse(ctx context.Context, skill *BusinessSkill) error {
+	if skill == nil {
+		return ErrNotFound
+	}
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if ok && tenant.EnabledModules != nil && skill.ModuleKey != "" && skill.ModuleKey != "general" && !tenant.EnabledModules[skill.ModuleKey] {
+		return fmt.Errorf("%w: skill module is disabled", ErrForbidden)
+	}
+	switch firstNonEmpty(skill.ScopeLevel, SkillScopeSaaSGlobal) {
+	case SkillScopeSaaSGlobal:
+		return nil
+	case SkillScopeOrganization:
+		if !tenantMatchesOrganization(tenant, ok, skill.OrganizationID) {
+			return fmt.Errorf("%w: skill organization does not match current organization", ErrForbidden)
+		}
+	case SkillScopeDeployment:
+		if skill.OrganizationID != nil && !tenantMatchesOrganization(tenant, ok, skill.OrganizationID) {
+			return fmt.Errorf("%w: deployment skill organization does not match current organization", ErrForbidden)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported skill scope_level", ErrValidation)
+	}
+	return nil
+}
+
+func tenantMatchesOrganization(tenant *middleware.TenantContext, ok bool, orgID *uuid.UUID) bool {
+	if orgID == nil {
+		return ok && tenant != nil && tenant.IsPlatformAdmin
+	}
+	return ok && tenant != nil && tenant.OrganizationID != nil && *tenant.OrganizationID == *orgID
+}
+
+func tenantCanAdminOrganization(tenant *middleware.TenantContext) bool {
+	if tenant == nil {
+		return false
+	}
+	switch tenant.AuthorityTier {
+	case "organization_creator", "organization_admin":
+		return true
+	default:
+		return tenant.IsPlatformAdmin
+	}
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, value := range values {
 		if strings.TrimSpace(value) != "" {
@@ -1042,6 +1211,11 @@ func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
 	}
 	id := *tenant.OrganizationID
 	return &id
+}
+
+func currentTenantIsPlatformAdmin(ctx context.Context) bool {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	return ok && tenant.IsPlatformAdmin
 }
 
 func copyMap(input map[string]any) map[string]any {

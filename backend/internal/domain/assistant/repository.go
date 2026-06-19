@@ -401,17 +401,29 @@ func (r *PostgresRepository) MarkProposalRejected(ctx context.Context, id uuid.U
 func (r *PostgresRepository) CreateBusinessSkill(ctx context.Context, input CreateBusinessSkillInput, actorID uuid.UUID, actorType string) (*BusinessSkill, error) {
 	skill := &BusinessSkill{}
 	err := scanBusinessSkill(r.db.QueryRow(ctx, `
-		INSERT INTO assistant_business_skills (
-			module_key, target_type, name, description, trigger_intent, prompt_template, tool_allowlist,
-			input_schema, output_schema, created_by, created_by_type, source_session_id, metadata
+		INSERT INTO skill (
+			skill_key, scope_level, deployment_mode, organization_id, owner_user_id, module_key, target_type,
+			business_function_key, name, description, trigger_intent, prompt_template, tool_allowlist,
+			input_schema, output_schema, skill_components, permission_policy, context_policy, pricing_policy,
+			activation_policy, created_by, created_by_type, source_session_id, metadata
 		)
-		VALUES (COALESCE(NULLIF($1, ''), 'general'), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-		RETURNING id, module_key, target_type, name, description, trigger_intent, prompt_template, tool_allowlist,
-			input_schema, output_schema, version, status, created_by, created_by_type, reviewed_by, source_session_id,
+		VALUES (
+			COALESCE(NULLIF($1, ''), lower(regexp_replace($9, '[^a-zA-Z0-9]+', '_', 'g')) || '_' || left(gen_random_uuid()::text, 8)),
+			COALESCE(NULLIF($2, ''), 'saas_global'), COALESCE(NULLIF($3, ''), 'saas'), $4, $5,
+			COALESCE(NULLIF($6, ''), 'general'), $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+			$17, $18, $19, $20, $21, $22, $23, $24
+		)
+		RETURNING id, skill_key, scope_level, deployment_mode, organization_id, owner_user_id, module_key,
+			target_type, business_function_key, name, description, trigger_intent, prompt_template, tool_allowlist,
+			input_schema, output_schema, skill_components, permission_policy, context_policy, pricing_policy,
+			activation_policy, version, status, created_by, created_by_type, reviewed_by, source_session_id,
 			metadata, created_at, updated_at
-	`, input.ModuleKey, input.TargetType, input.Name, input.Description, input.TriggerIntent, input.PromptTemplate,
-		mustJSONValue(input.ToolAllowlist), mustJSON(input.InputSchema), mustJSON(input.OutputSchema), actorID, actorType,
-		input.SourceSessionID, mustJSON(input.Metadata)), skill)
+	`, input.SkillKey, input.ScopeLevel, input.DeploymentMode, input.OrganizationID, input.OwnerUserID,
+		input.ModuleKey, input.TargetType, input.BusinessFunctionKey, input.Name, input.Description,
+		input.TriggerIntent, input.PromptTemplate, mustJSONValue(input.ToolAllowlist), mustJSON(input.InputSchema),
+		mustJSON(input.OutputSchema), mustJSONValue(input.SkillComponents), mustJSON(input.PermissionPolicy),
+		mustJSON(input.ContextPolicy), mustJSON(input.PricingPolicy), mustJSON(input.ActivationPolicy),
+		actorID, actorType, input.SourceSessionID, mustJSON(input.Metadata)), skill)
 	if err != nil {
 		return nil, fmt.Errorf("create assistant business skill: %w", err)
 	}
@@ -420,15 +432,22 @@ func (r *PostgresRepository) CreateBusinessSkill(ctx context.Context, input Crea
 
 func (r *PostgresRepository) ListBusinessSkills(ctx context.Context, moduleKey string, targetType string, limit int) ([]BusinessSkill, error) {
 	rows, err := r.db.Query(ctx, `
-		SELECT id, module_key, target_type, name, description, trigger_intent, prompt_template, tool_allowlist,
-			input_schema, output_schema, version, status, created_by, created_by_type, reviewed_by, source_session_id,
+		SELECT id, skill_key, scope_level, deployment_mode, organization_id, owner_user_id, module_key,
+			target_type, business_function_key, name, description, trigger_intent, prompt_template, tool_allowlist,
+			input_schema, output_schema, skill_components, permission_policy, context_policy, pricing_policy,
+			activation_policy, version, status, created_by, created_by_type, reviewed_by, source_session_id,
 			metadata, created_at, updated_at
-		FROM assistant_business_skills
+		FROM skill
 		WHERE ($1 = '' OR module_key = $1)
 			AND ($2 = '' OR target_type = $2 OR target_type = '')
+			AND (
+				$5::boolean
+				OR (scope_level = 'saas_global' AND status = 'active')
+				OR ($4::uuid IS NOT NULL AND organization_id IS NOT DISTINCT FROM $4)
+			)
 		ORDER BY status = 'active' DESC, updated_at DESC
 		LIMIT $3
-	`, moduleKey, targetType, normalizeLimit(limit))
+	`, moduleKey, targetType, normalizeLimit(limit), nullableUUID(currentTenantOrganizationID(ctx)), currentTenantIsPlatformAdmin(ctx))
 	if err != nil {
 		return nil, fmt.Errorf("list assistant business skills: %w", err)
 	}
@@ -447,10 +466,12 @@ func (r *PostgresRepository) ListBusinessSkills(ctx context.Context, moduleKey s
 func (r *PostgresRepository) GetBusinessSkill(ctx context.Context, id uuid.UUID) (*BusinessSkill, error) {
 	skill := &BusinessSkill{}
 	err := scanBusinessSkill(r.db.QueryRow(ctx, `
-		SELECT id, module_key, target_type, name, description, trigger_intent, prompt_template, tool_allowlist,
-			input_schema, output_schema, version, status, created_by, created_by_type, reviewed_by, source_session_id,
+		SELECT id, skill_key, scope_level, deployment_mode, organization_id, owner_user_id, module_key,
+			target_type, business_function_key, name, description, trigger_intent, prompt_template, tool_allowlist,
+			input_schema, output_schema, skill_components, permission_policy, context_policy, pricing_policy,
+			activation_policy, version, status, created_by, created_by_type, reviewed_by, source_session_id,
 			metadata, created_at, updated_at
-		FROM assistant_business_skills
+		FROM skill
 		WHERE id = $1
 	`, id), skill)
 	if err != nil {
@@ -462,11 +483,13 @@ func (r *PostgresRepository) GetBusinessSkill(ctx context.Context, id uuid.UUID)
 func (r *PostgresRepository) ActivateBusinessSkill(ctx context.Context, id uuid.UUID, reviewerID uuid.UUID) (*BusinessSkill, error) {
 	skill := &BusinessSkill{}
 	err := scanBusinessSkill(r.db.QueryRow(ctx, `
-		UPDATE assistant_business_skills
+		UPDATE skill
 		SET status = 'active', reviewed_by = $2, updated_at = NOW()
 		WHERE id = $1
-		RETURNING id, module_key, target_type, name, description, trigger_intent, prompt_template, tool_allowlist,
-			input_schema, output_schema, version, status, created_by, created_by_type, reviewed_by, source_session_id,
+		RETURNING id, skill_key, scope_level, deployment_mode, organization_id, owner_user_id, module_key,
+			target_type, business_function_key, name, description, trigger_intent, prompt_template, tool_allowlist,
+			input_schema, output_schema, skill_components, permission_policy, context_policy, pricing_policy,
+			activation_policy, version, status, created_by, created_by_type, reviewed_by, source_session_id,
 			metadata, created_at, updated_at
 	`, id, reviewerID), skill)
 	if err != nil {
@@ -609,20 +632,29 @@ func scanProposal(row scanner, proposal *Proposal) error {
 }
 
 func scanBusinessSkill(row scanner, skill *BusinessSkill) error {
-	var createdBy, reviewedBy, sourceSessionID pgtype.UUID
-	var toolsJSON, inputJSON, outputJSON, metaJSON []byte
-	if err := row.Scan(&skill.ID, &skill.ModuleKey, &skill.TargetType, &skill.Name, &skill.Description,
-		&skill.TriggerIntent, &skill.PromptTemplate, &toolsJSON, &inputJSON, &outputJSON, &skill.Version,
+	var organizationID, ownerUserID, createdBy, reviewedBy, sourceSessionID pgtype.UUID
+	var toolsJSON, inputJSON, outputJSON, componentsJSON, permissionJSON, contextJSON, pricingJSON, activationJSON, metaJSON []byte
+	if err := row.Scan(&skill.ID, &skill.SkillKey, &skill.ScopeLevel, &skill.DeploymentMode, &organizationID,
+		&ownerUserID, &skill.ModuleKey, &skill.TargetType, &skill.BusinessFunctionKey, &skill.Name,
+		&skill.Description, &skill.TriggerIntent, &skill.PromptTemplate, &toolsJSON, &inputJSON, &outputJSON,
+		&componentsJSON, &permissionJSON, &contextJSON, &pricingJSON, &activationJSON, &skill.Version,
 		&skill.Status, &createdBy, &skill.CreatedByType, &reviewedBy, &sourceSessionID, &metaJSON,
 		&skill.CreatedAt, &skill.UpdatedAt); err != nil {
 		return err
 	}
+	skill.OrganizationID = uuidPointer(organizationID)
+	skill.OwnerUserID = uuidPointer(ownerUserID)
 	skill.CreatedBy = uuidPointer(createdBy)
 	skill.ReviewedBy = uuidPointer(reviewedBy)
 	skill.SourceSessionID = uuidPointer(sourceSessionID)
 	skill.ToolAllowlist = unmarshalStringSlice(toolsJSON)
 	skill.InputSchema = unmarshalMap(inputJSON)
 	skill.OutputSchema = unmarshalMap(outputJSON)
+	skill.SkillComponents = unmarshalSkillComponents(componentsJSON)
+	skill.PermissionPolicy = unmarshalMap(permissionJSON)
+	skill.ContextPolicy = unmarshalMap(contextJSON)
+	skill.PricingPolicy = unmarshalMap(pricingJSON)
+	skill.ActivationPolicy = unmarshalMap(activationJSON)
 	skill.Metadata = unmarshalMap(metaJSON)
 	return nil
 }
@@ -680,6 +712,15 @@ func unmarshalMap(data []byte) map[string]any {
 
 func unmarshalStringSlice(data []byte) []string {
 	items := []string{}
+	if len(data) == 0 {
+		return items
+	}
+	_ = json.Unmarshal(data, &items)
+	return items
+}
+
+func unmarshalSkillComponents(data []byte) []SkillComponent {
+	items := []SkillComponent{}
 	if len(data) == 0 {
 		return items
 	}

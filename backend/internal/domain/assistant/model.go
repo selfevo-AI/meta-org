@@ -31,6 +31,14 @@ const (
 	SkillDraft    = "draft"
 	SkillActive   = "active"
 	SkillArchived = "archived"
+
+	SkillScopeSaaSGlobal   = "saas_global"
+	SkillScopeOrganization = "organization"
+	SkillScopeDeployment   = "deployment"
+
+	SkillDeploymentSaaS       = "saas"
+	SkillDeploymentOrgPrivate = "org_private"
+	SkillDeploymentPrivate    = "private"
 )
 
 type Scope struct {
@@ -233,39 +241,70 @@ type CreateProposalInput struct {
 }
 
 type BusinessSkill struct {
-	ID              uuid.UUID      `json:"id"`
-	ModuleKey       string         `json:"module_key"`
-	TargetType      string         `json:"target_type"`
-	Name            string         `json:"name"`
-	Description     string         `json:"description"`
-	TriggerIntent   string         `json:"trigger_intent"`
-	PromptTemplate  string         `json:"prompt_template"`
-	ToolAllowlist   []string       `json:"tool_allowlist"`
-	InputSchema     map[string]any `json:"input_schema"`
-	OutputSchema    map[string]any `json:"output_schema"`
-	Version         int            `json:"version"`
-	Status          string         `json:"status"`
-	CreatedBy       *uuid.UUID     `json:"created_by,omitempty"`
-	CreatedByType   string         `json:"created_by_type,omitempty"`
-	ReviewedBy      *uuid.UUID     `json:"reviewed_by,omitempty"`
-	SourceSessionID *uuid.UUID     `json:"source_session_id,omitempty"`
-	Metadata        map[string]any `json:"metadata"`
-	CreatedAt       time.Time      `json:"created_at"`
-	UpdatedAt       time.Time      `json:"updated_at"`
+	ID                  uuid.UUID        `json:"id"`
+	SkillKey            string           `json:"skill_key"`
+	ScopeLevel          string           `json:"scope_level"`
+	DeploymentMode      string           `json:"deployment_mode"`
+	OrganizationID      *uuid.UUID       `json:"organization_id,omitempty"`
+	OwnerUserID         *uuid.UUID       `json:"owner_user_id,omitempty"`
+	ModuleKey           string           `json:"module_key"`
+	TargetType          string           `json:"target_type"`
+	BusinessFunctionKey string           `json:"business_function_key"`
+	Name                string           `json:"name"`
+	Description         string           `json:"description"`
+	TriggerIntent       string           `json:"trigger_intent"`
+	PromptTemplate      string           `json:"prompt_template"`
+	ToolAllowlist       []string         `json:"tool_allowlist"`
+	InputSchema         map[string]any   `json:"input_schema"`
+	OutputSchema        map[string]any   `json:"output_schema"`
+	SkillComponents     []SkillComponent `json:"skill_components"`
+	PermissionPolicy    map[string]any   `json:"permission_policy"`
+	ContextPolicy       map[string]any   `json:"context_policy"`
+	PricingPolicy       map[string]any   `json:"pricing_policy"`
+	ActivationPolicy    map[string]any   `json:"activation_policy"`
+	Version             int              `json:"version"`
+	Status              string           `json:"status"`
+	CreatedBy           *uuid.UUID       `json:"created_by,omitempty"`
+	CreatedByType       string           `json:"created_by_type,omitempty"`
+	ReviewedBy          *uuid.UUID       `json:"reviewed_by,omitempty"`
+	SourceSessionID     *uuid.UUID       `json:"source_session_id,omitempty"`
+	Metadata            map[string]any   `json:"metadata"`
+	CreatedAt           time.Time        `json:"created_at"`
+	UpdatedAt           time.Time        `json:"updated_at"`
+}
+
+type SkillComponent struct {
+	Key             string            `json:"key"`
+	Label           map[string]string `json:"label,omitempty"`
+	Weight          float64           `json:"weight"`
+	Instruction     string            `json:"instruction"`
+	RequiredContext []string          `json:"required_context,omitempty"`
+	PermissionTags  []string          `json:"permission_tags,omitempty"`
 }
 
 type CreateBusinessSkillInput struct {
-	ModuleKey       string         `json:"module_key"`
-	TargetType      string         `json:"target_type,omitempty"`
-	Name            string         `json:"name"`
-	Description     string         `json:"description,omitempty"`
-	TriggerIntent   string         `json:"trigger_intent,omitempty"`
-	PromptTemplate  string         `json:"prompt_template"`
-	ToolAllowlist   []string       `json:"tool_allowlist,omitempty"`
-	InputSchema     map[string]any `json:"input_schema,omitempty"`
-	OutputSchema    map[string]any `json:"output_schema,omitempty"`
-	SourceSessionID *uuid.UUID     `json:"source_session_id,omitempty"`
-	Metadata        map[string]any `json:"metadata,omitempty"`
+	SkillKey            string           `json:"skill_key,omitempty"`
+	ScopeLevel          string           `json:"scope_level,omitempty"`
+	DeploymentMode      string           `json:"deployment_mode,omitempty"`
+	OrganizationID      *uuid.UUID       `json:"organization_id,omitempty"`
+	OwnerUserID         *uuid.UUID       `json:"owner_user_id,omitempty"`
+	ModuleKey           string           `json:"module_key"`
+	TargetType          string           `json:"target_type,omitempty"`
+	BusinessFunctionKey string           `json:"business_function_key,omitempty"`
+	Name                string           `json:"name"`
+	Description         string           `json:"description,omitempty"`
+	TriggerIntent       string           `json:"trigger_intent,omitempty"`
+	PromptTemplate      string           `json:"prompt_template"`
+	ToolAllowlist       []string         `json:"tool_allowlist,omitempty"`
+	InputSchema         map[string]any   `json:"input_schema,omitempty"`
+	OutputSchema        map[string]any   `json:"output_schema,omitempty"`
+	SkillComponents     []SkillComponent `json:"skill_components,omitempty"`
+	PermissionPolicy    map[string]any   `json:"permission_policy,omitempty"`
+	ContextPolicy       map[string]any   `json:"context_policy,omitempty"`
+	PricingPolicy       map[string]any   `json:"pricing_policy,omitempty"`
+	ActivationPolicy    map[string]any   `json:"activation_policy,omitempty"`
+	SourceSessionID     *uuid.UUID       `json:"source_session_id,omitempty"`
+	Metadata            map[string]any   `json:"metadata,omitempty"`
 }
 
 type SkillRun struct {
