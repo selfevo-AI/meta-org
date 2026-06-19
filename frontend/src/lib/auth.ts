@@ -1,11 +1,26 @@
 const TOKEN_KEY = 'meta_org.token'
 const USER_KEY = 'meta_org.user'
+const ORGANIZATION_KEY = 'meta_org.organization_id'
 const LEGACY_TOKEN_KEY = 'harness_token'
 const LEGACY_USER_KEY = 'harness_user'
+
+export interface SessionOrganization {
+  id: string
+  name: string
+  description?: string
+  membership_id?: string
+  authority_tier?: string
+  is_owner?: boolean
+}
 
 export interface SessionUser {
   id: string
   type: string
+  onboarding_required?: boolean
+  default_organization_id?: string
+  platform_role?: string
+  organizations?: SessionOrganization[]
+  enabled_modules?: Record<string, boolean>
 }
 
 function migrateLegacySession(): void {
@@ -18,10 +33,17 @@ function migrateLegacySession(): void {
   localStorage.removeItem(LEGACY_USER_KEY)
 }
 
-export function setSession(token: string, userId: string, userType: string): void {
+export function setSession(token: string, userId: string, userType: string, details: Partial<SessionUser> = {}): void {
   if (typeof window === 'undefined') return
+  const user: SessionUser = { id: userId, type: userType, ...details }
   localStorage.setItem(TOKEN_KEY, token)
-  localStorage.setItem(USER_KEY, JSON.stringify({ id: userId, type: userType }))
+  localStorage.setItem(USER_KEY, JSON.stringify(user))
+  const nextOrgID = user.default_organization_id || user.organizations?.[0]?.id
+  if (nextOrgID) {
+    localStorage.setItem(ORGANIZATION_KEY, nextOrgID)
+  } else if (user.onboarding_required) {
+    localStorage.removeItem(ORGANIZATION_KEY)
+  }
 }
 
 export function getToken(): string | null {
@@ -48,10 +70,25 @@ export function clearSession(): void {
   if (typeof window === 'undefined') return
   localStorage.removeItem(TOKEN_KEY)
   localStorage.removeItem(USER_KEY)
+  localStorage.removeItem(ORGANIZATION_KEY)
   localStorage.removeItem(LEGACY_TOKEN_KEY)
   localStorage.removeItem(LEGACY_USER_KEY)
 }
 
 export function isAuthenticated(): boolean {
   return !!getToken()
+}
+
+export function getCurrentOrganizationId(): string | null {
+  if (typeof window === 'undefined') return null
+  return localStorage.getItem(ORGANIZATION_KEY)
+}
+
+export function setCurrentOrganizationId(organizationId: string | null): void {
+  if (typeof window === 'undefined') return
+  if (organizationId) {
+    localStorage.setItem(ORGANIZATION_KEY, organizationId)
+  } else {
+    localStorage.removeItem(ORGANIZATION_KEY)
+  }
 }

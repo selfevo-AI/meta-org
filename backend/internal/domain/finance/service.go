@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 var (
@@ -470,6 +471,10 @@ func (s *Service) ImportExpenses(ctx context.Context, input ImportExpensesInput)
 			failed++
 			continue
 		}
+		if err := applyTenantFinanceExpenseScope(ctx, &expense); err != nil {
+			failed++
+			continue
+		}
 		record, err := s.repo.CreateImportedExpense(ctx, batch.ID, input.AdapterID, raw, expense, expenseOccurredAt(dates), dates)
 		if err != nil {
 			failed++
@@ -629,6 +634,12 @@ func (s *Service) PostSettlementOrder(ctx context.Context, id uuid.UUID) (*Recei
 
 func (s *Service) CreateReceivable(ctx context.Context, input CreateReceivableInput) (*Receivable, error) {
 	normalizeReceivableInput(&input)
+	if input.OrganizationID == nil {
+		input.OrganizationID = currentTenantOrganizationID(ctx)
+	}
+	if err := ensureTenantOrganization(ctx, input.OrganizationID); err != nil {
+		return nil, err
+	}
 	if input.Amount <= 0 {
 		return nil, fmt.Errorf("%w: amount must be greater than zero", ErrValidation)
 	}
@@ -730,6 +741,12 @@ func (s *Service) AllocateReceipt(ctx context.Context, receiptID uuid.UUID, inpu
 
 func (s *Service) CreatePayable(ctx context.Context, input CreatePayableInput) (*Payable, error) {
 	normalizePayableInput(&input)
+	if input.OrganizationID == nil {
+		input.OrganizationID = currentTenantOrganizationID(ctx)
+	}
+	if err := ensureTenantOrganization(ctx, input.OrganizationID); err != nil {
+		return nil, err
+	}
 	if input.Amount <= 0 {
 		return nil, fmt.Errorf("%w: amount must be greater than zero", ErrValidation)
 	}
@@ -1347,6 +1364,39 @@ func normalizeReceiptInput(input *CreateReceiptInput) {
 	if input.Metadata == nil {
 		input.Metadata = map[string]any{}
 	}
+}
+
+func applyTenantFinanceExpenseScope(ctx context.Context, input *FinanceExpenseInput) error {
+	orgID := currentTenantOrganizationID(ctx)
+	if orgID == nil {
+		return nil
+	}
+	if input.OrganizationID != nil && *input.OrganizationID != *orgID {
+		return fmt.Errorf("%w: finance expense organization must match current organization", ErrForbidden)
+	}
+	id := *orgID
+	input.OrganizationID = &id
+	return nil
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
+}
+
+func ensureTenantOrganization(ctx context.Context, organizationID *uuid.UUID) error {
+	orgID := currentTenantOrganizationID(ctx)
+	if orgID == nil || organizationID == nil {
+		return nil
+	}
+	if *orgID != *organizationID {
+		return fmt.Errorf("%w: finance record is outside current organization", ErrForbidden)
+	}
+	return nil
 }
 
 func defaultCurrency(value string) string {

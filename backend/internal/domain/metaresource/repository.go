@@ -63,9 +63,10 @@ func (r *Repository) ListResources(ctx context.Context, filter ListFilter) ([]Me
 		FROM meta_resources
 		WHERE ($1 = '' OR resource_type = $1)
 		  AND ($2 = '' OR status = $2)
+		  AND ($4::uuid IS NULL OR organization_id = $4)
 		ORDER BY updated_at DESC
 		LIMIT $3
-	`, filter.ResourceType, filter.Status, normalizeLimit(filter.Limit))
+	`, filter.ResourceType, filter.Status, normalizeLimit(filter.Limit), filter.OrganizationID)
 	if err != nil {
 		return nil, fmt.Errorf("list meta resources: %w", err)
 	}

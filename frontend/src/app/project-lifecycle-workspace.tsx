@@ -363,6 +363,15 @@ function asArray<T>(value: T[] | null | undefined): T[] {
   return Array.isArray(value) ? value : []
 }
 
+function deferStateUpdate(callback: () => void): () => void {
+  if (typeof window === 'undefined') {
+    callback()
+    return () => undefined
+  }
+  const timeout = window.setTimeout(callback, 0)
+  return () => window.clearTimeout(timeout)
+}
+
 function percent(value: number | undefined): string {
   return `${Math.round((value ?? 0) * 100)}%`
 }
@@ -461,14 +470,19 @@ export function ProjectLifecycleWorkspace({ token, currentUserId, mode, external
 
   useEffect(() => {
     if (!externalSelection?.targetID) return
-    if (externalSelection.targetType === 'requirement') {
-      setSelectedRequirementId(externalSelection.targetID)
-    }
-    if (externalSelection.targetType === 'project') {
-      setSelectedProjectId(externalSelection.targetID)
-      const requirementID = typeof externalSelection.record?.requirement_id === 'string' ? externalSelection.record.requirement_id : ''
-      if (requirementID) setSelectedRequirementId(requirementID)
-    }
+    const targetID = externalSelection.targetID
+    const targetType = externalSelection.targetType
+    const record = externalSelection.record
+    return deferStateUpdate(() => {
+      if (targetType === 'requirement') {
+        setSelectedRequirementId(targetID)
+      }
+      if (targetType === 'project') {
+        setSelectedProjectId(targetID)
+        const requirementID = typeof record?.requirement_id === 'string' ? record.requirement_id : ''
+        if (requirementID) setSelectedRequirementId(requirementID)
+      }
+    })
   }, [externalSelection?.targetID, externalSelection?.targetType, externalSelection?.record])
 
   useEffect(() => {

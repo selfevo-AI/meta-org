@@ -87,6 +87,36 @@ func (r *Repository) ListTemplates(ctx context.Context) ([]WorkflowTemplate, err
 	return templates, nil
 }
 
+func (r *Repository) ListTemplatesByOrganization(ctx context.Context, orgID uuid.UUID) ([]WorkflowTemplate, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT id, organization_id, department_id, name, description, stages, assignee_type, required_weight,
+		        routing_rules, visual_graph, is_active, created_at, updated_at
+		 FROM workflow_templates
+		 WHERE organization_id = $1 OR organization_id IS NULL
+		 ORDER BY name`, orgID)
+	if err != nil {
+		return nil, fmt.Errorf("list templates by organization: %w", err)
+	}
+	defer rows.Close()
+
+	var templates []WorkflowTemplate
+	for rows.Next() {
+		var t WorkflowTemplate
+		var stagesJSON, rulesJSON, graphJSON []byte
+		if err := rows.Scan(&t.ID, &t.OrganizationID, &t.DepartmentID, &t.Name, &t.Description, &stagesJSON, &t.AssigneeType, &t.RequiredWeight, &rulesJSON, &graphJSON, &t.IsActive, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan template: %w", err)
+		}
+		json.Unmarshal(stagesJSON, &t.Stages)
+		json.Unmarshal(rulesJSON, &t.RoutingRules)
+		json.Unmarshal(graphJSON, &t.VisualGraph)
+		templates = append(templates, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list templates by organization iteration: %w", err)
+	}
+	return templates, nil
+}
+
 func (r *Repository) CreateInstance(ctx context.Context, input StartWorkflowInput) (*WorkflowInstance, error) {
 	contextJSON, _ := json.Marshal(input.Context)
 	inst := &WorkflowInstance{}
@@ -463,6 +493,14 @@ func (r *Repository) ListTaskMatrixAssignmentsByWorkflow(ctx context.Context, wo
 	}
 	defer rows.Close()
 	return scanTaskMatrixAssignments(rows)
+}
+
+func (r *Repository) GetTaskMatrixAssignmentByID(ctx context.Context, id uuid.UUID) (*TaskMatrixAssignment, error) {
+	item := &TaskMatrixAssignment{}
+	if err := scanTaskMatrixAssignment(r.db.QueryRow(ctx, taskMatrixSelectSQL()+` WHERE tma.id = $1`, id), item); err != nil {
+		return nil, fmt.Errorf("get task matrix assignment: %w", err)
+	}
+	return item, nil
 }
 
 func (r *Repository) UpdateTaskMatrixAssignment(ctx context.Context, id uuid.UUID, input UpdateTaskMatrixAssignmentInput) (*TaskMatrixAssignment, error) {

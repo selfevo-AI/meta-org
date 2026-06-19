@@ -192,7 +192,8 @@ func (r *PostgresRepository) CreateExecution(ctx context.Context, input CreateEx
 			requested_by_human_id, status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
 		FROM tool_executions
 		WHERE tool_id = $1 AND idempotency_key = $2
-	`, input.ToolID, input.IdempotencyKey), execution)
+			AND ($3::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $3)
+	`, input.ToolID, input.IdempotencyKey, nullableUUID(currentTenantOrganizationID(ctx))), execution)
 	if err != nil {
 		return nil, fmt.Errorf("get idempotent tool execution: %w", err)
 	}
@@ -234,9 +235,10 @@ func (r *PostgresRepository) ListExecutions(ctx context.Context, limit int) ([]T
 			project_id, workflow_id, task_id, idempotency_key, policy, governance_decision,
 			requested_by_human_id, status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
 		FROM tool_executions
+		WHERE ($2::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $2)
 		ORDER BY created_at DESC
 		LIMIT $1
-	`, normalizeLimit(limit))
+	`, normalizeLimit(limit), nullableUUID(currentTenantOrganizationID(ctx)))
 	if err != nil {
 		return nil, fmt.Errorf("list tool executions: %w", err)
 	}
@@ -250,8 +252,9 @@ func (r *PostgresRepository) GetExecution(ctx context.Context, id uuid.UUID) (*T
 		SELECT id, tool_id, invocation_id, actor_id, actor_type, organization_id, department_id,
 			project_id, workflow_id, task_id, idempotency_key, policy, governance_decision,
 			requested_by_human_id, status, arguments, result_summary, result, error_message, duration_ms, created_at, completed_at
-		FROM tool_executions WHERE id = $1
-	`, id), execution)
+		FROM tool_executions
+		WHERE id = $1 AND ($2::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $2)
+	`, id, nullableUUID(currentTenantOrganizationID(ctx))), execution)
 	if err != nil {
 		return nil, fmt.Errorf("get tool execution: %w", err)
 	}
@@ -261,10 +264,11 @@ func (r *PostgresRepository) GetExecution(ctx context.Context, id uuid.UUID) (*T
 func (r *PostgresRepository) GetApproval(ctx context.Context, id uuid.UUID) (*ToolApproval, error) {
 	approval := &ToolApproval{}
 	err := scanApprovalRow(r.db.QueryRow(ctx, `
-		SELECT id, execution_id, status, requested_by, reviewed_by, approved_by_human_id, reason, expires_at, created_at, reviewed_at
-		FROM tool_approvals
-		WHERE id = $1
-	`, id), approval)
+		SELECT a.id, a.execution_id, a.status, a.requested_by, a.reviewed_by, a.approved_by_human_id, a.reason, a.expires_at, a.created_at, a.reviewed_at
+		FROM tool_approvals a
+		JOIN tool_executions e ON e.id = a.execution_id
+		WHERE a.id = $1 AND ($2::uuid IS NULL OR e.organization_id IS NOT DISTINCT FROM $2)
+	`, id, nullableUUID(currentTenantOrganizationID(ctx))), approval)
 	if err != nil {
 		return nil, fmt.Errorf("get tool approval: %w", err)
 	}
@@ -521,4 +525,11 @@ func uuidPointer(value pgtype.UUID) *uuid.UUID {
 		return nil
 	}
 	return &id
+}
+
+func nullableUUID(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return *id
 }

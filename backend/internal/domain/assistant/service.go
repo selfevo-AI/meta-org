@@ -11,11 +11,13 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/aigateway"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/toolruntime"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 var (
 	ErrValidation = errors.New("validation error")
 	ErrNotFound   = errors.New("not found")
+	ErrForbidden  = errors.New("forbidden")
 )
 
 type AIInvoker interface {
@@ -39,6 +41,9 @@ type Service struct {
 	tools              ToolExecutor
 	contextResolver    ContextResolver
 	proposalApplicator ProposalApplicator
+	dictionary         *DictionaryService
+	contextEngine      ContextPackageBuilder
+	runtime            AssistantRuntimeRunner
 	maxTurns           int
 	maxHistory         int
 }
@@ -57,12 +62,34 @@ func WithProposalApplicator(applicator ProposalApplicator) ServiceOption {
 	}
 }
 
+func WithDictionaryService(dictionary *DictionaryService) ServiceOption {
+	return func(s *Service) {
+		s.dictionary = dictionary
+	}
+}
+
+func WithVerifiedContextEngine(engine ContextPackageBuilder) ServiceOption {
+	return func(s *Service) {
+		s.contextEngine = engine
+	}
+}
+
+func WithAssistantRuntime(runtime AssistantRuntimeRunner) ServiceOption {
+	return func(s *Service) {
+		s.runtime = runtime
+	}
+}
+
 func NewService(repo Repository, ai AIInvoker, tools ToolExecutor, opts ...ServiceOption) *Service {
 	s := &Service{repo: repo, ai: ai, tools: tools, maxTurns: 12, maxHistory: 40}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
+}
+
+func (s *Service) SetRuntime(runtime AssistantRuntimeRunner) {
+	s.runtime = runtime
 }
 
 func (s *Service) CreateSession(ctx context.Context, actorID uuid.UUID, actorType string, input CreateSessionInput) (*Session, error) {
@@ -76,6 +103,9 @@ func (s *Service) CreateSession(ctx context.Context, actorID uuid.UUID, actorTyp
 	}
 	if actorID == uuid.Nil || actorType == "" {
 		return nil, fmt.Errorf("%w: actor is required", ErrValidation)
+	}
+	if err := applyTenantSessionScope(ctx, &input); err != nil {
+		return nil, err
 	}
 	if input.AutoModel {
 		if err := s.applyDefaultModel(ctx, &input); err != nil {
@@ -154,7 +184,7 @@ func (s *Service) ListContextTargets(ctx context.Context, moduleKey string, targ
 	if s.contextResolver == nil {
 		return []WorkRecord{}, nil
 	}
-	session := &Session{ModuleKey: moduleKey, TargetType: strings.TrimSpace(targetType)}
+	session := &Session{ModuleKey: moduleKey, TargetType: strings.TrimSpace(targetType), OrganizationID: currentTenantOrganizationID(ctx)}
 	context := s.contextResolver.Resolve(ctx, session)
 	if context.Error != "" {
 		return nil, fmt.Errorf("%w: %s", ErrValidation, context.Error)
@@ -163,6 +193,42 @@ func (s *Service) ListContextTargets(ctx context.Context, moduleKey string, targ
 		return context.Records, nil
 	}
 	return context.Records[:limit], nil
+}
+
+type ImportDictionaryInput struct {
+	SourceType string `json:"source_type"`
+	SourceName string `json:"source_name"`
+	Content    string `json:"content"`
+	ScopeLevel string `json:"scope_level"`
+	ModuleKey  string `json:"module_key"`
+	VersionKey string `json:"version_key"`
+}
+
+func (s *Service) ImportDictionary(ctx context.Context, actorID uuid.UUID, input ImportDictionaryInput) (*DictionaryImportResult, error) {
+	if s.dictionary == nil {
+		return nil, fmt.Errorf("%w: dictionary service is not configured", ErrValidation)
+	}
+	model, err := NormalizeDictionaryImport(DictionaryImportSource{
+		SourceType: input.SourceType,
+		SourceName: input.SourceName,
+		Content:    []byte(input.Content),
+		ScopeLevel: input.ScopeLevel,
+		ModuleKey:  input.ModuleKey,
+		VersionKey: input.VersionKey,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return s.dictionary.Import(ctx, DictionaryImportRequest{Model: model, ImportedBy: &actorID})
+}
+
+func (s *Service) PreviewContext(ctx context.Context, actorID uuid.UUID, actorType string, request ContextRequest) (*ContextPackage, error) {
+	if s.contextEngine == nil {
+		return nil, fmt.Errorf("%w: context engine is not configured", ErrValidation)
+	}
+	request.ActorID = actorID
+	request.ActorType = actorType
+	return s.contextEngine.BuildContextPackage(ctx, request)
 }
 
 func (s *Service) ListProposals(ctx context.Context, sessionID uuid.UUID, actorID uuid.UUID, actorType string, limit int) ([]Proposal, error) {
@@ -302,6 +368,13 @@ func (s *Service) RunBusinessSkill(ctx context.Context, id uuid.UUID, actorID uu
 }
 
 func (s *Service) Run(ctx context.Context, sessionID uuid.UUID, actorID uuid.UUID, actorType string, input RunInput) (<-chan RunEvent, error) {
+	if s.runtime != nil {
+		return s.runtime.Run(ctx, AssistantRunRequest{SessionID: sessionID, ActorID: actorID, ActorType: actorType, Input: input})
+	}
+	return s.runLegacy(ctx, sessionID, actorID, actorType, input)
+}
+
+func (s *Service) runLegacy(ctx context.Context, sessionID uuid.UUID, actorID uuid.UUID, actorType string, input RunInput) (<-chan RunEvent, error) {
 	if strings.TrimSpace(input.Message) == "" {
 		return nil, fmt.Errorf("%w: message is required", ErrValidation)
 	}
@@ -325,6 +398,13 @@ func (s *Service) Run(ctx context.Context, sessionID uuid.UUID, actorID uuid.UUI
 }
 
 func (s *Service) Resume(ctx context.Context, sessionID uuid.UUID, actorID uuid.UUID, actorType string, input ResumeInput) (<-chan RunEvent, error) {
+	if s.runtime != nil {
+		return s.runtime.Resume(ctx, AssistantResumeRequest{SessionID: sessionID, ActorID: actorID, ActorType: actorType, Input: input})
+	}
+	return s.resumeLegacy(ctx, sessionID, actorID, actorType, input)
+}
+
+func (s *Service) resumeLegacy(ctx context.Context, sessionID uuid.UUID, actorID uuid.UUID, actorType string, input ResumeInput) (<-chan RunEvent, error) {
 	if input.ToolApprovalID == uuid.Nil {
 		return nil, fmt.Errorf("%w: tool_approval_id is required", ErrValidation)
 	}
@@ -940,6 +1020,28 @@ func isHumanActor(actorType string) bool {
 
 func isNotFound(err error) bool {
 	return errors.Is(err, ErrNotFound) || errors.Is(err, pgx.ErrNoRows)
+}
+
+func applyTenantSessionScope(ctx context.Context, input *CreateSessionInput) error {
+	orgID := currentTenantOrganizationID(ctx)
+	if orgID == nil {
+		return nil
+	}
+	if input.OrganizationID != nil && *input.OrganizationID != *orgID {
+		return fmt.Errorf("%w: session organization must match current organization", ErrForbidden)
+	}
+	id := *orgID
+	input.OrganizationID = &id
+	return nil
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
 }
 
 func copyMap(input map[string]any) map[string]any {

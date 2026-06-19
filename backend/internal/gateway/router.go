@@ -20,6 +20,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/saas"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/toolruntime"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/verification"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/workflow"
@@ -42,6 +43,8 @@ type Dependencies struct {
 	ProjectHandler       *project.Handler
 	FinanceHandler       *finance.Handler
 	ToolRuntimeHandler   *toolruntime.Handler
+	SaaSHandler          *saas.Handler
+	TenantResolver       middleware.TenantResolver
 	ObservabilityHandler *observability.Handler
 	VerificationHandler  *verification.Handler
 	GovernanceHandler    *governance.Handler
@@ -60,62 +63,74 @@ func RegisterRoutes(r *chi.Mux, deps *Dependencies) {
 		if deps.FinanceHandler != nil {
 			deps.FinanceHandler.RegisterPublicRoutes(r)
 		}
+		if deps.SaaSHandler != nil {
+			deps.SaaSHandler.RegisterPublicRoutes(r)
+		}
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.AuthMiddleware(deps.JWTSecret))
-			if deps.IdentityHandler != nil {
-				deps.IdentityHandler.RegisterProtectedRoutes(r)
+			if deps.SaaSHandler != nil {
+				deps.SaaSHandler.RegisterAuthenticatedRoutes(r)
 			}
-			if deps.OrganizationHandler != nil {
-				deps.OrganizationHandler.RegisterRoutes(r)
-			}
-			if deps.LayerHandler != nil {
-				deps.LayerHandler.RegisterRoutes(r)
-			}
-			if deps.CapabilityHandler != nil {
-				deps.CapabilityHandler.RegisterRoutes(r)
-			}
-			if deps.CostingHandler != nil {
-				deps.CostingHandler.RegisterRoutes(r)
-			}
-			if deps.DashboardHandler != nil {
-				deps.DashboardHandler.RegisterRoutes(r)
-			}
-			if deps.MetaOrgHandler != nil {
-				deps.MetaOrgHandler.RegisterRoutes(r)
-			}
-			if deps.MetaResourceHandler != nil {
-				deps.MetaResourceHandler.RegisterRoutes(r)
-			}
-			if deps.AssistantHandler != nil {
-				deps.AssistantHandler.RegisterRoutes(r)
-			}
-			if deps.AIGatewayHandler != nil {
-				deps.AIGatewayHandler.RegisterRoutes(r)
-			}
-			if deps.WorkflowHandler != nil {
-				deps.WorkflowHandler.RegisterRoutes(r)
-			}
-			if deps.ProjectHandler != nil {
-				deps.ProjectHandler.RegisterRoutes(r)
-			}
-			if deps.FinanceHandler != nil {
-				deps.FinanceHandler.RegisterRoutes(r)
-			}
-			if deps.ToolRuntimeHandler != nil {
-				deps.ToolRuntimeHandler.RegisterRoutes(r)
-			}
-			if deps.VerificationHandler != nil {
-				deps.VerificationHandler.RegisterRoutes(r)
-			}
-			if deps.ObservabilityHandler != nil {
-				deps.ObservabilityHandler.RegisterRoutes(r)
-			}
-			if deps.GovernanceHandler != nil {
-				deps.GovernanceHandler.RegisterRoutes(r)
-			}
-			if deps.EvolutionHandler != nil {
-				deps.EvolutionHandler.RegisterRoutes(r)
-			}
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.TenantMiddleware(deps.TenantResolver))
+				if deps.IdentityHandler != nil {
+					deps.IdentityHandler.RegisterProtectedRoutes(r)
+				}
+				if deps.SaaSHandler != nil {
+					deps.SaaSHandler.RegisterTenantRoutes(r)
+				}
+				if deps.OrganizationHandler != nil {
+					deps.OrganizationHandler.RegisterRoutes(r)
+				}
+				if deps.LayerHandler != nil {
+					deps.LayerHandler.RegisterRoutes(r)
+				}
+				if deps.CapabilityHandler != nil {
+					deps.CapabilityHandler.RegisterRoutes(r)
+				}
+				if deps.CostingHandler != nil {
+					deps.CostingHandler.RegisterRoutes(r)
+				}
+				if deps.DashboardHandler != nil {
+					deps.DashboardHandler.RegisterRoutes(r)
+				}
+				if deps.MetaOrgHandler != nil {
+					deps.MetaOrgHandler.RegisterRoutes(r)
+				}
+				if deps.MetaResourceHandler != nil {
+					deps.MetaResourceHandler.RegisterRoutes(r)
+				}
+				if deps.AssistantHandler != nil {
+					deps.AssistantHandler.RegisterRoutes(r)
+				}
+				if deps.AIGatewayHandler != nil {
+					deps.AIGatewayHandler.RegisterRoutes(r)
+				}
+				if deps.WorkflowHandler != nil {
+					deps.WorkflowHandler.RegisterRoutes(r)
+				}
+				if deps.ProjectHandler != nil {
+					deps.ProjectHandler.RegisterRoutes(r)
+				}
+				if deps.FinanceHandler != nil {
+					deps.FinanceHandler.RegisterRoutes(r)
+				}
+				if deps.ToolRuntimeHandler != nil {
+					deps.ToolRuntimeHandler.RegisterRoutes(r)
+				}
+				if deps.VerificationHandler != nil {
+					deps.VerificationHandler.RegisterRoutes(r)
+				}
+				if deps.ObservabilityHandler != nil {
+					deps.ObservabilityHandler.RegisterRoutes(r)
+				}
+				if deps.GovernanceHandler != nil {
+					deps.GovernanceHandler.RegisterRoutes(r)
+				}
+				if deps.EvolutionHandler != nil {
+					deps.EvolutionHandler.RegisterRoutes(r)
+				}
+			})
 		})
 	})
 }

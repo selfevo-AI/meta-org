@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 var (
@@ -24,6 +25,12 @@ func NewService(repo *Repository) *Service {
 func (s *Service) CreateTemplate(ctx context.Context, input CreateWorkflowInput) (*WorkflowTemplate, error) {
 	if input.Name == "" {
 		return nil, fmt.Errorf("%w: name is required", ErrValidation)
+	}
+	if input.OrganizationID == nil {
+		input.OrganizationID = currentTenantOrganizationID(ctx)
+	}
+	if err := ensureTenantAccess(ctx, input.OrganizationID); err != nil {
+		return nil, err
 	}
 	if len(input.Stages) == 0 {
 		input.Stages = defaultStages()
@@ -44,10 +51,20 @@ func (s *Service) CreateTemplate(ctx context.Context, input CreateWorkflowInput)
 }
 
 func (s *Service) GetTemplate(ctx context.Context, id uuid.UUID) (*WorkflowTemplate, error) {
-	return s.repo.GetTemplate(ctx, id)
+	template, err := s.repo.GetTemplate(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, template.OrganizationID); err != nil {
+		return nil, err
+	}
+	return template, nil
 }
 
 func (s *Service) ListTemplates(ctx context.Context) ([]WorkflowTemplate, error) {
+	if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+		return s.repo.ListTemplatesByOrganization(ctx, *orgID)
+	}
 	return s.repo.ListTemplates(ctx)
 }
 
@@ -59,6 +76,16 @@ func (s *Service) StartWorkflow(ctx context.Context, input StartWorkflowInput) (
 	if input.Context == nil {
 		input.Context = map[string]any{}
 	}
+	if input.OrganizationID == nil {
+		if tmpl.OrganizationID != nil {
+			input.OrganizationID = tmpl.OrganizationID
+		} else {
+			input.OrganizationID = currentTenantOrganizationID(ctx)
+		}
+	}
+	if err := ensureTenantAccess(ctx, input.OrganizationID); err != nil {
+		return nil, err
+	}
 
 	return s.repo.CreateInstanceWithTasks(ctx, input, tmpl)
 }
@@ -66,6 +93,9 @@ func (s *Service) StartWorkflow(ctx context.Context, input StartWorkflowInput) (
 func (s *Service) GetWorkflow(ctx context.Context, id uuid.UUID) (*WorkflowInstance, error) {
 	inst, err := s.repo.GetInstance(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, inst.OrganizationID); err != nil {
 		return nil, err
 	}
 	tasks, err := s.repo.GetTasksByWorkflow(ctx, id)
@@ -80,6 +110,9 @@ func (s *Service) UpdateWorkflowStatus(ctx context.Context, id uuid.UUID, status
 	if !isValidWorkflowStatus(status) {
 		return fmt.Errorf("%w: invalid workflow status", ErrValidation)
 	}
+	if _, err := s.ensureWorkflowAccess(ctx, id); err != nil {
+		return err
+	}
 	return s.repo.UpdateInstanceStatus(ctx, id, status)
 }
 
@@ -87,11 +120,17 @@ func (s *Service) CompleteTask(ctx context.Context, taskID uuid.UUID, output map
 	if output == nil {
 		output = map[string]any{}
 	}
+	if _, _, err := s.ensureTaskAccess(ctx, taskID); err != nil {
+		return err
+	}
 	return s.repo.CompleteTaskWithWorkflowProgress(ctx, taskID, output)
 }
 
 func (s *Service) CreateTaskMatrixAssignment(ctx context.Context, taskID uuid.UUID, input CreateTaskMatrixAssignmentInput) (*TaskMatrixAssignment, error) {
 	input.TaskID = taskID
+	if _, _, err := s.ensureTaskAccess(ctx, taskID); err != nil {
+		return nil, err
+	}
 	if input.PositionID == uuid.Nil || input.PositionAssignmentID == nil || *input.PositionAssignmentID == uuid.Nil || input.MetaResourceID == uuid.Nil {
 		return nil, fmt.Errorf("%w: position_id, position_assignment_id, and meta_resource_id are required", ErrValidation)
 	}
@@ -114,6 +153,9 @@ func (s *Service) CreateTaskMatrixAssignment(ctx context.Context, taskID uuid.UU
 }
 
 func (s *Service) ListTaskMatrixAssignments(ctx context.Context, taskID uuid.UUID) ([]TaskMatrixAssignment, error) {
+	if _, _, err := s.ensureTaskAccess(ctx, taskID); err != nil {
+		return nil, err
+	}
 	items, err := s.repo.ListTaskMatrixAssignments(ctx, taskID)
 	if items == nil {
 		items = []TaskMatrixAssignment{}
@@ -122,6 +164,13 @@ func (s *Service) ListTaskMatrixAssignments(ctx context.Context, taskID uuid.UUI
 }
 
 func (s *Service) UpdateTaskMatrixAssignment(ctx context.Context, id uuid.UUID, input UpdateTaskMatrixAssignmentInput) (*TaskMatrixAssignment, error) {
+	current, err := s.repo.GetTaskMatrixAssignmentByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, current.OrganizationID); err != nil {
+		return nil, err
+	}
 	if input.RoleInTask != "" && !validTaskMatrixRole(input.RoleInTask) {
 		return nil, fmt.Errorf("%w: invalid role_in_task", ErrValidation)
 	}
@@ -132,10 +181,20 @@ func (s *Service) UpdateTaskMatrixAssignment(ctx context.Context, id uuid.UUID, 
 }
 
 func (s *Service) RemoveTaskMatrixAssignment(ctx context.Context, id uuid.UUID) error {
+	current, err := s.repo.GetTaskMatrixAssignmentByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := ensureTenantAccess(ctx, current.OrganizationID); err != nil {
+		return err
+	}
 	return s.repo.RemoveTaskMatrixAssignment(ctx, id)
 }
 
 func (s *Service) RecordDecision(ctx context.Context, taskID uuid.UUID, decisionMakerID uuid.UUID, makerType string, reasoning string, outcome string, input, output map[string]any) (*Decision, error) {
+	if _, _, err := s.ensureTaskAccess(ctx, taskID); err != nil {
+		return nil, err
+	}
 	d := &Decision{
 		TaskID:          taskID,
 		DecisionMakerID: decisionMakerID,
@@ -150,10 +209,16 @@ func (s *Service) RecordDecision(ctx context.Context, taskID uuid.UUID, decision
 }
 
 func (s *Service) GetContext(ctx context.Context, workflowID uuid.UUID) (*WorkflowContext, error) {
+	if _, err := s.ensureWorkflowAccess(ctx, workflowID); err != nil {
+		return nil, err
+	}
 	return s.repo.GetWorkflowContext(ctx, workflowID)
 }
 
 func (s *Service) UpdateContext(ctx context.Context, wc *WorkflowContext) error {
+	if _, err := s.ensureWorkflowAccess(ctx, wc.WorkflowID); err != nil {
+		return err
+	}
 	return s.repo.UpsertWorkflowContext(ctx, wc)
 }
 
@@ -214,4 +279,47 @@ func validTaskMatrixStatus(value string) bool {
 	default:
 		return false
 	}
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
+}
+
+func (s *Service) ensureWorkflowAccess(ctx context.Context, workflowID uuid.UUID) (*WorkflowInstance, error) {
+	inst, err := s.repo.GetInstance(ctx, workflowID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, inst.OrganizationID); err != nil {
+		return nil, err
+	}
+	return inst, nil
+}
+
+func (s *Service) ensureTaskAccess(ctx context.Context, taskID uuid.UUID) (*Task, *WorkflowInstance, error) {
+	task, err := s.repo.GetTaskByID(ctx, taskID)
+	if err != nil {
+		return nil, nil, err
+	}
+	inst, err := s.ensureWorkflowAccess(ctx, task.WorkflowID)
+	if err != nil {
+		return nil, nil, err
+	}
+	return task, inst, nil
+}
+
+func ensureTenantAccess(ctx context.Context, organizationID *uuid.UUID) error {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil || organizationID == nil {
+		return nil
+	}
+	if *tenant.OrganizationID != *organizationID {
+		return fmt.Errorf("%w: resource is outside current organization", ErrValidation)
+	}
+	return nil
 }

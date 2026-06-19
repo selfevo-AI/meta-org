@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 func TestEffectivePolicyGovernanceOverridesAuto(t *testing.T) {
@@ -28,6 +29,63 @@ func TestEffectivePolicyNotifyOverridesAuto(t *testing.T) {
 	policy := EffectivePolicy("auto", GovernanceResult{Decision: "notify", Allowed: true})
 	if policy != "notify" {
 		t.Fatalf("policy = %q, want notify", policy)
+	}
+}
+
+func TestExecuteToolUsesCurrentTenantOrganization(t *testing.T) {
+	orgID := uuid.New()
+	toolID := uuid.New()
+	actorID := uuid.New()
+	ctx := context.WithValue(context.Background(), middleware.TenantContextKey, &middleware.TenantContext{OrganizationID: &orgID})
+	repo := &fakeApprovalRepository{
+		tool: ToolDefinition{
+			ID:            toolID,
+			Name:          "project.summarize",
+			DefaultPolicy: PolicyAuto,
+			RiskLevel:     "medium",
+			RequiredLevel: "L1",
+			IsActive:      true,
+		},
+	}
+	svc := NewService(repo, nil, map[string]ToolAdapter{
+		"project.summarize": func(_ context.Context, input ExecuteToolInput) (ToolResult, error) {
+			if input.OrganizationID == nil || *input.OrganizationID != orgID {
+				t.Fatalf("adapter organization = %v, want %s", input.OrganizationID, orgID)
+			}
+			return ToolResult{Summary: "summarized", Data: map[string]any{"ok": true}}, nil
+		},
+	})
+
+	result, err := svc.ExecuteTool(ctx, ExecuteToolInput{
+		ToolName:  "project.summarize",
+		ActorID:   actorID,
+		ActorType: "internal_human",
+	})
+	if err != nil {
+		t.Fatalf("ExecuteTool returned error: %v", err)
+	}
+	if repo.createExecutionInput.OrganizationID == nil || *repo.createExecutionInput.OrganizationID != orgID {
+		t.Fatalf("created execution organization = %v, want %s", repo.createExecutionInput.OrganizationID, orgID)
+	}
+	if result.Execution.OrganizationID == nil || *result.Execution.OrganizationID != orgID {
+		t.Fatalf("execution organization = %v, want %s", result.Execution.OrganizationID, orgID)
+	}
+}
+
+func TestExecuteToolRejectsCrossTenantOrganization(t *testing.T) {
+	orgID := uuid.New()
+	otherOrgID := uuid.New()
+	ctx := context.WithValue(context.Background(), middleware.TenantContextKey, &middleware.TenantContext{OrganizationID: &orgID})
+	svc := NewService(&fakeApprovalRepository{}, nil, nil)
+
+	_, err := svc.ExecuteTool(ctx, ExecuteToolInput{
+		ToolName:       "project.summarize",
+		ActorID:        uuid.New(),
+		ActorType:      "internal_human",
+		OrganizationID: &otherOrgID,
+	})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("ExecuteTool error = %v, want ErrForbidden", err)
 	}
 }
 
@@ -240,11 +298,12 @@ func TestUpdateInterfaceFile(t *testing.T) {
 }
 
 type fakeApprovalRepository struct {
-	tool           ToolDefinition
-	execution      ToolExecution
-	approval       ToolApproval
-	tier           string
-	interfaceFiles []InterfaceFile
+	tool                 ToolDefinition
+	execution            ToolExecution
+	approval             ToolApproval
+	tier                 string
+	interfaceFiles       []InterfaceFile
+	createExecutionInput CreateExecutionInput
 }
 
 func (f *fakeApprovalRepository) CreateTool(context.Context, CreateToolInput) (*ToolDefinition, error) {
@@ -316,7 +375,30 @@ func (f *fakeApprovalRepository) UpdateInterfaceFile(_ context.Context, id uuid.
 	return file, nil
 }
 
-func (f *fakeApprovalRepository) CreateExecution(context.Context, CreateExecutionInput) (*ToolExecution, error) {
+func (f *fakeApprovalRepository) CreateExecution(_ context.Context, input CreateExecutionInput) (*ToolExecution, error) {
+	f.createExecutionInput = input
+	if f.execution.ID == uuid.Nil {
+		f.execution = ToolExecution{
+			ID:                 uuid.New(),
+			ToolID:             input.ToolID,
+			InvocationID:       input.InvocationID,
+			ActorID:            input.ActorID,
+			ActorType:          input.ActorType,
+			OrganizationID:     input.OrganizationID,
+			DepartmentID:       input.DepartmentID,
+			ProjectID:          input.ProjectID,
+			WorkflowID:         input.WorkflowID,
+			TaskID:             input.TaskID,
+			IdempotencyKey:     input.IdempotencyKey,
+			Policy:             input.Policy,
+			GovernanceDecision: input.GovernanceDecision,
+			RequestedByHumanID: input.RequestedByHumanID,
+			Status:             input.Status,
+			Arguments:          input.Arguments,
+			Result:             map[string]any{},
+			CreatedAt:          time.Now(),
+		}
+	}
 	return &f.execution, nil
 }
 

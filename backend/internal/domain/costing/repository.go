@@ -240,6 +240,32 @@ func (r *Repository) ListRateCards(ctx context.Context, limit int) ([]CostRateCa
 	return items, rows.Err()
 }
 
+func (r *Repository) ListRateCardsByScope(ctx context.Context, scopeType string, scopeID uuid.UUID, limit int) ([]CostRateCard, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, subject_type, subject_id, scope_type, scope_id, rate_type,
+			amount::float8, currency, base_amount::float8, base_currency,
+			exchange_rate_version_id, effective_from, effective_to, status, metadata, created_at
+		FROM cost_rate_cards
+		WHERE (scope_type = $1 AND scope_id = $2)
+		   OR (scope_type = '' OR scope_type IS NULL)
+		ORDER BY created_at DESC
+		LIMIT $3
+	`, scopeType, scopeID, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list scoped rate cards: %w", err)
+	}
+	defer rows.Close()
+	items := []CostRateCard{}
+	for rows.Next() {
+		var item CostRateCard
+		if err := scanRateCard(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan rate card: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
 func (r *Repository) UpdateRateCard(ctx context.Context, id uuid.UUID, input CreateRateCardInput, conversion ConversionResult) (*CostRateCard, error) {
 	card := &CostRateCard{}
 	effectiveFrom := time.Now().UTC()
@@ -322,6 +348,31 @@ func (r *Repository) ListBudgets(ctx context.Context, limit int) ([]CostBudget, 
 	`, normalizeLimit(limit))
 	if err != nil {
 		return nil, fmt.Errorf("list budgets: %w", err)
+	}
+	defer rows.Close()
+	items := []CostBudget{}
+	for rows.Next() {
+		var item CostBudget
+		if err := scanBudget(rows, &item); err != nil {
+			return nil, fmt.Errorf("scan budget: %w", err)
+		}
+		items = append(items, item)
+	}
+	return items, rows.Err()
+}
+
+func (r *Repository) ListBudgetsByScope(ctx context.Context, scopeType string, scopeID uuid.UUID, limit int) ([]CostBudget, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT id, scope_type, scope_id, amount::float8, currency, base_amount::float8,
+			base_currency, exchange_rate_version_id, period_start, period_end, status,
+			metadata, created_at, updated_at
+		FROM cost_budgets
+		WHERE scope_type = $1 AND scope_id = $2
+		ORDER BY created_at DESC
+		LIMIT $3
+	`, scopeType, scopeID, normalizeLimit(limit))
+	if err != nil {
+		return nil, fmt.Errorf("list scoped budgets: %w", err)
 	}
 	defer rows.Close()
 	items := []CostBudget{}

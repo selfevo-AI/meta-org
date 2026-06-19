@@ -94,6 +94,35 @@ func (r *Repository) ListRequirements(ctx context.Context, limit int) ([]Require
 	return requirements, nil
 }
 
+func (r *Repository) ListRequirementsByOrganization(ctx context.Context, orgID uuid.UUID, limit int) ([]Requirement, error) {
+	limit = normalizeLimit(limit)
+	rows, err := r.db.Query(ctx,
+		`SELECT id, master_key, title, description, source, status, priority, risk_level, required_level,
+		        organization_id, department_id, created_by_id, created_by_type, budget_amount,
+		        budget_currency, analysis, metadata,
+		        created_at, updated_at
+		 FROM requirements
+		 WHERE organization_id = $1
+		 ORDER BY created_at DESC LIMIT $2`, orgID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list requirements by organization: %w", err)
+	}
+	defer rows.Close()
+
+	requirements := []Requirement{}
+	for rows.Next() {
+		var req Requirement
+		if err := scanRequirement(rows, &req); err != nil {
+			return nil, fmt.Errorf("scan requirement: %w", err)
+		}
+		requirements = append(requirements, req)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list requirements by organization iteration: %w", err)
+	}
+	return requirements, nil
+}
+
 func (r *Repository) GetRequirement(ctx context.Context, id uuid.UUID) (*Requirement, error) {
 	req := &Requirement{}
 	err := scanRequirement(r.db.QueryRow(ctx,
@@ -315,6 +344,33 @@ func (r *Repository) ListProjects(ctx context.Context, limit int) ([]Project, er
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("list projects iteration: %w", err)
+	}
+	return projects, nil
+}
+
+func (r *Repository) ListProjectsByOrganization(ctx context.Context, orgID uuid.UUID, limit int) ([]Project, error) {
+	limit = normalizeLimit(limit)
+	rows, err := r.db.Query(ctx,
+		`SELECT id, master_key, requirement_id, organization_id, department_id, name, description, status,
+		        priority, risk_level, required_level, budget_amount, budget_currency, metadata, created_at, updated_at
+		 FROM projects
+		 WHERE organization_id = $1
+		 ORDER BY created_at DESC LIMIT $2`, orgID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list projects by organization: %w", err)
+	}
+	defer rows.Close()
+
+	projects := []Project{}
+	for rows.Next() {
+		var proj Project
+		if err := scanProject(rows, &proj); err != nil {
+			return nil, fmt.Errorf("scan project: %w", err)
+		}
+		projects = append(projects, proj)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list projects by organization iteration: %w", err)
 	}
 	return projects, nil
 }

@@ -96,6 +96,9 @@ func (s *Service) CreateRequirement(ctx context.Context, input CreateRequirement
 		return nil, fmt.Errorf("%w: title is required", ErrValidation)
 	}
 	normalizeRequirementInput(&input)
+	if input.OrganizationID == nil {
+		input.OrganizationID = currentTenantOrganizationID(ctx)
+	}
 	actorID, actorType, err := s.resolveActor(ctx, ActorInput{ActorID: input.CreatedByID, ActorType: input.CreatedByType})
 	if err != nil {
 		return nil, err
@@ -120,7 +123,13 @@ func (s *Service) CreateRequirement(ctx context.Context, input CreateRequirement
 }
 
 func (s *Service) ListRequirements(ctx context.Context, limit int) ([]Requirement, error) {
-	requirements, err := s.repo.ListRequirements(ctx, limit)
+	var requirements []Requirement
+	var err error
+	if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+		requirements, err = s.repo.ListRequirementsByOrganization(ctx, *orgID, limit)
+	} else {
+		requirements, err = s.repo.ListRequirements(ctx, limit)
+	}
 	if requirements == nil {
 		requirements = []Requirement{}
 	}
@@ -128,7 +137,14 @@ func (s *Service) ListRequirements(ctx context.Context, limit int) ([]Requiremen
 }
 
 func (s *Service) GetRequirement(ctx context.Context, id uuid.UUID) (*Requirement, error) {
-	return s.repo.GetRequirement(ctx, id)
+	req, err := s.repo.GetRequirement(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, req.OrganizationID); err != nil {
+		return nil, err
+	}
+	return req, nil
 }
 
 func (s *Service) UploadRequirementDocument(ctx context.Context, requirementID uuid.UUID, input UploadRequirementDocumentInput) (*RequirementDocument, error) {
@@ -160,6 +176,13 @@ func (s *Service) UploadRequirementDocument(ctx context.Context, requirementID u
 }
 
 func (s *Service) ListRequirementDocuments(ctx context.Context, requirementID uuid.UUID) ([]RequirementDocument, error) {
+	req, err := s.repo.GetRequirement(ctx, requirementID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, req.OrganizationID); err != nil {
+		return nil, err
+	}
 	documents, err := s.repo.ListRequirementDocuments(ctx, requirementID)
 	if documents == nil {
 		documents = []RequirementDocument{}
@@ -168,7 +191,18 @@ func (s *Service) ListRequirementDocuments(ctx context.Context, requirementID uu
 }
 
 func (s *Service) GetRequirementDocument(ctx context.Context, id uuid.UUID) (*RequirementDocumentContent, error) {
-	return s.repo.GetRequirementDocument(ctx, id)
+	doc, err := s.repo.GetRequirementDocument(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	req, err := s.repo.GetRequirement(ctx, doc.RequirementID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, req.OrganizationID); err != nil {
+		return nil, err
+	}
+	return doc, nil
 }
 
 func (s *Service) StartRequirementAnalysisWorkflow(ctx context.Context, requirementID uuid.UUID, input StartRequirementAnalysisWorkflowInput) (*RequirementAnalysisWorkflow, error) {
@@ -525,6 +559,9 @@ func (s *Service) CreateProject(ctx context.Context, input CreateProjectInput) (
 			}
 		}
 	}
+	if input.OrganizationID == nil {
+		input.OrganizationID = currentTenantOrganizationID(ctx)
+	}
 	if err := s.requireAccess(ctx, actorID, actorType, "project.create", "project", nil, input.OrganizationID, input.DepartmentID, nil, input.RequiredLevel, input.RiskLevel, nil); err != nil {
 		return nil, err
 	}
@@ -539,7 +576,13 @@ func (s *Service) CreateProject(ctx context.Context, input CreateProjectInput) (
 }
 
 func (s *Service) ListProjects(ctx context.Context, limit int) ([]Project, error) {
-	projects, err := s.repo.ListProjects(ctx, limit)
+	var projects []Project
+	var err error
+	if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+		projects, err = s.repo.ListProjectsByOrganization(ctx, *orgID, limit)
+	} else {
+		projects, err = s.repo.ListProjects(ctx, limit)
+	}
 	if projects == nil {
 		projects = []Project{}
 	}
@@ -547,7 +590,14 @@ func (s *Service) ListProjects(ctx context.Context, limit int) ([]Project, error
 }
 
 func (s *Service) GetProject(ctx context.Context, id uuid.UUID) (*Project, error) {
-	return s.repo.GetProject(ctx, id)
+	proj, err := s.repo.GetProject(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, proj.OrganizationID); err != nil {
+		return nil, err
+	}
+	return proj, nil
 }
 
 func (s *Service) UpdateProject(ctx context.Context, id uuid.UUID, input UpdateProjectInput) (*Project, error) {
@@ -596,6 +646,13 @@ func (s *Service) AddProjectMember(ctx context.Context, projectID uuid.UUID, inp
 }
 
 func (s *Service) ListProjectMembers(ctx context.Context, projectID uuid.UUID) ([]ProjectMember, error) {
+	proj, err := s.repo.GetProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, proj.OrganizationID); err != nil {
+		return nil, err
+	}
 	members, err := s.repo.ListProjectMembers(ctx, projectID)
 	if members == nil {
 		members = []ProjectMember{}
@@ -659,6 +716,13 @@ func (s *Service) BindProjectWorkflow(ctx context.Context, projectID uuid.UUID, 
 }
 
 func (s *Service) ListProjectWorkflows(ctx context.Context, projectID uuid.UUID) ([]ProjectWorkflow, error) {
+	proj, err := s.repo.GetProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, proj.OrganizationID); err != nil {
+		return nil, err
+	}
 	workflows, err := s.repo.ListProjectWorkflows(ctx, projectID)
 	if workflows == nil {
 		workflows = []ProjectWorkflow{}
@@ -669,6 +733,9 @@ func (s *Service) ListProjectWorkflows(ctx context.Context, projectID uuid.UUID)
 func (s *Service) MatchProjectActors(ctx context.Context, projectID uuid.UUID, input MatchProjectActorsInput) ([]organization.MemberMatchCandidate, error) {
 	proj, err := s.repo.GetProject(ctx, projectID)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, proj.OrganizationID); err != nil {
 		return nil, err
 	}
 	if s.organization == nil {
@@ -733,6 +800,9 @@ func (s *Service) UpdateProjectStatus(ctx context.Context, projectID uuid.UUID, 
 func (s *Service) GetProjectOverview(ctx context.Context, projectID uuid.UUID) (*ProjectOverview, error) {
 	proj, err := s.repo.GetProject(ctx, projectID)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, proj.OrganizationID); err != nil {
 		return nil, err
 	}
 	var req *Requirement
@@ -814,6 +884,13 @@ func (s *Service) CreateDeliverable(ctx context.Context, projectID uuid.UUID, in
 }
 
 func (s *Service) ListDeliverables(ctx context.Context, projectID uuid.UUID) ([]Deliverable, error) {
+	proj, err := s.repo.GetProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, proj.OrganizationID); err != nil {
+		return nil, err
+	}
 	deliverables, err := s.repo.ListDeliverables(ctx, projectID)
 	if deliverables == nil {
 		deliverables = []Deliverable{}
@@ -911,6 +988,13 @@ func (s *Service) CreateCostEntryFromAIUsage(ctx context.Context, projectID uuid
 }
 
 func (s *Service) ListCostEntries(ctx context.Context, projectID uuid.UUID) ([]CostEntry, error) {
+	proj, err := s.repo.GetProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, proj.OrganizationID); err != nil {
+		return nil, err
+	}
 	entries, err := s.repo.ListCostEntries(ctx, projectID)
 	if entries == nil {
 		entries = []CostEntry{}
@@ -919,6 +1003,13 @@ func (s *Service) ListCostEntries(ctx context.Context, projectID uuid.UUID) ([]C
 }
 
 func (s *Service) GetCostSummary(ctx context.Context, projectID uuid.UUID) (*CostSummary, error) {
+	proj, err := s.repo.GetProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, proj.OrganizationID); err != nil {
+		return nil, err
+	}
 	return s.repo.GetCostSummary(ctx, projectID)
 }
 
@@ -1047,6 +1138,13 @@ func (s *Service) CreateProjectEvaluation(ctx context.Context, projectID uuid.UU
 }
 
 func (s *Service) ListProjectEvaluations(ctx context.Context, projectID uuid.UUID) ([]ProjectEvaluation, error) {
+	proj, err := s.repo.GetProject(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, proj.OrganizationID); err != nil {
+		return nil, err
+	}
 	evaluations, err := s.repo.ListProjectEvaluations(ctx, projectID)
 	if evaluations == nil {
 		evaluations = []ProjectEvaluation{}
@@ -1192,6 +1290,9 @@ func (s *Service) resolveActor(ctx context.Context, input ActorInput) (uuid.UUID
 }
 
 func (s *Service) requireAccess(ctx context.Context, actorID uuid.UUID, actorType string, action string, resource string, resourceID *uuid.UUID, organizationID *uuid.UUID, departmentID *uuid.UUID, capabilityID *uuid.UUID, requiredLevel string, riskLevel string, weightSnapshot *float64) error {
+	if err := ensureTenantAccess(ctx, organizationID); err != nil {
+		return err
+	}
 	if s.governance == nil {
 		return nil
 	}
@@ -1216,6 +1317,26 @@ func (s *Service) requireAccess(ctx context.Context, actorID uuid.UUID, actorTyp
 	}
 	if !decision.Allowed {
 		return fmt.Errorf("%w: %s", ErrForbidden, decision.Reason)
+	}
+	return nil
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
+}
+
+func ensureTenantAccess(ctx context.Context, organizationID *uuid.UUID) error {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil || organizationID == nil {
+		return nil
+	}
+	if *tenant.OrganizationID != *organizationID {
+		return fmt.Errorf("%w: resource is outside current organization", ErrForbidden)
 	}
 	return nil
 }

@@ -161,7 +161,9 @@ func (r *Repository) ListContextWeights(ctx context.Context, limit int) ([]Conte
 		        workflow_stage, task_type, capability_id, risk_level, overall_score, expertise_score,
 		        track_record_score, reliability_score, recency_score, context_fit_score, principle_score,
 		        decision_count, context, last_updated
-		 FROM context_weight_scores ORDER BY overall_score DESC, last_updated DESC LIMIT $1`, limit)
+		 FROM context_weight_scores
+		 WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1)
+		 ORDER BY overall_score DESC, last_updated DESC LIMIT $2`, nullableUUID(currentTenantOrganizationID(ctx)), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list context weights: %w", err)
 	}
@@ -378,4 +380,11 @@ func (r *Repository) AcknowledgeSignal(ctx context.Context, id uuid.UUID) error 
 		return fmt.Errorf("acknowledge signal: %w", err)
 	}
 	return nil
+}
+
+func nullableUUID(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return *id
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -28,7 +29,7 @@ func (r *Repository) CreateUser(ctx context.Context, input CreateUserInput) (*Us
 	err = r.db.QueryRow(ctx,
 		`INSERT INTO users (name, email, password_hash) VALUES ($1, $2, $3)
 		 RETURNING id, name, email, password_hash, COALESCE(avatar_url, ''), created_at, updated_at`,
-		input.Name, input.Email, string(hash),
+		strings.TrimSpace(input.Name), strings.ToLower(strings.TrimSpace(input.Email)), string(hash),
 	).Scan(&user.ID, &user.Name, &user.Email, &user.PasswordHash, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("create user: %w", err)
@@ -40,7 +41,7 @@ func (r *Repository) GetUserByEmail(ctx context.Context, email string) (*User, e
 	user := &User{}
 	err := r.db.QueryRow(ctx,
 		`SELECT id, name, email, password_hash, COALESCE(avatar_url, ''), created_at, updated_at
-		 FROM users WHERE email = $1`, email,
+		 FROM users WHERE lower(email) = lower($1)`, strings.TrimSpace(email),
 	).Scan(&user.ID, &user.Name, &user.Email, &user.PasswordHash, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get user by email: %w", err)
@@ -138,6 +139,72 @@ func (r *Repository) ListAgents(ctx context.Context, limit int) ([]AIAgent, erro
 		return nil, fmt.Errorf("list agents iteration: %w", err)
 	}
 	return agents, nil
+}
+
+func (r *Repository) ListAgentsByOrganization(ctx context.Context, orgID uuid.UUID, limit int) ([]AIAgent, error) {
+	if limit <= 0 {
+		limit = 50
+	} else if limit > 100 {
+		limit = 100
+	}
+	rows, err := r.db.Query(ctx,
+		`SELECT DISTINCT a.id, a.name, a.model_type, a.api_key_hash, a.capabilities, a.permission_level,
+		        a.agent_origin, COALESCE(a.provider, ''), a.service_class, COALESCE(a.vendor, ''),
+		        COALESCE(a.contract_ref, ''), a.risk_level, a.metadata, a.is_active, a.created_at, a.updated_at
+		 FROM ai_agents a
+		 JOIN organization_memberships om ON om.agent_id = a.id
+		 WHERE om.organization_id = $1
+		   AND om.member_type = 'agent'
+		   AND om.status = 'active'
+		 ORDER BY a.created_at DESC
+		 LIMIT $2`, orgID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list organization agents: %w", err)
+	}
+	defer rows.Close()
+
+	var agents []AIAgent
+	for rows.Next() {
+		var agent AIAgent
+		var capJSON, metaJSON []byte
+		if err := rows.Scan(&agent.ID, &agent.Name, &agent.ModelType, &agent.APIKeyHash, &capJSON, &agent.PermissionLevel, &agent.AgentOrigin, &agent.Provider, &agent.ServiceClass, &agent.Vendor, &agent.ContractRef, &agent.RiskLevel, &metaJSON, &agent.IsActive, &agent.CreatedAt, &agent.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan organization agent: %w", err)
+		}
+		if err := hydrateAgentJSON(&agent, capJSON, metaJSON); err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list organization agents iteration: %w", err)
+	}
+	return agents, nil
+}
+
+func (r *Repository) AttachAgentToOrganization(ctx context.Context, agentID uuid.UUID, orgID uuid.UUID) error {
+	var departmentID uuid.UUID
+	if err := r.db.QueryRow(ctx, `
+		SELECT id
+		FROM departments
+		WHERE organization_id = $1 AND status = 'active'
+		ORDER BY parent_id NULLS FIRST, sort_order, created_at
+		LIMIT 1
+	`, orgID).Scan(&departmentID); err != nil {
+		return fmt.Errorf("get organization department for agent: %w", err)
+	}
+	if _, err := r.db.Exec(ctx, `
+		INSERT INTO organization_memberships (
+			organization_id, department_id, member_type, agent_id, title, authority_tier, status, metadata
+		)
+		VALUES ($1, $2, 'agent', $3, 'Agent', 'executor', 'active', '{"source":"agent_registration"}'::jsonb)
+		ON CONFLICT (department_id, agent_id) WHERE member_type = 'agent'
+		DO UPDATE SET status = 'active',
+		              authority_tier = 'executor',
+		              updated_at = NOW()
+	`, orgID, departmentID, agentID); err != nil {
+		return fmt.Errorf("attach agent to organization: %w", err)
+	}
+	return nil
 }
 
 func (r *Repository) ListRoles(ctx context.Context) ([]Role, error) {

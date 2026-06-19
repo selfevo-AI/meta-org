@@ -11,11 +11,13 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/evolution"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/metaresource"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 var (
 	ErrNotFound   = errors.New("not found")
 	ErrValidation = errors.New("validation error")
+	ErrForbidden  = errors.New("forbidden")
 )
 
 type Repository interface {
@@ -50,6 +52,7 @@ type Repository interface {
 	ListExternalMembers(ctx context.Context, limit int) ([]ExternalMember, error)
 	UpdateExternalMember(ctx context.Context, id uuid.UUID, input UpdateExternalMemberInput) (*ExternalMember, error)
 	AddOrganizationMember(ctx context.Context, input AddOrganizationMemberInput) (*OrganizationMembership, error)
+	GetOrganizationMembershipByID(ctx context.Context, id uuid.UUID) (*OrganizationMembership, error)
 	ListOrganizationMemberships(ctx context.Context, orgID uuid.UUID, departmentID *uuid.UUID, memberTypes []string) ([]OrganizationMembership, error)
 	UpdateOrganizationMembership(ctx context.Context, id uuid.UUID, input UpdateOrganizationMembershipInput) (*OrganizationMembership, error)
 	RemoveOrganizationMembership(ctx context.Context, id uuid.UUID) error
@@ -100,10 +103,16 @@ func (s *Service) CreateOrganization(ctx context.Context, input CreateOrganizati
 	if input.Name == "" {
 		return nil, fmt.Errorf("%w: name is required", ErrValidation)
 	}
+	if tenant, ok := middleware.TenantFromContext(ctx); ok && tenant.Mode == "saas" && !tenant.IsPlatformAdmin {
+		return nil, fmt.Errorf("%w: only platform admins can create organizations outside onboarding", ErrForbidden)
+	}
 	return s.repo.CreateOrganization(ctx, input)
 }
 
 func (s *Service) GetCurrentOrganization(ctx context.Context) (*Organization, error) {
+	if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+		return s.repo.GetOrganizationByID(ctx, *orgID)
+	}
 	organizations, err := s.repo.ListOrganizations(ctx, 1)
 	if err != nil {
 		return nil, err
@@ -118,10 +127,20 @@ func (s *Service) GetCurrentOrganization(ctx context.Context) (*Organization, er
 }
 
 func (s *Service) GetOrganization(ctx context.Context, id uuid.UUID) (*Organization, error) {
+	if err := ensureTenantAccess(ctx, id); err != nil {
+		return nil, err
+	}
 	return s.repo.GetOrganizationByID(ctx, id)
 }
 
 func (s *Service) ListOrganizations(ctx context.Context, limit int) ([]Organization, error) {
+	if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+		org, err := s.repo.GetOrganizationByID(ctx, *orgID)
+		if err != nil {
+			return nil, err
+		}
+		return []Organization{*org}, nil
+	}
 	organizations, err := s.repo.ListOrganizations(ctx, limit)
 	if organizations == nil {
 		organizations = []Organization{}
@@ -130,6 +149,9 @@ func (s *Service) ListOrganizations(ctx context.Context, limit int) ([]Organizat
 }
 
 func (s *Service) UpdateOrganization(ctx context.Context, id uuid.UUID, input UpdateOrganizationInput) (*Organization, error) {
+	if err := ensureTenantAccess(ctx, id); err != nil {
+		return nil, err
+	}
 	if input.Name == "" && input.Description == "" {
 		return nil, fmt.Errorf("%w: name or description is required", ErrValidation)
 	}
@@ -137,6 +159,9 @@ func (s *Service) UpdateOrganization(ctx context.Context, id uuid.UUID, input Up
 }
 
 func (s *Service) GetOrgChart(ctx context.Context, orgID uuid.UUID) ([]MVRU, error) {
+	if err := ensureTenantAccess(ctx, orgID); err != nil {
+		return nil, err
+	}
 	return s.repo.GetOrgChart(ctx, orgID)
 }
 
@@ -150,6 +175,9 @@ func (s *Service) CreateMVRU(ctx context.Context, input CreateMVRUInput) (*MVRU,
 	if input.Config == nil {
 		input.Config = map[string]any{}
 	}
+	if err := ensureTenantAccess(ctx, input.OrganizationID); err != nil {
+		return nil, err
+	}
 	return s.repo.CreateMVRU(ctx, input)
 }
 
@@ -158,20 +186,44 @@ func (s *Service) GetMVRU(ctx context.Context, id uuid.UUID) (*MVRU, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureTenantAccess(ctx, mvru.OrganizationID); err != nil {
+		return nil, err
+	}
 	return mvru, nil
 }
 
 func (s *Service) ActivateMVRU(ctx context.Context, id uuid.UUID) error {
+	mvru, err := s.repo.GetMVRUByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := ensureTenantAccess(ctx, mvru.OrganizationID); err != nil {
+		return err
+	}
 	return s.repo.UpdateMVRUStatus(ctx, id, MVRUActive)
 }
 
 func (s *Service) EvaluateMVRU(ctx context.Context, id uuid.UUID) error {
+	mvru, err := s.repo.GetMVRUByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := ensureTenantAccess(ctx, mvru.OrganizationID); err != nil {
+		return err
+	}
 	return s.repo.UpdateMVRUStatus(ctx, id, MVRUEvaluating)
 }
 
 func (s *Service) AddMember(ctx context.Context, mvruID, roleID uuid.UUID, userID, agentID *uuid.UUID) error {
 	if userID == nil && agentID == nil {
 		return fmt.Errorf("%w: user_id or agent_id is required", ErrValidation)
+	}
+	mvru, err := s.repo.GetMVRUByID(ctx, mvruID)
+	if err != nil {
+		return err
+	}
+	if err := ensureTenantAccess(ctx, mvru.OrganizationID); err != nil {
+		return err
 	}
 	return s.repo.AddMember(ctx, MVRUMember{
 		MVRUID:  mvruID,
@@ -182,10 +234,31 @@ func (s *Service) AddMember(ctx context.Context, mvruID, roleID uuid.UUID, userI
 }
 
 func (s *Service) RemoveMember(ctx context.Context, mvruID uuid.UUID, userID, agentID *uuid.UUID) error {
+	mvru, err := s.repo.GetMVRUByID(ctx, mvruID)
+	if err != nil {
+		return err
+	}
+	if err := ensureTenantAccess(ctx, mvru.OrganizationID); err != nil {
+		return err
+	}
 	return s.repo.RemoveMember(ctx, &mvruID, userID, agentID)
 }
 
 func (s *Service) CreateRelationship(ctx context.Context, sourceID, targetID uuid.UUID, relType string, config map[string]any) (*MVRURelationship, error) {
+	source, err := s.repo.GetMVRUByID(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	target, err := s.repo.GetMVRUByID(ctx, targetID)
+	if err != nil {
+		return nil, err
+	}
+	if source.OrganizationID != target.OrganizationID {
+		return nil, fmt.Errorf("%w: mvru relationship must stay inside one organization", ErrValidation)
+	}
+	if err := ensureTenantAccess(ctx, source.OrganizationID); err != nil {
+		return nil, err
+	}
 	return s.repo.CreateRelationship(ctx, MVRURelationship{
 		SourceMVRUID: sourceID,
 		TargetMVRUID: targetID,
@@ -195,6 +268,9 @@ func (s *Service) CreateRelationship(ctx context.Context, sourceID, targetID uui
 }
 
 func (s *Service) CreateDepartment(ctx context.Context, orgID uuid.UUID, input CreateDepartmentInput) (*Department, error) {
+	if err := ensureTenantAccess(ctx, orgID); err != nil {
+		return nil, err
+	}
 	if input.Name == "" {
 		return nil, fmt.Errorf("%w: name is required", ErrValidation)
 	}
@@ -207,10 +283,20 @@ func (s *Service) CreateDepartment(ctx context.Context, orgID uuid.UUID, input C
 }
 
 func (s *Service) GetDepartment(ctx context.Context, id uuid.UUID) (*Department, error) {
-	return s.repo.GetDepartmentByID(ctx, id)
+	dept, err := s.repo.GetDepartmentByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, dept.OrganizationID); err != nil {
+		return nil, err
+	}
+	return dept, nil
 }
 
 func (s *Service) ListDepartments(ctx context.Context, orgID uuid.UUID) ([]Department, error) {
+	if err := ensureTenantAccess(ctx, orgID); err != nil {
+		return nil, err
+	}
 	departments, err := s.repo.ListDepartments(ctx, orgID)
 	if departments == nil {
 		departments = []Department{}
@@ -219,6 +305,9 @@ func (s *Service) ListDepartments(ctx context.Context, orgID uuid.UUID) ([]Depar
 }
 
 func (s *Service) GetDepartmentTree(ctx context.Context, orgID uuid.UUID) ([]Department, error) {
+	if err := ensureTenantAccess(ctx, orgID); err != nil {
+		return nil, err
+	}
 	tree, err := s.repo.GetDepartmentTree(ctx, orgID)
 	if tree == nil {
 		tree = []Department{}
@@ -227,6 +316,13 @@ func (s *Service) GetDepartmentTree(ctx context.Context, orgID uuid.UUID) ([]Dep
 }
 
 func (s *Service) UpdateDepartment(ctx context.Context, id uuid.UUID, input UpdateDepartmentInput) (*Department, error) {
+	current, err := s.repo.GetDepartmentByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, current.OrganizationID); err != nil {
+		return nil, err
+	}
 	if input.Status != "" && !isValidOrgStatus(input.Status) {
 		return nil, fmt.Errorf("%w: invalid department status", ErrValidation)
 	}
@@ -241,6 +337,9 @@ func (s *Service) CreatePosition(ctx context.Context, departmentID uuid.UUID, in
 	if err != nil {
 		return nil, err
 	}
+	if err := ensureTenantAccess(ctx, dept.OrganizationID); err != nil {
+		return nil, err
+	}
 	input.OrganizationID = dept.OrganizationID
 	input.DepartmentID = departmentID
 	normalizePositionInput(&input)
@@ -251,10 +350,20 @@ func (s *Service) CreatePosition(ctx context.Context, departmentID uuid.UUID, in
 }
 
 func (s *Service) GetPosition(ctx context.Context, id uuid.UUID) (*Position, error) {
-	return s.repo.GetPositionByID(ctx, id)
+	position, err := s.repo.GetPositionByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, position.OrganizationID); err != nil {
+		return nil, err
+	}
+	return position, nil
 }
 
 func (s *Service) ListPositions(ctx context.Context, orgID uuid.UUID, departmentID *uuid.UUID) ([]Position, error) {
+	if err := ensureTenantAccess(ctx, orgID); err != nil {
+		return nil, err
+	}
 	positions, err := s.repo.ListPositions(ctx, orgID, departmentID)
 	if positions == nil {
 		positions = []Position{}
@@ -263,12 +372,22 @@ func (s *Service) ListPositions(ctx context.Context, orgID uuid.UUID, department
 }
 
 func (s *Service) UpdatePosition(ctx context.Context, id uuid.UUID, input UpdatePositionInput) (*Position, error) {
+	current, err := s.repo.GetPositionByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, current.OrganizationID); err != nil {
+		return nil, err
+	}
 	return s.repo.UpdatePosition(ctx, id, input)
 }
 
 func (s *Service) CreatePositionAssignment(ctx context.Context, positionID uuid.UUID, input CreatePositionAssignmentInput) (*PositionAssignment, error) {
 	position, err := s.repo.GetPositionByID(ctx, positionID)
 	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, position.OrganizationID); err != nil {
 		return nil, err
 	}
 	input.PositionID = positionID
@@ -290,6 +409,13 @@ func (s *Service) CreatePositionAssignment(ctx context.Context, positionID uuid.
 }
 
 func (s *Service) ListPositionAssignments(ctx context.Context, positionID uuid.UUID) ([]PositionAssignment, error) {
+	position, err := s.repo.GetPositionByID(ctx, positionID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, position.OrganizationID); err != nil {
+		return nil, err
+	}
 	assignments, err := s.repo.ListPositionAssignments(ctx, positionID)
 	if assignments == nil {
 		assignments = []PositionAssignment{}
@@ -298,11 +424,14 @@ func (s *Service) ListPositionAssignments(ctx context.Context, positionID uuid.U
 }
 
 func (s *Service) UpdatePositionAssignment(ctx context.Context, id uuid.UUID, input UpdatePositionAssignmentInput) (*PositionAssignment, error) {
+	current, err := s.repo.GetPositionAssignmentByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, current.OrganizationID); err != nil {
+		return nil, err
+	}
 	if input.MetaResourceID != nil {
-		current, err := s.repo.GetPositionAssignmentByID(ctx, id)
-		if err != nil {
-			return nil, err
-		}
 		if err := s.validateMetaAssignment(ctx, input.MetaResourceID, current.ActorID, current.ActorType); err != nil {
 			return nil, err
 		}
@@ -311,6 +440,13 @@ func (s *Service) UpdatePositionAssignment(ctx context.Context, id uuid.UUID, in
 }
 
 func (s *Service) RemovePositionAssignment(ctx context.Context, id uuid.UUID) error {
+	current, err := s.repo.GetPositionAssignmentByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := ensureTenantAccess(ctx, current.OrganizationID); err != nil {
+		return err
+	}
 	return s.repo.RemovePositionAssignment(ctx, id)
 }
 
@@ -350,6 +486,13 @@ func (s *Service) UpdateExternalMember(ctx context.Context, id uuid.UUID, input 
 }
 
 func (s *Service) AddOrganizationMember(ctx context.Context, departmentID uuid.UUID, input AddOrganizationMemberInput) (*OrganizationMembership, error) {
+	dept, err := s.repo.GetDepartmentByID(ctx, departmentID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, dept.OrganizationID); err != nil {
+		return nil, err
+	}
 	input.DepartmentID = departmentID
 	if input.Status == "" {
 		input.Status = "active"
@@ -373,6 +516,9 @@ func (s *Service) AddOrganizationMember(ctx context.Context, departmentID uuid.U
 }
 
 func (s *Service) ListOrganizationMemberships(ctx context.Context, orgID uuid.UUID, departmentID *uuid.UUID, memberTypes []string) ([]OrganizationMembership, error) {
+	if err := ensureTenantAccess(ctx, orgID); err != nil {
+		return nil, err
+	}
 	for _, memberType := range memberTypes {
 		if !isValidMemberType(memberType) {
 			return nil, fmt.Errorf("%w: invalid member type", ErrValidation)
@@ -389,6 +535,13 @@ func (s *Service) ListOrganizationMemberships(ctx context.Context, orgID uuid.UU
 }
 
 func (s *Service) UpdateOrganizationMembership(ctx context.Context, id uuid.UUID, input UpdateOrganizationMembershipInput) (*OrganizationMembership, error) {
+	current, err := s.repo.GetOrganizationMembershipByID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, current.OrganizationID); err != nil {
+		return nil, err
+	}
 	if input.Status != "" && !isValidOrgStatus(input.Status) {
 		return nil, fmt.Errorf("%w: invalid membership status", ErrValidation)
 	}
@@ -399,10 +552,24 @@ func (s *Service) UpdateOrganizationMembership(ctx context.Context, id uuid.UUID
 }
 
 func (s *Service) RemoveOrganizationMembership(ctx context.Context, id uuid.UUID) error {
+	current, err := s.repo.GetOrganizationMembershipByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := ensureTenantAccess(ctx, current.OrganizationID); err != nil {
+		return err
+	}
 	return s.repo.RemoveOrganizationMembership(ctx, id)
 }
 
 func (s *Service) LinkDepartmentMVRU(ctx context.Context, departmentID uuid.UUID, input LinkDepartmentMVRUInput) (*DepartmentMVRULink, error) {
+	dept, err := s.repo.GetDepartmentByID(ctx, departmentID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, dept.OrganizationID); err != nil {
+		return nil, err
+	}
 	input.DepartmentID = departmentID
 	if input.MVRUID == uuid.Nil {
 		return nil, fmt.Errorf("%w: mvru_id is required", ErrValidation)
@@ -417,12 +584,22 @@ func (s *Service) LinkDepartmentMVRU(ctx context.Context, departmentID uuid.UUID
 }
 
 func (s *Service) ListDepartmentMVRULinks(ctx context.Context, departmentID uuid.UUID) ([]DepartmentMVRULink, error) {
+	dept, err := s.repo.GetDepartmentByID(ctx, departmentID)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, dept.OrganizationID); err != nil {
+		return nil, err
+	}
 	return s.repo.ListDepartmentMVRULinks(ctx, departmentID)
 }
 
 func (s *Service) MatchMembers(ctx context.Context, input MatchMembersInput) ([]MemberMatchCandidate, error) {
 	if input.OrganizationID == uuid.Nil {
 		return nil, fmt.Errorf("%w: organization_id is required", ErrValidation)
+	}
+	if err := ensureTenantAccess(ctx, input.OrganizationID); err != nil {
+		return nil, err
 	}
 	if input.TaskDescription == "" {
 		return nil, fmt.Errorf("%w: task_description is required", ErrValidation)
@@ -862,7 +1039,7 @@ func isValidMemberType(memberType string) bool {
 
 func isValidAuthorityTier(tier AuthorityTier) bool {
 	switch tier {
-	case AuthorityOrganizationCreator, AuthorityReviewer, AuthorityExecutor:
+	case AuthorityOrganizationCreator, AuthorityOrganizationAdmin, AuthorityReviewer, AuthorityExecutor:
 		return true
 	default:
 		return false
@@ -974,4 +1151,24 @@ func uuidString(id *uuid.UUID) string {
 		return ""
 	}
 	return id.String()
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
+}
+
+func ensureTenantAccess(ctx context.Context, organizationID uuid.UUID) error {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	if *tenant.OrganizationID != organizationID {
+		return fmt.Errorf("%w: resource is outside current organization", ErrForbidden)
+	}
+	return nil
 }

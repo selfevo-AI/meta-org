@@ -83,13 +83,17 @@ type CreateAgentInput struct {
 }
 
 type UserResponse struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	Email     string    `json:"email"`
-	AvatarURL string    `json:"avatar_url,omitempty"`
-	Roles     []Role    `json:"roles,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                    uuid.UUID  `json:"id"`
+	Name                  string     `json:"name"`
+	Email                 string     `json:"email"`
+	AvatarURL             string     `json:"avatar_url,omitempty"`
+	Roles                 []Role     `json:"roles,omitempty"`
+	AccountStatus         string     `json:"account_status,omitempty"`
+	OnboardingStatus      string     `json:"onboarding_status,omitempty"`
+	OnboardingRequired    bool       `json:"onboarding_required"`
+	DefaultOrganizationID *uuid.UUID `json:"default_organization_id,omitempty"`
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
 }
 
 func NewUserResponse(u *User) UserResponse {

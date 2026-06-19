@@ -40,9 +40,11 @@ import {
   activateAssistantSkill,
   approveToolApproval,
   apiRequest,
+  completeOnboarding,
   confirmAssistantProposal,
   createAssistantSkill,
   getUserPreference,
+  getMe,
   getMetaOrgInbox,
   getMetaOrgOverview,
   listAssistantContextTargets,
@@ -50,6 +52,7 @@ import {
   listAssistantSkills,
   listModels,
   listRoles,
+  listSaaSModules,
   login,
   registerUser,
   rejectAssistantProposal,
@@ -57,8 +60,18 @@ import {
   runAssistantSkill,
   saveUserPreference,
 } from '@/lib/api'
-import type { AssistantBusinessSkill, AssistantContextTarget, AssistantProposal, InboxItem, MetaOrgOverview, ModelCatalogItem, Role } from '@/lib/api'
-import { clearSession, getSessionUser, getToken, setSession } from '@/lib/auth'
+import type {
+  AssistantBusinessSkill,
+  AssistantContextTarget,
+  AssistantProposal,
+  InboxItem,
+  MetaOrgOverview,
+  ModelCatalogItem,
+  Role,
+  SaaSModule,
+  SessionOrganization,
+} from '@/lib/api'
+import { clearSession, getCurrentOrganizationId, getSessionUser, getToken, setCurrentOrganizationId, setSession } from '@/lib/auth'
 import { useI18n } from '@/lib/i18n'
 import { apiOperations, getOperationProfile, operationDomains } from '@/lib/operations'
 import type { ApiOperation } from '@/lib/operations'
@@ -367,6 +380,15 @@ function saveModelPreference(moduleKey: string, modelID: string) {
   const preferences = loadModelPreferences()
   preferences[moduleKey] = modelID
   window.localStorage.setItem(modelPreferenceKey, JSON.stringify(preferences))
+}
+
+function deferStateUpdate(callback: () => void): () => void {
+  if (typeof window === 'undefined') {
+    callback()
+    return () => undefined
+  }
+  const timeout = window.setTimeout(callback, 0)
+  return () => window.clearTimeout(timeout)
 }
 
 function asRecord(value: unknown): BusinessRecord {
@@ -902,6 +924,13 @@ export default function Home() {
   const [token, setToken] = useState<string | null>(null)
   const [userId, setUserId] = useState<string | null>(null)
   const [userType, setUserType] = useState<string | null>(null)
+  const [onboardingRequired, setOnboardingRequired] = useState(false)
+  const [organizations, setOrganizations] = useState<SessionOrganization[]>([])
+  const [currentOrganizationID, setCurrentOrganizationID] = useState<string | null>(null)
+  const [saasModules, setSaaSModules] = useState<SaaSModule[]>([])
+  const [onboardingOrganizationName, setOnboardingOrganizationName] = useState('')
+  const [onboardingDescription, setOnboardingDescription] = useState('')
+  const [onboardingModules, setOnboardingModules] = useState<string[]>([])
   const [overview, setOverview] = useState<MetaOrgOverview | null>(null)
   const [inbox, setInbox] = useState<InboxItem[]>([])
   const [roles, setRoles] = useState<Role[]>([])
@@ -966,6 +995,9 @@ export default function Home() {
       setToken(existingToken)
       setUserId(sessionUser?.id ?? null)
       setUserType(sessionUser?.type ?? null)
+      setOnboardingRequired(!!sessionUser?.onboarding_required)
+      setOrganizations(sessionUser?.organizations ?? [])
+      setCurrentOrganizationID(getCurrentOrganizationId())
       setMenuGroups(loadMenuGroups())
       setExpandedGroups(loadExpandedGroups())
       setThemeMode(loadThemeMode())
@@ -992,16 +1024,53 @@ export default function Home() {
   }, [menuGroups, menuReady])
 
   useEffect(() => {
+    if (!token) {
+      Promise.resolve().then(() => {
+        setOnboardingRequired(false)
+        setOrganizations([])
+        setCurrentOrganizationID(null)
+        setSaaSModules([])
+      })
+      return
+    }
+    let cancelled = false
+    Promise.all([getMe(token).catch(() => null), listSaaSModules(token).catch(() => [])]).then(([profile, modules]) => {
+      if (cancelled) return
+      setSaaSModules(modules)
+      if (modules.length > 0 && onboardingModules.length === 0) {
+        setOnboardingModules(modules.filter((item) => item.enabled_default).map((item) => item.module_key))
+      }
+      if (!profile) return
+      setOnboardingRequired(profile.onboarding_required)
+      setOrganizations(profile.organizations ?? [])
+      const storedOrgID = getCurrentOrganizationId()
+      const storedOrgIsValid = !!storedOrgID && profile.organizations?.some((organization) => organization.id === storedOrgID)
+      const nextOrgID = storedOrgIsValid ? storedOrgID : profile.default_organization_id || profile.organizations?.[0]?.id || null
+      if (nextOrgID) {
+        setCurrentOrganizationId(nextOrgID)
+        setCurrentOrganizationID(nextOrgID)
+      } else {
+        setCurrentOrganizationId(null)
+        setCurrentOrganizationID(null)
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [onboardingModules.length, token])
+
+  useEffect(() => {
     if (!orderedOverviewFunctions.some((item) => item.id === overviewFunctionID)) {
-      setOverviewFunctionID(orderedOverviewFunctions[0]?.id || 'meta_org')
+      return deferStateUpdate(() => setOverviewFunctionID(orderedOverviewFunctions[0]?.id || 'meta_org'))
     }
   }, [orderedOverviewFunctions, overviewFunctionID])
 
   useEffect(() => {
     if (!token) {
-      setOverviewModels([])
-      setOverviewModelID('')
-      return
+      return deferStateUpdate(() => {
+        setOverviewModels([])
+        setOverviewModelID('')
+      })
     }
     let cancelled = false
     listModels(token)
@@ -1021,42 +1090,49 @@ export default function Home() {
   }, [token])
 
   useEffect(() => {
-    if (overviewModels.length === 0) {
-      setOverviewModelID('')
-      return
-    }
-    const preferences = loadModelPreferences()
-    const preferred = preferences[selectedOverviewFunction.moduleKey] || overviewModels[0]?.id || ''
-    setOverviewModelID(overviewModels.some((model) => model.id === preferred) ? preferred : overviewModels[0]?.id || '')
+    return deferStateUpdate(() => {
+      if (overviewModels.length === 0) {
+        setOverviewModelID('')
+        return
+      }
+      const preferences = loadModelPreferences()
+      const preferred = preferences[selectedOverviewFunction.moduleKey] || overviewModels[0]?.id || ''
+      setOverviewModelID(overviewModels.some((model) => model.id === preferred) ? preferred : overviewModels[0]?.id || '')
+    })
   }, [overviewModels, selectedOverviewFunction.moduleKey])
 
   useEffect(() => {
     if (!token) {
-      setOverviewSkills([])
-      setOverviewSkillID('')
-      return
+      return deferStateUpdate(() => {
+        setOverviewSkills([])
+        setOverviewSkillID('')
+      })
     }
     let cancelled = false
-    setOverviewControlLoading(true)
-    setOverviewControlError('')
-    listAssistantSkills(token, selectedOverviewFunction.moduleKey, selectedOverviewFunction.targetType)
-      .then((items) => {
-        if (cancelled) return
-        setOverviewSkills(items)
-        setOverviewSkillID((current) => (items.some((skill) => skill.id === current) ? current : items[0]?.id || ''))
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setOverviewSkills([])
-          setOverviewSkillID('')
-          setOverviewControlError(err instanceof Error ? err.message : t('assistant.global.loadFailed'))
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setOverviewControlLoading(false)
-      })
+    const cancelDeferred = deferStateUpdate(() => {
+      if (cancelled) return
+      setOverviewControlLoading(true)
+      setOverviewControlError('')
+      listAssistantSkills(token, selectedOverviewFunction.moduleKey, selectedOverviewFunction.targetType)
+        .then((items) => {
+          if (cancelled) return
+          setOverviewSkills(items)
+          setOverviewSkillID((current) => (items.some((skill) => skill.id === current) ? current : items[0]?.id || ''))
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setOverviewSkills([])
+            setOverviewSkillID('')
+            setOverviewControlError(err instanceof Error ? err.message : t('assistant.global.loadFailed'))
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setOverviewControlLoading(false)
+        })
+    })
     return () => {
       cancelled = true
+      cancelDeferred()
     }
   }, [selectedOverviewFunction.moduleKey, selectedOverviewFunction.targetType, t, token])
 
@@ -1072,8 +1148,7 @@ export default function Home() {
 
   useEffect(() => {
     if (!token) {
-      setWorkspaceLayoutWidths(defaultWorkspaceLayoutWidths)
-      return
+      return deferStateUpdate(() => setWorkspaceLayoutWidths(defaultWorkspaceLayoutWidths))
     }
     let cancelled = false
 
@@ -1091,7 +1166,7 @@ export default function Home() {
   }, [token])
 
   useEffect(() => {
-    if (!token) return
+    if (!token || onboardingRequired) return
     let cancelled = false
 
     Promise.all([getMetaOrgOverview(token), getMetaOrgInbox(token)])
@@ -1108,7 +1183,7 @@ export default function Home() {
     return () => {
       cancelled = true
     }
-  }, [t, token])
+  }, [onboardingRequired, t, token])
 
   const activeDomain = workspaceView === 'overview' ? 'MetaOrg' : workspaceView.replace('domain:', '')
 
@@ -1117,26 +1192,30 @@ export default function Home() {
     if (businessNodesByDomain[activeDomain]) return
     let cancelled = false
 
-    setBusinessTreeLoading(true)
-    setBusinessTreeError(null)
-    loadBusinessTreeNodes(token, activeDomain)
-      .then((nodes) => {
-        if (!cancelled) {
-          setBusinessNodesByDomain((current) => ({ ...current, [activeDomain]: nodes }))
-        }
-      })
-      .catch((err) => {
-        if (!cancelled) {
-          setBusinessTreeError(err instanceof Error ? err.message : t('businessTree.loadFailed'))
-          setBusinessNodesByDomain((current) => ({ ...current, [activeDomain]: buildOperationNodes(activeDomain) }))
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setBusinessTreeLoading(false)
-      })
+    const cancelDeferred = deferStateUpdate(() => {
+      if (cancelled) return
+      setBusinessTreeLoading(true)
+      setBusinessTreeError(null)
+      loadBusinessTreeNodes(token, activeDomain)
+        .then((nodes) => {
+          if (!cancelled) {
+            setBusinessNodesByDomain((current) => ({ ...current, [activeDomain]: nodes }))
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            setBusinessTreeError(err instanceof Error ? err.message : t('businessTree.loadFailed'))
+            setBusinessNodesByDomain((current) => ({ ...current, [activeDomain]: buildOperationNodes(activeDomain) }))
+          }
+        })
+        .finally(() => {
+          if (!cancelled) setBusinessTreeLoading(false)
+        })
+    })
 
     return () => {
       cancelled = true
+      cancelDeferred()
     }
   }, [activeDomain, businessNodesByDomain, t, token, workspaceView])
 
@@ -1183,23 +1262,75 @@ export default function Home() {
     setNotice(null)
 
     try {
-      if (mode === 'register') {
-        await registerUser({ name, email, password })
-        setMode('login')
-        setNotice(t('auth.accountCreated'))
-        setPassword('')
-        return
-      }
-
-      const response = await login(email, password)
-      setSession(response.token, response.user_id, response.user_type)
+      const response =
+        mode === 'register' ? await registerUser({ name, email, password }) : await login(email, password)
+      setSession(response.token, response.user_id, response.user_type, {
+        onboarding_required: response.onboarding_required,
+        default_organization_id: response.default_organization_id,
+        platform_role: response.platform_role,
+        organizations: response.organizations,
+        enabled_modules: response.enabled_modules,
+      })
       setOverview(null)
       setToken(response.token)
       setUserId(response.user_id)
       setUserType(response.user_type)
+      setOnboardingRequired(!!response.onboarding_required)
+      setOrganizations(response.organizations ?? [])
+      setCurrentOrganizationID(response.default_organization_id || response.organizations?.[0]?.id || null)
+      if (mode === 'register') {
+        setNotice(t('auth.accountCreated'))
+      }
       setPassword('')
     } catch (err) {
       setError(err instanceof Error ? err.message : t('auth.failed'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  function toggleOnboardingModule(moduleKey: string) {
+    setOnboardingModules((current) =>
+      current.includes(moduleKey) ? current.filter((item) => item !== moduleKey) : [...current, moduleKey],
+    )
+  }
+
+  function saasModuleLabel(item: SaaSModule) {
+    const key = `saas.module.${item.module_key}`
+    const label = t(key)
+    return label === key ? item.display_name : label
+  }
+
+  async function handleOnboarding(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!token) return
+    setLoading(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await completeOnboarding(token, {
+        organization_name: onboardingOrganizationName,
+        description: onboardingDescription,
+        enabled_modules: onboardingModules,
+      })
+      setSession(token, result.profile.id, 'human', {
+        onboarding_required: result.profile.onboarding_required,
+        default_organization_id: result.profile.default_organization_id,
+        platform_role: result.profile.platform_role,
+        organizations: result.profile.organizations,
+        enabled_modules: result.profile.enabled_modules,
+      })
+      const nextOrgID = result.profile.default_organization_id || result.organization.id
+      setCurrentOrganizationId(nextOrgID)
+      setCurrentOrganizationID(nextOrgID)
+      setOrganizations(result.profile.organizations ?? [])
+      setOnboardingRequired(false)
+      setBusinessNodesByDomain({})
+      setOverview(null)
+      setNotice(t('onboarding.created'))
+      await loadOverview(token)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : t('onboarding.failed'))
     } finally {
       setLoading(false)
     }
@@ -1210,12 +1341,24 @@ export default function Home() {
     setToken(null)
     setUserId(null)
     setUserType(null)
+    setOnboardingRequired(false)
+    setOrganizations([])
+    setCurrentOrganizationID(null)
     setOverview(null)
     setInbox([])
     setBusinessNodesByDomain({})
     setBusinessSelection(null)
     setError(null)
     setWorkspaceView('overview')
+  }
+
+  function handleOrganizationChange(organizationID: string) {
+    setCurrentOrganizationId(organizationID)
+    setCurrentOrganizationID(organizationID)
+    setBusinessNodesByDomain({})
+    setBusinessSelection(null)
+    setOverview(null)
+    loadOverview(token)
   }
 
   function toggleMenuGroup(groupID: string) {
@@ -1562,6 +1705,100 @@ export default function Home() {
 
           <RoleDirectory roles={roles} />
         </div>
+      ) : onboardingRequired ? (
+        <div className="mx-auto grid min-h-screen max-w-5xl gap-5 px-4 py-8 sm:px-6 lg:grid-cols-[380px_1fr] lg:items-center lg:px-8">
+          <section className="studio-panel rounded-lg p-5">
+            <div className="mb-6 flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-lg border border-[#DF6A24]/25 bg-[#DF6A24]/10">
+                <Users className="h-5 w-5 text-[#F6A66A]" />
+              </div>
+              <div>
+                <p className="text-xs font-bold uppercase text-[#F6A66A]">{t('onboarding.kicker')}</p>
+                <h1 className="text-2xl font-semibold text-white">{t('onboarding.title')}</h1>
+              </div>
+            </div>
+            <form className="space-y-4" onSubmit={handleOnboarding}>
+              <label className="block">
+                <span className="text-sm font-medium text-slate-700">{t('onboarding.organizationName')}</span>
+                <input
+                  value={onboardingOrganizationName}
+                  onChange={(event) => setOnboardingOrganizationName(event.target.value)}
+                  className="mt-1 h-11 w-full rounded-lg border border-slate-300 px-3 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                  required
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-medium text-slate-700">{t('onboarding.description')}</span>
+                <textarea
+                  value={onboardingDescription}
+                  onChange={(event) => setOnboardingDescription(event.target.value)}
+                  className="mt-1 min-h-24 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                />
+              </label>
+
+              {error && (
+                <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+                  {error}
+                </div>
+              )}
+              {notice && (
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">
+                  {notice}
+                </div>
+              )}
+
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className="inline-flex h-11 flex-1 items-center justify-center gap-2 rounded-lg bg-[#AD4714] px-4 text-sm font-semibold text-[#fffaf5] transition hover:bg-[#B84F18] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  {loading ? t('auth.processing') : t('onboarding.create')}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-slate-300 bg-white px-4 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+                >
+                  <LogOut className="h-4 w-4" />
+                  {t('common.signOut')}
+                </button>
+              </div>
+            </form>
+          </section>
+
+          <section className="studio-panel rounded-lg p-5">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <div>
+                <h2 className="text-lg font-semibold text-white">{t('onboarding.modules')}</h2>
+                <p className="text-sm text-slate-400">{t('onboarding.modulesSubtitle')}</p>
+              </div>
+              <Boxes className="h-5 w-5 text-[#F6A66A]" />
+            </div>
+            <div className="grid gap-2 sm:grid-cols-2">
+              {saasModules.map((item) => (
+                <label
+                  key={item.module_key}
+                  className="flex min-h-14 cursor-pointer items-center gap-3 rounded-lg border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm text-slate-100 transition hover:border-[#DF6A24]/60"
+                >
+                  <input
+                    type="checkbox"
+                    checked={onboardingModules.includes(item.module_key)}
+                    onChange={() => toggleOnboardingModule(item.module_key)}
+                    className="h-4 w-4 rounded border-slate-500 text-[#AD4714] focus:ring-[#DF6A24]"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate font-medium">{saasModuleLabel(item)}</span>
+                    <span className="block text-xs text-slate-400">
+                      {item.license_scope === 'commercial' ? t('onboarding.commercial') : t('onboarding.mit')}
+                    </span>
+                  </span>
+                </label>
+              ))}
+            </div>
+          </section>
+        </div>
       ) : (
         <div className={`workspace-shell grid min-h-screen ${isOverview ? 'workspace-shell-overview' : ''}`} style={workspaceLayoutStyle(workspaceLayoutWidths)}>
           <div
@@ -1600,6 +1837,9 @@ export default function Home() {
               themeMode={themeMode}
               setThemeMode={setThemeMode}
               userType={userType}
+              organizations={organizations}
+              currentOrganizationID={currentOrganizationID}
+              onOrganizationChange={handleOrganizationChange}
               overview={overview}
               overviewLoading={overviewLoading}
               onRefresh={() => loadOverview()}
@@ -1885,6 +2125,9 @@ function Topbar({
   themeMode,
   setThemeMode,
   userType,
+  organizations,
+  currentOrganizationID,
+  onOrganizationChange,
   overview,
   overviewLoading,
   onRefresh,
@@ -1901,6 +2144,9 @@ function Topbar({
   themeMode: ThemeMode
   setThemeMode: (mode: ThemeMode) => void
   userType: string | null
+  organizations: SessionOrganization[]
+  currentOrganizationID: string | null
+  onOrganizationChange: (organizationID: string) => void
   overview: MetaOrgOverview | null
   overviewLoading: boolean
   onRefresh: () => void
@@ -1950,6 +2196,22 @@ function Topbar({
             <span className="text-slate-600">·</span>
             <span>{activeDomain}</span>
           </div>
+          {organizations.length > 0 && (
+            <label className="hidden items-center gap-2 rounded-lg border border-slate-700 bg-slate-950/40 px-2 text-xs font-semibold text-slate-400 md:flex">
+              <span>{t('organization.current')}</span>
+              <select
+                value={currentOrganizationID ?? organizations[0]?.id ?? ''}
+                onChange={(event) => onOrganizationChange(event.target.value)}
+                className="h-7 max-w-44 rounded-md border border-slate-700 bg-slate-950 px-2 text-xs font-semibold text-slate-100 outline-none"
+              >
+                {organizations.map((organization) => (
+                  <option key={organization.id} value={organization.id}>
+                    {organization.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           {userType && <StatusPill label={userType === 'ai' ? 'AI Agent' : 'Human'} tone="blue" />}
           <button
             type="button"
@@ -2514,8 +2776,7 @@ function BusinessStatusPanel({
 
   useEffect(() => {
     if (selection?.targetType !== 'project' || !selection.targetID) {
-      setProjectOverview(null)
-      return
+      return deferStateUpdate(() => setProjectOverview(null))
     }
     let cancelled = false
     apiRequest<BusinessRecord>(`/projects/${selection.targetID}/overview`, { token })

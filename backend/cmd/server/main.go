@@ -24,6 +24,7 @@ import (
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/organization"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/project"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/saas"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/toolruntime"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/verification"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/workflow"
@@ -55,8 +56,15 @@ func main() {
 		log.Fatalf("model secret key invalid: %v", err)
 	}
 
+	saasRepo := saas.NewRepository(db)
+	saasSvc := saas.NewService(saasRepo, cfg.MetaOrgMode)
+	if err := saasSvc.BootstrapPlatformAdmin(context.Background(), cfg.PlatformAdminEmail, cfg.PlatformAdminPasswordHash); err != nil {
+		log.Fatalf("platform admin bootstrap failed: %v", err)
+	}
+	saasHandler := saas.NewHandler(saasSvc)
+
 	identRepo := identity.NewRepository(db)
-	identSvc := identity.NewService(identRepo, cfg.JWTSecret)
+	identSvc := identity.NewService(identRepo, cfg.JWTSecret, identity.WithSessionProfileProvider(saasSvc))
 	identHandler := identity.NewHandler(identSvc)
 
 	govRepo := governance.NewRepository(db)
@@ -133,13 +141,27 @@ func main() {
 	toolHandler := toolruntime.NewHandler(toolSvc)
 
 	assistantRepo := assistant.NewRepository(db)
+	contextRepo := assistant.NewContextRepository(db)
+	contextResolver := assistant.NewDBContextResolver(db)
+	contextEngine := assistant.NewVerifiedContextEngine(assistant.VerifiedContextEngineConfig{
+		Resolver:   contextResolver,
+		Evaluator:  assistant.NewContextRuleEvaluator(assistant.ContextRuleEvaluatorConfig{AttentionCoreRatio: 0.4}),
+		Repository: contextRepo,
+	})
+	dictionarySvc := assistant.NewDictionaryService(contextRepo, nil)
 	assistantSvc := assistant.NewService(
 		assistantRepo,
 		aiSvc,
 		toolSvc,
-		assistant.WithContextResolver(assistant.NewDBContextResolver(db)),
+		assistant.WithContextResolver(contextResolver),
 		assistant.WithProposalApplicator(assistant.NewDBProposalApplicator(db)),
+		assistant.WithDictionaryService(dictionarySvc),
+		assistant.WithVerifiedContextEngine(contextEngine),
 	)
+	toolRunner := assistant.NewToolRunner(toolSvc, assistant.ToolRunnerConfig{})
+	eventSink := assistant.NewMemoryEventSink(assistantRepo)
+	assistantRuntime := assistant.NewAssistantRuntime(assistantSvc, contextEngine, toolRunner, eventSink)
+	assistantSvc.SetRuntime(assistantRuntime)
 	assistantHandler := assistant.NewHandler(assistantSvc)
 
 	verRepo := verification.NewRepository(db)
@@ -163,6 +185,8 @@ func main() {
 		ProjectHandler:       projectHandler,
 		FinanceHandler:       financeHandler,
 		ToolRuntimeHandler:   toolHandler,
+		SaaSHandler:          saasHandler,
+		TenantResolver:       saasSvc,
 		ObservabilityHandler: obsHandler,
 		VerificationHandler:  verHandler,
 		GovernanceHandler:    govHandler,

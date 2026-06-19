@@ -21,6 +21,7 @@ const (
 	StepToolResult = "tool_result"
 	StepMemory     = "memory"
 	StepApproval   = "approval"
+	StepContext    = "context"
 	StepError      = "error"
 
 	ProposalPending  = "pending"

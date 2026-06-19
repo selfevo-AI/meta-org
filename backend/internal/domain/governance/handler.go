@@ -2,6 +2,7 @@ package governance
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -132,6 +133,14 @@ func (h *Handler) checkPermission(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.service.CheckPermission(r.Context(), input)
 	if err != nil {
+		if errors.Is(err, ErrForbidden) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
+		if errors.Is(err, ErrValidation) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -146,6 +155,10 @@ func (h *Handler) decideAccess(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.service.DecideAccess(r.Context(), input)
 	if err != nil {
+		if errors.Is(err, ErrForbidden) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}

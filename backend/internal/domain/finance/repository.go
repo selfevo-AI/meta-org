@@ -249,9 +249,13 @@ func (r *PostgresRepository) ListExportBatches(ctx context.Context, limit int) (
 			total_amount::float8, external_batch_id, error_message, idempotency_key,
 			metadata, created_at, submitted_at, updated_at
 		FROM finance_export_batches
+		WHERE ($1::uuid IS NULL OR EXISTS (
+			SELECT 1 FROM finance_export_lines l
+			WHERE l.batch_id = finance_export_batches.id AND l.organization_id IS NOT DISTINCT FROM $1
+		))
 		ORDER BY created_at DESC
-		LIMIT $1
-	`, normalizeLimit(limit))
+		LIMIT $2
+	`, nullableUUID(currentTenantOrganizationID(ctx)), normalizeLimit(limit))
 	if err != nil {
 		return nil, fmt.Errorf("list finance export batches: %w", err)
 	}
@@ -388,14 +392,18 @@ func (r *PostgresRepository) ListReconciliation(ctx context.Context, limit int) 
 				external_batch_id, error_message, submitted_at, updated_at
 			FROM finance_export_batches
 			WHERE status IN ('exported', 'acknowledged', 'posted', 'reconciled', 'failed')
+				AND ($1::uuid IS NULL OR EXISTS (
+					SELECT 1 FROM finance_export_lines l
+					WHERE l.batch_id = finance_export_batches.id AND l.organization_id IS NOT DISTINCT FROM $1
+				))
 		)
 		SELECT id, adapter_id, status, currency, total_amount,
 			external_amount, external_amount - total_amount AS difference_amount,
 			external_batch_id, error_message, submitted_at, updated_at
 		FROM batches
 		ORDER BY updated_at DESC
-		LIMIT $1
-	`, normalizeLimit(limit))
+		LIMIT $2
+	`, nullableUUID(currentTenantOrganizationID(ctx)), normalizeLimit(limit))
 	if err != nil {
 		return nil, fmt.Errorf("list finance reconciliation: %w", err)
 	}
@@ -453,9 +461,17 @@ func (r *PostgresRepository) ListImportBatches(ctx context.Context, limit int) (
 		SELECT id, adapter_id, source_type, file_name, status, total_records, processed_records,
 		       failed_records, metadata, created_at, completed_at
 		FROM finance_import_batches
+		WHERE ($1::uuid IS NULL OR EXISTS (
+			SELECT 1
+			FROM finance_import_records rec
+			LEFT JOIN cost_ledger_entries c ON c.id = rec.cost_ledger_entry_id
+			LEFT JOIN finance_payables p ON p.id = rec.payable_id
+			WHERE rec.batch_id = finance_import_batches.id
+				AND (c.organization_id IS NOT DISTINCT FROM $1 OR p.organization_id IS NOT DISTINCT FROM $1)
+		))
 		ORDER BY created_at DESC
-		LIMIT $1
-	`, normalizeLimit(limit))
+		LIMIT $2
+	`, nullableUUID(currentTenantOrganizationID(ctx)), normalizeLimit(limit))
 	if err != nil {
 		return nil, fmt.Errorf("list finance import batches: %w", err)
 	}
@@ -477,9 +493,18 @@ func (r *PostgresRepository) ListImportRecords(ctx context.Context, limit int) (
 		       normalized_payload, cost_ledger_entry_id, payable_id, status, error_message,
 		       metadata, created_at
 		FROM finance_import_records
+		WHERE ($1::uuid IS NULL
+			OR EXISTS (
+				SELECT 1 FROM cost_ledger_entries c
+				WHERE c.id = finance_import_records.cost_ledger_entry_id AND c.organization_id IS NOT DISTINCT FROM $1
+			)
+			OR EXISTS (
+				SELECT 1 FROM finance_payables p
+				WHERE p.id = finance_import_records.payable_id AND p.organization_id IS NOT DISTINCT FROM $1
+			))
 		ORDER BY created_at DESC
-		LIMIT $1
-	`, normalizeLimit(limit))
+		LIMIT $2
+	`, nullableUUID(currentTenantOrganizationID(ctx)), normalizeLimit(limit))
 	if err != nil {
 		return nil, fmt.Errorf("list finance import records: %w", err)
 	}
@@ -602,7 +627,9 @@ func (r *PostgresRepository) CreatePayable(ctx context.Context, input CreatePaya
 }
 
 func (r *PostgresRepository) ListPayables(ctx context.Context, limit int) ([]Payable, error) {
-	rows, err := r.db.Query(ctx, payableSelectSQL()+` ORDER BY created_at DESC LIMIT $1`, normalizeLimit(limit))
+	rows, err := r.db.Query(ctx, payableSelectSQL()+`
+		WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1)
+		ORDER BY created_at DESC LIMIT $2`, nullableUUID(currentTenantOrganizationID(ctx)), normalizeLimit(limit))
 	if err != nil {
 		return nil, fmt.Errorf("list finance payables: %w", err)
 	}
@@ -751,7 +778,9 @@ func (r *PostgresRepository) CreateSettlementOrder(ctx context.Context, input Cr
 }
 
 func (r *PostgresRepository) ListSettlementOrders(ctx context.Context, limit int) ([]SettlementOrder, error) {
-	rows, err := r.db.Query(ctx, settlementOrderSelectSQL()+` ORDER BY created_at DESC LIMIT $1`, normalizeLimit(limit))
+	rows, err := r.db.Query(ctx, settlementOrderSelectSQL()+`
+		WHERE `+settlementOrderTenantPredicate("$1")+`
+		ORDER BY created_at DESC LIMIT $2`, nullableUUID(currentTenantOrganizationID(ctx)), normalizeLimit(limit))
 	if err != nil {
 		return nil, fmt.Errorf("list finance settlement orders: %w", err)
 	}
@@ -769,7 +798,8 @@ func (r *PostgresRepository) ListSettlementOrders(ctx context.Context, limit int
 
 func (r *PostgresRepository) GetSettlementOrder(ctx context.Context, id uuid.UUID) (*SettlementOrder, error) {
 	order := &SettlementOrder{}
-	if err := scanSettlementOrder(r.db.QueryRow(ctx, settlementOrderSelectSQL()+` WHERE id = $1`, id), order); err != nil {
+	if err := scanSettlementOrder(r.db.QueryRow(ctx, settlementOrderSelectSQL()+`
+		WHERE id = $1 AND `+settlementOrderTenantPredicate("$2"), id, nullableUUID(currentTenantOrganizationID(ctx))), order); err != nil {
 		return nil, fmt.Errorf("get finance settlement order: %w", err)
 	}
 	lines, err := r.listSettlementLines(ctx, r.db, id)
@@ -942,7 +972,9 @@ func (r *PostgresRepository) CreateReceivable(ctx context.Context, input CreateR
 }
 
 func (r *PostgresRepository) ListReceivables(ctx context.Context, limit int) ([]Receivable, error) {
-	rows, err := r.db.Query(ctx, receivableSelectSQL()+` ORDER BY created_at DESC LIMIT $1`, normalizeLimit(limit))
+	rows, err := r.db.Query(ctx, receivableSelectSQL()+`
+		WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1)
+		ORDER BY created_at DESC LIMIT $2`, nullableUUID(currentTenantOrganizationID(ctx)), normalizeLimit(limit))
 	if err != nil {
 		return nil, fmt.Errorf("list finance receivables: %w", err)
 	}
@@ -960,7 +992,9 @@ func (r *PostgresRepository) ListReceivables(ctx context.Context, limit int) ([]
 
 func (r *PostgresRepository) GetReceivable(ctx context.Context, id uuid.UUID) (*Receivable, error) {
 	receivable := &Receivable{}
-	if err := scanReceivable(r.db.QueryRow(ctx, receivableSelectSQL()+` WHERE id = $1`, id), receivable); err != nil {
+	if err := scanReceivable(r.db.QueryRow(ctx, receivableSelectSQL()+`
+		WHERE id = $1 AND ($2::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $2)`,
+		id, nullableUUID(currentTenantOrganizationID(ctx))), receivable); err != nil {
 		return nil, fmt.Errorf("get finance receivable: %w", err)
 	}
 	return receivable, nil
@@ -987,6 +1021,7 @@ func (r *PostgresRepository) UpdateReceivable(ctx context.Context, id uuid.UUID,
 		    metadata = CASE WHEN $15::jsonb IS NULL THEN metadata ELSE $15::jsonb END,
 		    updated_at = NOW()
 		WHERE id = $1 AND status <> 'paid'
+			AND ($16::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $16)
 		RETURNING id, receivable_type, settlement_order_id, source_type, source_id,
 		          external_receivable_id, invoice_number, customer_id, customer_name, project_id,
 		          requirement_id, organization_id, department_id, account_code, account_name,
@@ -994,7 +1029,8 @@ func (r *PostgresRepository) UpdateReceivable(ctx context.Context, id uuid.UUID,
 		          invoice_date, due_date, status, received_amount::float8, metadata, created_at, updated_at
 	`, id, update.ReceivableType, update.ExternalReceivableID, update.InvoiceNumber, update.CustomerID,
 		update.CustomerName, update.Amount, update.TaxAmount, update.Currency, dates.PeriodStart,
-		dates.PeriodEnd, dates.InvoiceDate, dates.PaymentDueDate, update.Status, nullableJSON(update.Metadata)), receivable)
+		dates.PeriodEnd, dates.InvoiceDate, dates.PaymentDueDate, update.Status, nullableJSON(update.Metadata),
+		nullableUUID(currentTenantOrganizationID(ctx))), receivable)
 	if err != nil {
 		return nil, fmt.Errorf("update finance receivable: %w", err)
 	}
@@ -1006,13 +1042,13 @@ func (r *PostgresRepository) UpdateReceivableStatus(ctx context.Context, id uuid
 	err := scanReceivable(r.db.QueryRow(ctx, `
 		UPDATE finance_receivables
 		SET status = $2, updated_at = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND ($3::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $3)
 		RETURNING id, receivable_type, settlement_order_id, source_type, source_id,
 		          external_receivable_id, invoice_number, customer_id, customer_name, project_id,
 		          requirement_id, organization_id, department_id, account_code, account_name,
 		          amount::float8, tax_amount::float8, currency, period_start, period_end,
 		          invoice_date, due_date, status, received_amount::float8, metadata, created_at, updated_at
-	`, id, status), receivable)
+	`, id, status, nullableUUID(currentTenantOrganizationID(ctx))), receivable)
 	if err != nil {
 		return nil, fmt.Errorf("update finance receivable status: %w", err)
 	}
@@ -1027,12 +1063,13 @@ func (r *PostgresRepository) VoidReceivable(ctx context.Context, id uuid.UUID, r
 		    metadata = metadata || $2::jsonb,
 		    updated_at = NOW()
 		WHERE id = $1 AND received_amount = 0
+			AND ($3::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $3)
 		RETURNING id, receivable_type, settlement_order_id, source_type, source_id,
 		          external_receivable_id, invoice_number, customer_id, customer_name, project_id,
 		          requirement_id, organization_id, department_id, account_code, account_name,
 		          amount::float8, tax_amount::float8, currency, period_start, period_end,
 		          invoice_date, due_date, status, received_amount::float8, metadata, created_at, updated_at
-	`, id, mustJSON(map[string]any{"void_reason": reason})), receivable)
+	`, id, mustJSON(map[string]any{"void_reason": reason}), nullableUUID(currentTenantOrganizationID(ctx))), receivable)
 	if err != nil {
 		return nil, fmt.Errorf("void finance receivable: %w", err)
 	}
@@ -1126,7 +1163,9 @@ func (r *PostgresRepository) AllocateReceipt(ctx context.Context, receiptID uuid
 
 func (r *PostgresRepository) GetPayable(ctx context.Context, id uuid.UUID) (*Payable, error) {
 	payable := &Payable{}
-	if err := scanPayable(r.db.QueryRow(ctx, payableSelectSQL()+` WHERE id = $1`, id), payable); err != nil {
+	if err := scanPayable(r.db.QueryRow(ctx, payableSelectSQL()+`
+		WHERE id = $1 AND ($2::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $2)`,
+		id, nullableUUID(currentTenantOrganizationID(ctx))), payable); err != nil {
 		return nil, fmt.Errorf("get finance payable: %w", err)
 	}
 	return payable, nil
@@ -1155,6 +1194,7 @@ func (r *PostgresRepository) UpdatePayable(ctx context.Context, id uuid.UUID, in
 		    metadata = CASE WHEN $17::jsonb IS NULL THEN metadata ELSE $17::jsonb END,
 		    updated_at = NOW()
 		WHERE id = $1 AND paid_amount = 0
+			AND ($18::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $18)
 		RETURNING id, payable_type, source_type, source_id, external_payable_id, invoice_number,
 		          vendor_id, vendor_name, employee_id, employee_name, agent_id, project_id,
 		          organization_id, department_id, account_code, account_name, cost_center_code,
@@ -1164,7 +1204,7 @@ func (r *PostgresRepository) UpdatePayable(ctx context.Context, id uuid.UUID, in
 	`, id, update.PayableType, update.ExternalPayableID, update.InvoiceNumber, update.VendorID,
 		update.VendorName, update.EmployeeID, update.EmployeeName, update.Amount, update.TaxAmount,
 		update.Currency, dates.PeriodStart, dates.PeriodEnd, dates.InvoiceDate, dates.PaymentDueDate,
-		update.Status, nullableJSON(update.Metadata)), payable)
+		update.Status, nullableJSON(update.Metadata), nullableUUID(currentTenantOrganizationID(ctx))), payable)
 	if err != nil {
 		return nil, fmt.Errorf("update finance payable: %w", err)
 	}
@@ -1177,13 +1217,14 @@ func (r *PostgresRepository) VoidPayable(ctx context.Context, id uuid.UUID, reas
 		UPDATE finance_payables
 		SET status = 'void', void_reason = $2, updated_at = NOW()
 		WHERE id = $1 AND paid_amount = 0
+			AND ($3::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $3)
 		RETURNING id, payable_type, source_type, source_id, external_payable_id, invoice_number,
 		          vendor_id, vendor_name, employee_id, employee_name, agent_id, project_id,
 		          organization_id, department_id, account_code, account_name, cost_center_code,
 		          cost_center_name, amount::float8, tax_amount::float8, currency, period_start,
 		          period_end, invoice_date, due_date, status, paid_amount::float8, metadata,
 		          created_at, updated_at
-	`, id, reason), payable)
+	`, id, reason, nullableUUID(currentTenantOrganizationID(ctx))), payable)
 	if err != nil {
 		return nil, fmt.Errorf("void finance payable: %w", err)
 	}
@@ -1259,8 +1300,11 @@ func (r *PostgresRepository) getExportBatch(ctx context.Context, store batchStor
 			total_amount::float8, external_batch_id, error_message, idempotency_key,
 			metadata, created_at, submitted_at, updated_at
 		FROM finance_export_batches
-		WHERE id = $1
-	`, id), batch)
+		WHERE id = $1 AND ($2::uuid IS NULL OR EXISTS (
+			SELECT 1 FROM finance_export_lines l
+			WHERE l.batch_id = finance_export_batches.id AND l.organization_id IS NOT DISTINCT FROM $2
+		))
+	`, id, nullableUUID(currentTenantOrganizationID(ctx))), batch)
 	if err != nil {
 		return nil, fmt.Errorf("get finance export batch: %w", err)
 	}
@@ -1278,9 +1322,9 @@ func (r *PostgresRepository) listBatchLines(ctx context.Context, store batchStor
 			department_id, project_id, provider_id, model_id, amount::float8, currency,
 			external_line_id, status, metadata, created_at
 		FROM finance_export_lines
-		WHERE batch_id = $1
+		WHERE batch_id = $1 AND ($2::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $2)
 		ORDER BY created_at ASC
-	`, batchID)
+	`, batchID, nullableUUID(currentTenantOrganizationID(ctx)))
 	if err != nil {
 		return nil, fmt.Errorf("list finance export lines: %w", err)
 	}
@@ -1509,11 +1553,12 @@ func (r *PostgresRepository) exportableCostRows(ctx context.Context, tx pgx.Tx, 
 			AND c.ledger_type IN ('actual', 'adjustment')
 			AND c.amount <> 0
 			AND c.currency = $3
+			AND ($4::uuid IS NULL OR c.organization_id IS NOT DISTINCT FROM $4)
 			AND c.occurred_at >= $1
 			AND c.occurred_at < ($2::date + INTERVAL '1 day')
 		ORDER BY c.occurred_at ASC, c.created_at ASC
 		FOR UPDATE OF c SKIP LOCKED
-	`, start, end, currency)
+	`, start, end, currency, nullableUUID(currentTenantOrganizationID(ctx)))
 	if err != nil {
 		return nil, fmt.Errorf("query exportable cost ledger: %w", err)
 	}
@@ -1903,6 +1948,25 @@ func nullableJSON(value map[string]any) any {
 		return nil
 	}
 	return mustJSON(value)
+}
+
+func nullableUUID(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return *id
+}
+
+func settlementOrderTenantPredicate(param string) string {
+	return fmt.Sprintf(`(%s::uuid IS NULL
+			OR EXISTS (SELECT 1 FROM projects p WHERE p.id = finance_settlement_orders.project_id AND p.organization_id IS NOT DISTINCT FROM %s)
+			OR EXISTS (SELECT 1 FROM requirements req WHERE req.id = finance_settlement_orders.requirement_id AND req.organization_id IS NOT DISTINCT FROM %s)
+			OR EXISTS (
+				SELECT 1
+				FROM deliverables d
+				JOIN projects p ON p.id = d.project_id
+				WHERE d.id = finance_settlement_orders.deliverable_id AND p.organization_id IS NOT DISTINCT FROM %s
+			))`, param, param, param, param)
 }
 
 func maskSecret(secret string) string {

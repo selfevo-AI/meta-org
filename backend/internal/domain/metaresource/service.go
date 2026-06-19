@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 var ErrValidation = errors.New("validation error")
@@ -46,12 +47,21 @@ func (s *Service) CreateResource(ctx context.Context, input CreateMetaResourceIn
 	if input.Status == "" {
 		input.Status = "active"
 	}
+	if input.OrganizationID == nil {
+		input.OrganizationID = currentTenantOrganizationID(ctx)
+	}
+	if err := ensureTenantAccess(ctx, input.OrganizationID); err != nil {
+		return nil, err
+	}
 	return s.store.CreateResource(ctx, input)
 }
 
 func (s *Service) ListResources(ctx context.Context, filter ListFilter) ([]MetaResource, error) {
 	filter.ResourceType = normalize(filter.ResourceType)
 	filter.Status = normalize(filter.Status)
+	if filter.OrganizationID == nil {
+		filter.OrganizationID = currentTenantOrganizationID(ctx)
+	}
 	return s.store.ListResources(ctx, filter)
 }
 
@@ -59,7 +69,14 @@ func (s *Service) GetResource(ctx context.Context, id uuid.UUID) (*MetaResource,
 	if id == uuid.Nil {
 		return nil, fmt.Errorf("%w: id is required", ErrValidation)
 	}
-	return s.store.GetResource(ctx, id)
+	resource, err := s.store.GetResource(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := ensureTenantAccess(ctx, resource.OrganizationID); err != nil {
+		return nil, err
+	}
+	return resource, nil
 }
 
 func (s *Service) ResourceSummary(ctx context.Context, limit int) (*ResourceSummary, error) {
@@ -156,4 +173,24 @@ func validStage(value string) bool {
 	default:
 		return false
 	}
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
+}
+
+func ensureTenantAccess(ctx context.Context, organizationID *uuid.UUID) error {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil || organizationID == nil {
+		return nil
+	}
+	if *tenant.OrganizationID != *organizationID {
+		return fmt.Errorf("%w: resource is outside current organization", ErrValidation)
+	}
+	return nil
 }

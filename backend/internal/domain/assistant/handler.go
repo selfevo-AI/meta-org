@@ -25,6 +25,8 @@ func NewHandler(service *Service) *Handler {
 
 func (h *Handler) RegisterRoutes(r chi.Router) {
 	r.Get("/assistant/context-targets", h.listContextTargets)
+	r.Post("/assistant/context-dictionaries/imports", h.importContextDictionary)
+	r.Post("/assistant/context-preview", h.previewContext)
 	r.Post("/assistant/sessions", h.createSession)
 	r.Get("/assistant/sessions", h.listSessions)
 	r.Get("/assistant/sessions/{id}", h.getSession)
@@ -45,6 +47,32 @@ func (h *Handler) listContextTargets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result, err := h.service.ListContextTargets(r.Context(), r.URL.Query().Get("module_key"), r.URL.Query().Get("target_type"), queryLimit(r))
+	writeResult(w, http.StatusOK, result, err)
+}
+
+func (h *Handler) importContextDictionary(w http.ResponseWriter, r *http.Request) {
+	actorID, _, ok := authenticatedActor(w, r)
+	if !ok {
+		return
+	}
+	var input ImportDictionaryInput
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.ImportDictionary(r.Context(), actorID, input)
+	writeResult(w, http.StatusCreated, result, err)
+}
+
+func (h *Handler) previewContext(w http.ResponseWriter, r *http.Request) {
+	actorID, actorType, ok := authenticatedActor(w, r)
+	if !ok {
+		return
+	}
+	var input ContextRequest
+	if !decodeJSON(w, r, &input) {
+		return
+	}
+	result, err := h.service.PreviewContext(r.Context(), actorID, actorType, input)
 	writeResult(w, http.StatusOK, result, err)
 }
 
@@ -339,6 +367,8 @@ func statusFromError(err error) int {
 	switch {
 	case errors.Is(err, ErrValidation):
 		return http.StatusBadRequest
+	case errors.Is(err, ErrForbidden):
+		return http.StatusForbidden
 	case dberrors.IsUniqueViolation(err):
 		return http.StatusConflict
 	case errors.Is(err, ErrNotFound), errors.Is(err, pgx.ErrNoRows):

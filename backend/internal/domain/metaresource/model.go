@@ -169,8 +169,9 @@ type CreatePDCAEventInput struct {
 }
 
 type ListFilter struct {
-	Limit        int
-	ResourceType string
-	Status       string
-	CycleID      *uuid.UUID
+	Limit          int
+	ResourceType   string
+	Status         string
+	CycleID        *uuid.UUID
+	OrganizationID *uuid.UUID
 }

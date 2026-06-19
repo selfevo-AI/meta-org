@@ -2,6 +2,7 @@ package evolution
 
 import (
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -74,6 +75,10 @@ func (h *Handler) computeContextWeight(w http.ResponseWriter, r *http.Request) {
 	}
 	wResult, err := h.service.ComputeContextWeight(r.Context(), input)
 	if err != nil {
+		if errors.Is(err, ErrForbidden) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
@@ -88,6 +93,10 @@ func (h *Handler) recordContextOutcome(w http.ResponseWriter, r *http.Request) {
 	}
 	wResult, err := h.service.RecordContextOutcome(r.Context(), input)
 	if err != nil {
+		if errors.Is(err, ErrForbidden) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}

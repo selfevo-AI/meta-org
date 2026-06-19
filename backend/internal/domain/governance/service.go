@@ -7,11 +7,13 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 var (
 	ErrNotFound   = errors.New("not found")
 	ErrValidation = errors.New("validation error")
+	ErrForbidden  = errors.New("forbidden")
 )
 
 type Service struct {
@@ -101,6 +103,9 @@ func (s *Service) DecideAccess(ctx context.Context, input AccessDecisionInput) (
 	}
 	if input.Context == nil {
 		input.Context = map[string]any{}
+	}
+	if err := applyTenantAccessDecisionScope(ctx, &input); err != nil {
+		return nil, err
 	}
 
 	behavior := "notify"
@@ -347,4 +352,26 @@ func (s *Service) CheckFieldAccess(ctx context.Context, input FieldAccessCheckIn
 
 func isPermissionLevel(level string) bool {
 	return level == "L1" || level == "L2" || level == "L3" || level == "L4"
+}
+
+func applyTenantAccessDecisionScope(ctx context.Context, input *AccessDecisionInput) error {
+	orgID := currentTenantOrganizationID(ctx)
+	if orgID == nil {
+		return nil
+	}
+	if input.OrganizationID != nil && *input.OrganizationID != *orgID {
+		return fmt.Errorf("%w: access decision organization must match current organization", ErrForbidden)
+	}
+	id := *orgID
+	input.OrganizationID = &id
+	return nil
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
 }

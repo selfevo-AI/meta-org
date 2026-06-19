@@ -11,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/governance"
 	"github.com/selfevo-AI/meta-org/backend/internal/domain/observability"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 var (
@@ -190,6 +191,9 @@ func (s *Service) ExecuteTool(ctx context.Context, input ExecuteToolInput) (*Exe
 	if input.Arguments == nil {
 		input.Arguments = map[string]any{}
 	}
+	if err := applyTenantExecutionScope(ctx, &input); err != nil {
+		return nil, err
+	}
 	tool, err := s.repo.GetToolByName(ctx, input.ToolName)
 	if err != nil {
 		return nil, err
@@ -366,6 +370,9 @@ func (s *Service) authorizeApprovalReview(ctx context.Context, approvalID uuid.U
 	}
 	execution, err := s.repo.GetExecution(ctx, approval.ExecutionID)
 	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := ensureTenantExecutionAccess(ctx, execution.OrganizationID); err != nil {
 		return nil, nil, nil, err
 	}
 	tool, err := s.repo.GetToolByID(ctx, execution.ToolID)
@@ -573,6 +580,39 @@ func requestedByHuman(input ExecuteToolInput) *uuid.UUID {
 		return &input.ActorID
 	}
 	return nil
+}
+
+func applyTenantExecutionScope(ctx context.Context, input *ExecuteToolInput) error {
+	orgID := currentTenantOrganizationID(ctx)
+	if orgID == nil {
+		return nil
+	}
+	if input.OrganizationID != nil && *input.OrganizationID != *orgID {
+		return fmt.Errorf("%w: tool execution organization must match current organization", ErrForbidden)
+	}
+	id := *orgID
+	input.OrganizationID = &id
+	return nil
+}
+
+func ensureTenantExecutionAccess(ctx context.Context, organizationID *uuid.UUID) error {
+	orgID := currentTenantOrganizationID(ctx)
+	if orgID == nil || organizationID == nil {
+		return nil
+	}
+	if *orgID != *organizationID {
+		return fmt.Errorf("%w: tool execution is outside current organization", ErrForbidden)
+	}
+	return nil
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
 }
 
 func normalizeToolCategory(category string) string {

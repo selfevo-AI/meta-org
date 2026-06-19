@@ -165,6 +165,15 @@ const emptyAgentForm = {
   risk_level: 'medium',
 }
 
+function deferStateUpdate(callback: () => void): () => void {
+  if (typeof window === 'undefined') {
+    callback()
+    return () => undefined
+  }
+  const timeout = window.setTimeout(callback, 0)
+  return () => window.clearTimeout(timeout)
+}
+
 export function OrganizationWorkspace({ token, currentUserId, externalSelection }: OrganizationWorkspaceProps) {
   const { t } = useI18n()
   const [organizations, setOrganizations] = useState<Organization[]>([])
@@ -383,54 +392,59 @@ export function OrganizationWorkspace({ token, currentUserId, externalSelection 
 
   useEffect(() => {
     if (!externalSelection?.targetID) return
-    if (externalSelection.targetType === 'organization') {
-      const org = asArray<Organization>(organizations).find((item) => item.id === externalSelection.targetID)
-      if (org) {
-        setSelectedOrgId(org.id)
-        setSelectedDepartmentId('')
-        setSelectedPositionId('')
-        setPositionAssignments([])
-        setOrgForm({
-          name: org.name,
-          description: org.description ?? '',
-        })
-        setDepartmentForm(emptyDepartmentForm)
-        setPositionForm(emptyPositionForm)
-      } else {
-        setSelectedOrgId(externalSelection.targetID)
+    const targetID = externalSelection.targetID
+    const targetType = externalSelection.targetType
+    const record = externalSelection.record
+    return deferStateUpdate(() => {
+      if (targetType === 'organization') {
+        const org = asArray<Organization>(organizations).find((item) => item.id === targetID)
+        if (org) {
+          setSelectedOrgId(org.id)
+          setSelectedDepartmentId('')
+          setSelectedPositionId('')
+          setPositionAssignments([])
+          setOrgForm({
+            name: org.name,
+            description: org.description ?? '',
+          })
+          setDepartmentForm(emptyDepartmentForm)
+          setPositionForm(emptyPositionForm)
+        } else {
+          setSelectedOrgId(targetID)
+        }
+        return
       }
-      return
-    }
 
-    if (externalSelection.targetType === 'department') {
-      const organizationID = typeof externalSelection.record?.organization_id === 'string' ? externalSelection.record.organization_id : ''
-      if (organizationID && organizationID !== selectedOrgId) setSelectedOrgId(organizationID)
-      const department = findDepartment(asArray<Department>(departmentTree), externalSelection.targetID)
-      if (department) {
-        setSelectedDepartmentId(department.id)
-        setSelectedPositionId('')
-        setPositionAssignments([])
-        setDepartmentForm({
-          name: department.name,
-          code: department.code ?? '',
-          description: department.description ?? '',
-          status: department.status,
-          sort_order: String(department.sort_order),
-        })
-        setPositionForm(emptyPositionForm)
-      } else {
-        setSelectedDepartmentId(externalSelection.targetID)
+      if (targetType === 'department') {
+        const organizationID = typeof record?.organization_id === 'string' ? record.organization_id : ''
+        if (organizationID && organizationID !== selectedOrgId) setSelectedOrgId(organizationID)
+        const department = findDepartment(asArray<Department>(departmentTree), targetID)
+        if (department) {
+          setSelectedDepartmentId(department.id)
+          setSelectedPositionId('')
+          setPositionAssignments([])
+          setDepartmentForm({
+            name: department.name,
+            code: department.code ?? '',
+            description: department.description ?? '',
+            status: department.status,
+            sort_order: String(department.sort_order),
+          })
+          setPositionForm(emptyPositionForm)
+        } else {
+          setSelectedDepartmentId(targetID)
+        }
+        return
       }
-      return
-    }
 
-    if (externalSelection.targetType === 'position') {
-      const organizationID = typeof externalSelection.record?.organization_id === 'string' ? externalSelection.record.organization_id : ''
-      const departmentID = typeof externalSelection.record?.department_id === 'string' ? externalSelection.record.department_id : ''
-      if (organizationID && organizationID !== selectedOrgId) setSelectedOrgId(organizationID)
-      if (departmentID) setSelectedDepartmentId(departmentID)
-      setSelectedPositionId(externalSelection.targetID)
-    }
+      if (targetType === 'position') {
+        const organizationID = typeof record?.organization_id === 'string' ? record.organization_id : ''
+        const departmentID = typeof record?.department_id === 'string' ? record.department_id : ''
+        if (organizationID && organizationID !== selectedOrgId) setSelectedOrgId(organizationID)
+        if (departmentID) setSelectedDepartmentId(departmentID)
+        setSelectedPositionId(targetID)
+      }
+    })
   }, [departmentTree, externalSelection?.record, externalSelection?.targetID, externalSelection?.targetType, organizations, selectedOrgId])
 
   async function runAction(action: () => Promise<void>, success: string) {

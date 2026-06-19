@@ -1,3 +1,5 @@
+import { getCurrentOrganizationId } from './auth'
+
 export const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8080/api/v1'
 
 interface RequestOptions {
@@ -12,6 +14,10 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
 
   if (options.token) {
     headers['Authorization'] = `Bearer ${options.token}`
+    const organizationId = getCurrentOrganizationId()
+    if (organizationId) {
+      headers['X-Organization-ID'] = organizationId
+    }
   }
   if (!isFormData) {
     headers['Content-Type'] = 'application/json'
@@ -39,9 +45,25 @@ export async function login(email: string, password: string): Promise<AuthRespon
   })
 }
 
-export async function registerUser(input: RegisterUserInput): Promise<UserResponse> {
-  return apiRequest<UserResponse>('/auth/register', {
+export async function registerUser(input: RegisterUserInput): Promise<AuthResponse> {
+  return apiRequest<AuthResponse>('/auth/register', {
     method: 'POST',
+    body: input,
+  })
+}
+
+export async function getMe(token: string): Promise<UserProfile> {
+  return apiRequest<UserProfile>('/auth/me', { token })
+}
+
+export async function listSaaSModules(token: string): Promise<SaaSModule[]> {
+  return apiRequest<SaaSModule[]>('/modules', { token })
+}
+
+export async function completeOnboarding(token: string, input: OnboardingOrganizationInput): Promise<OnboardingOrganizationResponse> {
+  return apiRequest<OnboardingOrganizationResponse>('/onboarding/organization', {
+    method: 'POST',
+    token,
     body: input,
   })
 }
@@ -577,6 +599,53 @@ export interface AuthResponse {
   user_id: string
   user_type: 'human' | 'ai'
   expires_at: number
+  onboarding_required?: boolean
+  default_organization_id?: string
+  platform_role?: string
+  organizations?: SessionOrganization[]
+  enabled_modules?: Record<string, boolean>
+}
+
+export interface SessionOrganization {
+  id: string
+  name: string
+  description?: string
+  membership_id?: string
+  authority_tier?: string
+  is_owner?: boolean
+}
+
+export interface UserProfile {
+  id: string
+  name: string
+  email: string
+  account_status: string
+  onboarding_status: string
+  onboarding_required: boolean
+  default_organization_id?: string
+  platform_role?: string
+  organizations: SessionOrganization[]
+  enabled_modules?: Record<string, boolean>
+}
+
+export interface SaaSModule {
+  module_key: string
+  display_name: string
+  category: string
+  enabled_default: boolean
+  license_scope: 'mit' | 'commercial'
+  metadata: Record<string, unknown>
+}
+
+export interface OnboardingOrganizationInput {
+  organization_name: string
+  description?: string
+  enabled_modules?: string[]
+}
+
+export interface OnboardingOrganizationResponse {
+  profile: UserProfile
+  organization: SessionOrganization
 }
 
 export interface UserResponse {

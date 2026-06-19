@@ -231,7 +231,9 @@ func (r *Repository) ListAccessDecisions(ctx context.Context, limit int) ([]Acce
 		`SELECT id, master_key, actor_id, actor_type, action, resource, resource_id, organization_id, department_id,
 		        workflow_id, task_id, capability_id, required_level, risk_level, decision, allowed,
 		        behavior, reason, matched_rules, weight_snapshot, context, created_at
-		 FROM access_decisions ORDER BY created_at DESC LIMIT $1`, limit)
+		 FROM access_decisions
+		 WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1)
+		 ORDER BY created_at DESC LIMIT $2`, nullableUUID(currentTenantOrganizationID(ctx)), limit)
 	if err != nil {
 		return nil, fmt.Errorf("list access decisions: %w", err)
 	}
@@ -528,4 +530,11 @@ func (r *Repository) CheckFieldAccess(ctx context.Context, input FieldAccessChec
 	}
 	result.Allowed = result.Behavior == "allow" || result.Behavior == "notify"
 	return result, nil
+}
+
+func nullableUUID(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return *id
 }

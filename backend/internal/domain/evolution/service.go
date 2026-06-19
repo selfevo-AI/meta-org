@@ -9,11 +9,13 @@ import (
 	"math"
 
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 var (
 	ErrNotFound   = errors.New("not found")
 	ErrValidation = errors.New("validation error")
+	ErrForbidden  = errors.New("forbidden")
 )
 
 type Service struct {
@@ -119,6 +121,9 @@ func (s *Service) ComputeContextWeight(ctx context.Context, input ContextWeightI
 	if input.ActorID == uuid.Nil || input.ActorType == "" {
 		return nil, ErrValidation
 	}
+	if err := applyTenantContextWeightScope(ctx, &input.Scope); err != nil {
+		return nil, err
+	}
 	normalizeScope(&input.Scope)
 	scopeHash := ScopeHash(input.Scope)
 	w, err := s.repo.GetContextWeight(ctx, input.ActorID, input.ActorType, scopeHash)
@@ -160,6 +165,9 @@ func (s *Service) RecordContextOutcome(ctx context.Context, input ContextOutcome
 	}
 	if input.OutcomeScore > 1 {
 		input.OutcomeScore = 1
+	}
+	if err := applyTenantContextWeightScope(ctx, &input.Scope); err != nil {
+		return nil, err
 	}
 	normalizeScope(&input.Scope)
 	scopeHash := ScopeHash(input.Scope)
@@ -360,4 +368,26 @@ func applyRiskAdjustment(score float64, riskLevel string) float64 {
 	default:
 		return score
 	}
+}
+
+func applyTenantContextWeightScope(ctx context.Context, scope *ContextWeightScope) error {
+	orgID := currentTenantOrganizationID(ctx)
+	if orgID == nil {
+		return nil
+	}
+	if scope.OrganizationID != nil && *scope.OrganizationID != *orgID {
+		return ErrForbidden
+	}
+	id := *orgID
+	scope.OrganizationID = &id
+	return nil
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
 }

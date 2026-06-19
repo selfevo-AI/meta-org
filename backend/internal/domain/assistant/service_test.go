@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 func TestCreateSessionAutoModelUsesModuleDefault(t *testing.T) {
@@ -73,6 +74,39 @@ func TestCreateSessionAutoModelFallsBackWhenModuleDefaultMissing(t *testing.T) {
 	}
 	if session.AgentID == nil || *session.AgentID != agentID {
 		t.Fatalf("session agent = %v, want %s", session.AgentID, agentID)
+	}
+}
+
+func TestCreateSessionUsesCurrentTenantOrganization(t *testing.T) {
+	orgID := uuid.New()
+	ctx := context.WithValue(context.Background(), middleware.TenantContextKey, &middleware.TenantContext{OrganizationID: &orgID})
+	repo := &fakeRepository{}
+	svc := NewService(repo, nil, nil)
+
+	session, err := svc.CreateSession(ctx, uuid.New(), "internal_human", CreateSessionInput{Title: "tenant session"})
+	if err != nil {
+		t.Fatalf("CreateSession returned error: %v", err)
+	}
+	if repo.createdSession.OrganizationID == nil || *repo.createdSession.OrganizationID != orgID {
+		t.Fatalf("created session organization = %v, want %s", repo.createdSession.OrganizationID, orgID)
+	}
+	if session.OrganizationID == nil || *session.OrganizationID != orgID {
+		t.Fatalf("session organization = %v, want %s", session.OrganizationID, orgID)
+	}
+}
+
+func TestCreateSessionRejectsCrossTenantOrganization(t *testing.T) {
+	orgID := uuid.New()
+	otherOrgID := uuid.New()
+	ctx := context.WithValue(context.Background(), middleware.TenantContextKey, &middleware.TenantContext{OrganizationID: &orgID})
+	svc := NewService(&fakeRepository{}, nil, nil)
+
+	_, err := svc.CreateSession(ctx, uuid.New(), "internal_human", CreateSessionInput{
+		Title:          "cross tenant",
+		OrganizationID: &otherOrgID,
+	})
+	if !errors.Is(err, ErrForbidden) {
+		t.Fatalf("CreateSession error = %v, want ErrForbidden", err)
 	}
 }
 
@@ -309,27 +343,30 @@ type fakeRepository struct {
 	lastSkillRun            CreateSkillRunInput
 	lastSkillListModuleKey  string
 	lastSkillListTargetType string
+	lastStep                AddStepInput
+	session                 *Session
 	sessionErr              error
 }
 
 func (f *fakeRepository) CreateSession(_ context.Context, actorID uuid.UUID, actorType string, input CreateSessionInput) (*Session, error) {
 	f.createdSession = input
 	return &Session{
-		ID:            uuid.New(),
-		Title:         input.Title,
-		Mode:          input.Mode,
-		ModuleKey:     input.ModuleKey,
-		Status:        StatusIdle,
-		ActorID:       actorID,
-		ActorType:     actorType,
-		AgentID:       input.AgentID,
-		ProviderID:    input.ProviderID,
-		ProviderType:  input.ProviderType,
-		Model:         input.Model,
-		TargetType:    input.TargetType,
-		TargetID:      input.TargetID,
-		WorkingMemory: map[string]any{},
-		Metadata:      map[string]any{},
+		ID:             uuid.New(),
+		Title:          input.Title,
+		Mode:           input.Mode,
+		ModuleKey:      input.ModuleKey,
+		Status:         StatusIdle,
+		ActorID:        actorID,
+		ActorType:      actorType,
+		AgentID:        input.AgentID,
+		ProviderID:     input.ProviderID,
+		ProviderType:   input.ProviderType,
+		Model:          input.Model,
+		OrganizationID: input.OrganizationID,
+		TargetType:     input.TargetType,
+		TargetID:       input.TargetID,
+		WorkingMemory:  map[string]any{},
+		Metadata:       map[string]any{},
 	}, nil
 }
 
@@ -354,11 +391,14 @@ func (f *fakeRepository) ListSessions(context.Context, uuid.UUID, string, string
 	return []Session{}, nil
 }
 
-func (f *fakeRepository) GetSession(context.Context, uuid.UUID, uuid.UUID, string) (*Session, error) {
+func (f *fakeRepository) GetSession(_ context.Context, id uuid.UUID, actorID uuid.UUID, actorType string) (*Session, error) {
 	if f.sessionErr != nil {
 		return nil, f.sessionErr
 	}
-	return &Session{}, nil
+	if f.session != nil {
+		return f.session, nil
+	}
+	return &Session{ID: id, ActorID: actorID, ActorType: actorType, WorkingMemory: map[string]any{}}, nil
 }
 
 func (f *fakeRepository) UpdateSessionStatus(context.Context, uuid.UUID, string, string) error {
@@ -377,8 +417,9 @@ func (f *fakeRepository) ListMessages(context.Context, uuid.UUID, int) ([]Messag
 	return []Message{}, nil
 }
 
-func (f *fakeRepository) AddStep(context.Context, *Session, AddStepInput) (*Step, error) {
-	return &Step{ID: uuid.New()}, nil
+func (f *fakeRepository) AddStep(_ context.Context, _ *Session, input AddStepInput) (*Step, error) {
+	f.lastStep = input
+	return &Step{ID: uuid.New(), StepType: input.StepType, Status: input.Status, Data: input.Data}, nil
 }
 
 func (f *fakeRepository) ListSteps(context.Context, uuid.UUID, int) ([]Step, error) {

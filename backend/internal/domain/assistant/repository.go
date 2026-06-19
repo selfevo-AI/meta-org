@@ -128,9 +128,10 @@ func (r *PostgresRepository) ListSessions(ctx context.Context, actorID uuid.UUID
 			last_error, created_at, updated_at
 		FROM assistant_sessions
 		WHERE actor_id = $1 AND actor_type = $2 AND ($3 = '' OR module_key = $3)
+			AND ($5::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $5)
 		ORDER BY updated_at DESC
 		LIMIT $4
-	`, actorID, actorType, moduleKey, normalizeLimit(limit))
+	`, actorID, actorType, moduleKey, normalizeLimit(limit), nullableUUID(currentTenantOrganizationID(ctx)))
 	if err != nil {
 		return nil, fmt.Errorf("list assistant sessions: %w", err)
 	}
@@ -155,7 +156,8 @@ func (r *PostgresRepository) GetSession(ctx context.Context, id uuid.UUID, actor
 			last_error, created_at, updated_at
 		FROM assistant_sessions
 		WHERE id = $1 AND actor_id = $2 AND actor_type = $3
-	`, id, actorID, actorType), session)
+			AND ($4::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $4)
+	`, id, actorID, actorType, nullableUUID(currentTenantOrganizationID(ctx))), session)
 	if err != nil {
 		return nil, fmt.Errorf("get assistant session: %w", err)
 	}
@@ -704,4 +706,11 @@ func uuidPointer(value pgtype.UUID) *uuid.UUID {
 		return nil
 	}
 	return &id
+}
+
+func nullableUUID(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return *id
 }

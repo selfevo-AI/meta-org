@@ -418,6 +418,9 @@ func (s *Service) Invoke(ctx context.Context, input InvokeInput) (*InvokeOutput,
 	if err := validateInvokeInput(input); err != nil {
 		return nil, err
 	}
+	if err := applyTenantAttribution(ctx, &input); err != nil {
+		return nil, err
+	}
 	target, err := s.repo.ResolveInvocationTarget(ctx, input)
 	if err != nil {
 		return nil, err
@@ -530,6 +533,9 @@ func (s *Service) Invoke(ctx context.Context, input InvokeInput) (*InvokeOutput,
 
 func (s *Service) Stream(ctx context.Context, input InvokeInput) (*StreamResult, error) {
 	if err := validateInvokeInput(input); err != nil {
+		return nil, err
+	}
+	if err := applyTenantAttribution(ctx, &input); err != nil {
 		return nil, err
 	}
 	target, err := s.repo.ResolveInvocationTarget(ctx, input)
@@ -875,6 +881,19 @@ func validateInvokeInput(input InvokeInput) error {
 	if len(input.Messages) == 0 {
 		return fmt.Errorf("%w: messages are required", ErrValidation)
 	}
+	return nil
+}
+
+func applyTenantAttribution(ctx context.Context, input *InvokeInput) error {
+	orgID := currentTenantOrganizationID(ctx)
+	if orgID == nil {
+		return nil
+	}
+	if input.Attribution.OrganizationID != nil && *input.Attribution.OrganizationID != *orgID {
+		return fmt.Errorf("%w: attribution.organization_id must match current organization", ErrValidation)
+	}
+	id := *orgID
+	input.Attribution.OrganizationID = &id
 	return nil
 }
 

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 var (
@@ -128,6 +129,15 @@ func (s *Service) CreateRateCard(ctx context.Context, input CreateRateCardInput)
 	if input.Status == "" {
 		input.Status = "active"
 	}
+	if input.ScopeType == "" {
+		if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+			input.ScopeType = "organization"
+			input.ScopeID = orgID
+		}
+	}
+	if err := ensureScopeAccess(ctx, input.ScopeType, input.ScopeID); err != nil {
+		return nil, err
+	}
 	input.Currency = defaultCurrency(input.Currency)
 	conversion, err := s.convert(ctx, input.Amount, input.Currency, BaseCurrency, effectiveTime(input.EffectiveFrom))
 	if err != nil {
@@ -137,6 +147,9 @@ func (s *Service) CreateRateCard(ctx context.Context, input CreateRateCardInput)
 }
 
 func (s *Service) ListRateCards(ctx context.Context, limit int) ([]CostRateCard, error) {
+	if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+		return s.repo.ListRateCardsByScope(ctx, "organization", *orgID, limit)
+	}
 	return s.repo.ListRateCards(ctx, limit)
 }
 
@@ -168,7 +181,16 @@ func (s *Service) VoidRateCard(ctx context.Context, id string) (*CostRateCard, e
 func (s *Service) CreateBudget(ctx context.Context, input CreateBudgetInput) (*CostBudget, error) {
 	input.ScopeType = strings.TrimSpace(input.ScopeType)
 	if input.ScopeType == "" {
+		if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+			input.ScopeType = "organization"
+			input.ScopeID = orgID
+		}
+	}
+	if input.ScopeType == "" {
 		return nil, fmt.Errorf("%w: scope_type is required", ErrValidation)
+	}
+	if err := ensureScopeAccess(ctx, input.ScopeType, input.ScopeID); err != nil {
+		return nil, err
 	}
 	if input.Status == "" {
 		input.Status = "active"
@@ -182,6 +204,9 @@ func (s *Service) CreateBudget(ctx context.Context, input CreateBudgetInput) (*C
 }
 
 func (s *Service) ListBudgets(ctx context.Context, limit int) ([]CostBudget, error) {
+	if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+		return s.repo.ListBudgetsByScope(ctx, "organization", *orgID, limit)
+	}
 	return s.repo.ListBudgets(ctx, limit)
 }
 
@@ -212,6 +237,12 @@ func (s *Service) VoidBudget(ctx context.Context, id string) (*CostBudget, error
 
 func (s *Service) CreateLedgerEntry(ctx context.Context, input CreateLedgerEntryInput) (*CostLedgerEntry, error) {
 	normalizeLedgerEntryInput(&input)
+	if input.OrganizationID == nil {
+		input.OrganizationID = currentTenantOrganizationID(ctx)
+	}
+	if err := ensureOrganizationAccess(ctx, input.OrganizationID); err != nil {
+		return nil, err
+	}
 	if input.Amount == 0 {
 		return nil, fmt.Errorf("%w: amount must not be zero", ErrValidation)
 	}
@@ -223,6 +254,12 @@ func (s *Service) CreateLedgerEntry(ctx context.Context, input CreateLedgerEntry
 }
 
 func (s *Service) ListLedgerEntries(ctx context.Context, filter SummaryFilter) ([]CostLedgerEntry, error) {
+	if filter.ScopeType == "" && filter.ScopeID == nil {
+		if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+			filter.ScopeType = "organization"
+			filter.ScopeID = orgID
+		}
+	}
 	return s.repo.ListLedgerEntries(ctx, filter)
 }
 
@@ -252,6 +289,12 @@ func (s *Service) VoidLedgerEntry(ctx context.Context, id string) (*CostLedgerEn
 }
 
 func (s *Service) Summary(ctx context.Context, filter SummaryFilter) (*CostSummary, error) {
+	if filter.ScopeType == "" && filter.ScopeID == nil {
+		if orgID := currentTenantOrganizationID(ctx); orgID != nil {
+			filter.ScopeType = "organization"
+			filter.ScopeID = orgID
+		}
+	}
 	if filter.Currency == "" {
 		filter.Currency = BaseCurrency
 	}
@@ -343,4 +386,31 @@ func effectiveTime(value *time.Time) time.Time {
 		return time.Now().UTC()
 	}
 	return *value
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
+}
+
+func ensureOrganizationAccess(ctx context.Context, organizationID *uuid.UUID) error {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil || organizationID == nil {
+		return nil
+	}
+	if *tenant.OrganizationID != *organizationID {
+		return fmt.Errorf("%w: resource is outside current organization", ErrValidation)
+	}
+	return nil
+}
+
+func ensureScopeAccess(ctx context.Context, scopeType string, scopeID *uuid.UUID) error {
+	if scopeType != "organization" {
+		return nil
+	}
+	return ensureOrganizationAccess(ctx, scopeID)
 }

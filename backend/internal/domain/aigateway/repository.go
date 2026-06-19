@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
 )
 
 type secretBox interface {
@@ -562,6 +563,7 @@ func (r *PostgresRepository) CreateUsageLedger(ctx context.Context, input Create
 }
 
 func (r *PostgresRepository) ListInvocations(ctx context.Context, limit int) ([]Invocation, error) {
+	orgID := nullableUUID(currentTenantOrganizationID(ctx))
 	rows, err := r.db.Query(ctx, `
 		SELECT id, provider_id, model_id, channel_id, mode, status,
 			organization_id, department_id, project_id, requirement_id, workflow_id, task_id,
@@ -574,9 +576,10 @@ func (r *PostgresRepository) ListInvocations(ctx context.Context, limit int) ([]
 			cost_amount::float8, cost_breakdown, currency, first_token_ms, duration_ms, error_type, error_message,
 			metadata, created_at, completed_at
 		FROM ai_invocations
+		WHERE $2::uuid IS NULL OR organization_id = $2
 		ORDER BY created_at DESC
 		LIMIT $1
-	`, normalizeLimit(limit))
+	`, normalizeLimit(limit), orgID)
 	if err != nil {
 		return nil, fmt.Errorf("list ai invocations: %w", err)
 	}
@@ -586,6 +589,7 @@ func (r *PostgresRepository) ListInvocations(ctx context.Context, limit int) ([]
 
 func (r *PostgresRepository) GetInvocation(ctx context.Context, id uuid.UUID) (*Invocation, error) {
 	inv := &Invocation{}
+	orgID := nullableUUID(currentTenantOrganizationID(ctx))
 	err := scanInvocationRow(r.db.QueryRow(ctx, `
 		SELECT id, provider_id, model_id, channel_id, mode, status,
 			organization_id, department_id, project_id, requirement_id, workflow_id, task_id,
@@ -598,8 +602,8 @@ func (r *PostgresRepository) GetInvocation(ctx context.Context, id uuid.UUID) (*
 			cost_amount::float8, cost_breakdown, currency, first_token_ms, duration_ms, error_type, error_message,
 			metadata, created_at, completed_at
 		FROM ai_invocations
-		WHERE id = $1
-	`, id), inv)
+		WHERE id = $1 AND ($2::uuid IS NULL OR organization_id = $2)
+	`, id, orgID), inv)
 	if err != nil {
 		return nil, fmt.Errorf("get ai invocation: %w", err)
 	}
@@ -608,12 +612,15 @@ func (r *PostgresRepository) GetInvocation(ctx context.Context, id uuid.UUID) (*
 
 func (r *PostgresRepository) CostSummary(ctx context.Context) (*GatewayCostSummary, error) {
 	summary := &GatewayCostSummary{Currency: "CNY", ByProvider: map[string]float64{}, ByChannel: map[string]float64{}}
+	orgID := nullableUUID(currentTenantOrganizationID(ctx))
 	if err := r.db.QueryRow(ctx, `
-		SELECT COALESCE(SUM(amount), 0)::float8,
-			COALESCE(SUM(amount) FILTER (WHERE finance_export_line_id IS NULL), 0)::float8,
-			COALESCE(MAX(currency), 'CNY')
-		FROM ai_usage_ledger
-	`).Scan(&summary.Total, &summary.Unexported, &summary.Currency); err != nil {
+		SELECT COALESCE(SUM(l.amount), 0)::float8,
+			COALESCE(SUM(l.amount) FILTER (WHERE l.finance_export_line_id IS NULL), 0)::float8,
+			COALESCE(MAX(l.currency), 'CNY')
+		FROM ai_usage_ledger l
+		JOIN ai_invocations i ON i.id = l.invocation_id
+		WHERE $1::uuid IS NULL OR i.organization_id = $1
+	`, orgID).Scan(&summary.Total, &summary.Unexported, &summary.Currency); err != nil {
 		return nil, fmt.Errorf("query ai cost summary: %w", err)
 	}
 	rows, err := r.db.Query(ctx, `
@@ -621,8 +628,9 @@ func (r *PostgresRepository) CostSummary(ctx context.Context) (*GatewayCostSumma
 		FROM ai_usage_ledger l
 		JOIN ai_invocations i ON i.id = l.invocation_id
 		JOIN model_providers p ON p.id = i.provider_id
+		WHERE $1::uuid IS NULL OR i.organization_id = $1
 		GROUP BY p.provider_type
-	`)
+	`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("query ai cost by provider: %w", err)
 	}
@@ -641,9 +649,11 @@ func (r *PostgresRepository) CostSummary(ctx context.Context) (*GatewayCostSumma
 	channelRows, err := r.db.Query(ctx, `
 		SELECT COALESCE(c.name, 'provider_default'), COALESCE(SUM(l.amount), 0)::float8
 		FROM ai_usage_ledger l
+		JOIN ai_invocations i ON i.id = l.invocation_id
 		LEFT JOIN model_provider_channels c ON c.id = l.channel_id
+		WHERE $1::uuid IS NULL OR i.organization_id = $1
 		GROUP BY COALESCE(c.name, 'provider_default')
-	`)
+	`, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("query ai cost by channel: %w", err)
 	}
@@ -862,38 +872,44 @@ func (r *PostgresRepository) UsageAnalysis(ctx context.Context, filter UsageAnal
 		ByModel:    map[string]float64{},
 		ByActor:    map[string]float64{},
 	}
+	orgID := nullableUUID(currentTenantOrganizationID(ctx))
 	if err := r.db.QueryRow(ctx, `
 		SELECT COALESCE(SUM(cost_amount), 0)::float8, COUNT(*), COALESCE(MAX(currency), 'CNY')
 		FROM ai_invocations
-	`).Scan(&analysis.TotalCost, &analysis.InvocationCount, &analysis.Currency); err != nil {
+		WHERE $1::uuid IS NULL OR organization_id = $1
+	`, orgID).Scan(&analysis.TotalCost, &analysis.InvocationCount, &analysis.Currency); err != nil {
 		return nil, fmt.Errorf("query usage analysis totals: %w", err)
 	}
 	if err := r.fillUsageBreakdown(ctx, analysis.ByProvider, `
 		SELECT p.provider_type, COALESCE(SUM(i.cost_amount), 0)::float8
 		FROM ai_invocations i JOIN model_providers p ON p.id = i.provider_id
+		WHERE $1::uuid IS NULL OR i.organization_id = $1
 		GROUP BY p.provider_type
-	`); err != nil {
+	`, orgID); err != nil {
 		return nil, err
 	}
 	if err := r.fillUsageBreakdown(ctx, analysis.ByChannel, `
 		SELECT COALESCE(c.name, 'provider_default'), COALESCE(SUM(i.cost_amount), 0)::float8
 		FROM ai_invocations i LEFT JOIN model_provider_channels c ON c.id = i.channel_id
+		WHERE $1::uuid IS NULL OR i.organization_id = $1
 		GROUP BY COALESCE(c.name, 'provider_default')
-	`); err != nil {
+	`, orgID); err != nil {
 		return nil, err
 	}
 	if err := r.fillUsageBreakdown(ctx, analysis.ByModel, `
 		SELECT COALESCE(NULLIF(i.requested_model, ''), m.model_key), COALESCE(SUM(i.cost_amount), 0)::float8
 		FROM ai_invocations i JOIN models m ON m.id = i.model_id
+		WHERE $1::uuid IS NULL OR i.organization_id = $1
 		GROUP BY COALESCE(NULLIF(i.requested_model, ''), m.model_key)
-	`); err != nil {
+	`, orgID); err != nil {
 		return nil, err
 	}
 	if err := r.fillUsageBreakdown(ctx, analysis.ByActor, `
 		SELECT COALESCE(i.agent_id::text, i.user_id::text, 'unattributed'), COALESCE(SUM(i.cost_amount), 0)::float8
 		FROM ai_invocations i
+		WHERE $1::uuid IS NULL OR i.organization_id = $1
 		GROUP BY COALESCE(i.agent_id::text, i.user_id::text, 'unattributed')
-	`); err != nil {
+	`, orgID); err != nil {
 		return nil, err
 	}
 	recent, err := r.ListInvocations(ctx, filter.Limit)
@@ -904,8 +920,8 @@ func (r *PostgresRepository) UsageAnalysis(ctx context.Context, filter UsageAnal
 	return analysis, nil
 }
 
-func (r *PostgresRepository) fillUsageBreakdown(ctx context.Context, target map[string]float64, query string) error {
-	rows, err := r.db.Query(ctx, query)
+func (r *PostgresRepository) fillUsageBreakdown(ctx context.Context, target map[string]float64, query string, args ...any) error {
+	rows, err := r.db.Query(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("query usage breakdown: %w", err)
 	}
@@ -1008,6 +1024,22 @@ func uuidString(id *uuid.UUID) string {
 		return ""
 	}
 	return id.String()
+}
+
+func currentTenantOrganizationID(ctx context.Context) *uuid.UUID {
+	tenant, ok := middleware.TenantFromContext(ctx)
+	if !ok || tenant.OrganizationID == nil {
+		return nil
+	}
+	id := *tenant.OrganizationID
+	return &id
+}
+
+func nullableUUID(id *uuid.UUID) any {
+	if id == nil {
+		return nil
+	}
+	return *id
 }
 
 func (r *PostgresRepository) applyChannel(ctx context.Context, input InvokeInput, target *ResolvedModel) error {

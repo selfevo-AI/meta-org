@@ -17,6 +17,7 @@ const (
 	MVRUDissolved  MVRUStatus = "dissolved"
 
 	AuthorityOrganizationCreator AuthorityTier = "organization_creator"
+	AuthorityOrganizationAdmin   AuthorityTier = "organization_admin"
 	AuthorityReviewer            AuthorityTier = "reviewer"
 	AuthorityExecutor            AuthorityTier = "executor"
 )

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -42,13 +43,13 @@ func (r *DBContextResolver) Resolve(ctx context.Context, session *Session) WorkR
 	if r == nil || r.db == nil || session == nil {
 		return result
 	}
-	records, err := r.queryRecords(ctx, session.ModuleKey, session.TargetType)
+	records, err := r.queryRecords(ctx, session.ModuleKey, session.TargetType, session.OrganizationID)
 	if err != nil {
 		result.Error = err.Error()
 		return result
 	}
 	if session.TargetID != nil {
-		if selected, err := r.queryTargetRecord(ctx, session.ModuleKey, session.TargetType, *session.TargetID); err == nil {
+		if selected, err := r.queryTargetRecord(ctx, session.ModuleKey, session.TargetType, *session.TargetID, session.OrganizationID); err == nil {
 			records = mergeSelectedRecord(selected, records)
 		} else {
 			result.Error = err.Error()
@@ -59,7 +60,7 @@ func (r *DBContextResolver) Resolve(ctx context.Context, session *Session) WorkR
 	return result
 }
 
-func (r *DBContextResolver) queryRecords(ctx context.Context, moduleKey string, targetType string) ([]WorkRecord, error) {
+func (r *DBContextResolver) queryRecords(ctx context.Context, moduleKey string, targetType string, organizationID *uuid.UUID) ([]WorkRecord, error) {
 	query := targetContextQuery(targetType)
 	if query == "" {
 		query = contextQuery(moduleKey)
@@ -67,7 +68,15 @@ func (r *DBContextResolver) queryRecords(ctx context.Context, moduleKey string, 
 	if query == "" {
 		query = contextQuery("meta_org")
 	}
-	rows, err := r.db.Query(ctx, query)
+	var (
+		rows pgx.Rows
+		err  error
+	)
+	if strings.Contains(query, "$1") {
+		rows, err = r.db.Query(ctx, query, nullableUUID(organizationID))
+	} else {
+		rows, err = r.db.Query(ctx, query)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("resolve assistant context: %w", err)
 	}
@@ -87,23 +96,24 @@ func (r *DBContextResolver) queryRecords(ctx context.Context, moduleKey string, 
 	return records, nil
 }
 
-func (r *DBContextResolver) queryTargetRecord(ctx context.Context, moduleKey string, targetType string, targetID uuid.UUID) (WorkRecord, error) {
+func (r *DBContextResolver) queryTargetRecord(ctx context.Context, moduleKey string, targetType string, targetID uuid.UUID, organizationID *uuid.UUID) (WorkRecord, error) {
 	table, err := proposalTargetTable(moduleKey, targetType)
 	if err != nil {
 		return WorkRecord{}, err
 	}
+	predicate := proposalTargetOrganizationPredicate(table)
 	var record WorkRecord
 	var dataJSON []byte
 	err = r.db.QueryRow(ctx, fmt.Sprintf(`
 		WITH target AS (
 			SELECT to_jsonb(t) AS data
 			FROM %s t
-			WHERE t.id = $1
+			WHERE t.id = $1 AND %s
 			LIMIT 1
 		)
 		SELECT
 			data->>'id',
-			$2::text,
+			$3::text,
 			COALESCE(
 				NULLIF(data->>'title', ''),
 				NULLIF(data->>'name', ''),
@@ -117,7 +127,7 @@ func (r *DBContextResolver) queryTargetRecord(ctx context.Context, moduleKey str
 			COALESCE(NULLIF(data->>'created_at', ''), ''),
 			data
 		FROM target
-	`, table), targetID, firstNonEmpty(targetType, moduleKey)).Scan(
+	`, table, predicate), targetID, nullableUUID(organizationID), firstNonEmpty(targetType, moduleKey)).Scan(
 		&record.ID, &record.Type, &record.Title, &record.Status, &record.CreatedAt, &dataJSON,
 	)
 	if err != nil {
@@ -149,34 +159,119 @@ func unmarshalRecordData(data []byte) map[string]any {
 	return value
 }
 
+func proposalTargetOrganizationPredicate(table string) string {
+	switch table {
+	case "requirements", "projects", "workflow_instances", "finance_receivables", "finance_payables", "cost_ledger_entries":
+		return "($2::uuid IS NULL OR t.organization_id IS NOT DISTINCT FROM $2)"
+	case "deliverables":
+		return `($2::uuid IS NULL OR EXISTS (
+			SELECT 1 FROM projects p
+			WHERE p.id = t.project_id AND p.organization_id IS NOT DISTINCT FROM $2
+		))`
+	case "project_cost_entries", "project_evaluations":
+		return `($2::uuid IS NULL OR EXISTS (
+			SELECT 1 FROM projects p
+			WHERE p.id = t.project_id AND p.organization_id IS NOT DISTINCT FROM $2
+		))`
+	case "tasks":
+		return `($2::uuid IS NULL OR EXISTS (
+			SELECT 1 FROM workflow_instances wi
+			WHERE wi.id = t.workflow_id AND wi.organization_id IS NOT DISTINCT FROM $2
+		))`
+	case "finance_export_batches":
+		return `($2::uuid IS NULL OR EXISTS (
+			SELECT 1 FROM finance_export_lines l
+			WHERE l.batch_id = t.id AND l.organization_id IS NOT DISTINCT FROM $2
+		))`
+	case "finance_settlement_orders":
+		return `($2::uuid IS NULL
+			OR EXISTS (SELECT 1 FROM projects p WHERE p.id = t.project_id AND p.organization_id IS NOT DISTINCT FROM $2)
+			OR EXISTS (SELECT 1 FROM requirements req WHERE req.id = t.requirement_id AND req.organization_id IS NOT DISTINCT FROM $2)
+			OR EXISTS (
+				SELECT 1
+				FROM deliverables d
+				JOIN projects p ON p.id = d.project_id
+				WHERE d.id = t.deliverable_id AND p.organization_id IS NOT DISTINCT FROM $2
+			))`
+	case "cost_budgets":
+		return `($2::uuid IS NULL
+			OR (t.scope_type = 'organization' AND t.scope_id IS NOT DISTINCT FROM $2)
+			OR EXISTS (SELECT 1 FROM departments d WHERE t.scope_type = 'department' AND d.id = t.scope_id AND d.organization_id IS NOT DISTINCT FROM $2)
+			OR EXISTS (SELECT 1 FROM requirements req WHERE t.scope_type = 'requirement' AND req.id = t.scope_id AND req.organization_id IS NOT DISTINCT FROM $2)
+			OR EXISTS (SELECT 1 FROM projects p WHERE t.scope_type = 'project' AND p.id = t.scope_id AND p.organization_id IS NOT DISTINCT FROM $2)
+			OR EXISTS (SELECT 1 FROM workflow_instances wi WHERE t.scope_type = 'workflow' AND wi.id = t.scope_id AND wi.organization_id IS NOT DISTINCT FROM $2)
+			OR EXISTS (
+				SELECT 1
+				FROM tasks task
+				JOIN workflow_instances wi ON wi.id = task.workflow_id
+				WHERE t.scope_type = 'task' AND task.id = t.scope_id AND wi.organization_id IS NOT DISTINCT FROM $2
+			))`
+	case "cost_rate_cards":
+		return `($2::uuid IS NULL
+			OR (t.scope_type = 'organization' AND t.scope_id IS NOT DISTINCT FROM $2)
+			OR EXISTS (SELECT 1 FROM departments d WHERE t.scope_type = 'department' AND d.id = t.scope_id AND d.organization_id IS NOT DISTINCT FROM $2))`
+	default:
+		return "$2::uuid IS NULL"
+	}
+}
+
 func targetContextQuery(targetType string) string {
 	switch strings.ToLower(strings.TrimSpace(targetType)) {
 	case "requirement":
-		return `SELECT id::text, 'requirement', title, status, created_at::text FROM requirements ORDER BY created_at DESC LIMIT 12`
+		return `SELECT id::text, 'requirement', title, status, created_at::text FROM requirements WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 12`
 	case "project":
-		return `SELECT id::text, 'project', name, status, created_at::text FROM projects ORDER BY created_at DESC LIMIT 12`
+		return `SELECT id::text, 'project', name, status, created_at::text FROM projects WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 12`
 	case "deliverable", "delivery":
-		return `SELECT id::text, 'deliverable', name, status, created_at::text FROM deliverables ORDER BY created_at DESC LIMIT 12`
+		return `SELECT d.id::text, 'deliverable', d.name, d.status, d.created_at::text FROM deliverables d JOIN projects p ON p.id = d.project_id WHERE ($1::uuid IS NULL OR p.organization_id IS NOT DISTINCT FROM $1) ORDER BY d.created_at DESC LIMIT 12`
 	case "project_cost", "cost":
-		return `SELECT id::text, 'project_cost', COALESCE(NULLIF(description, ''), source_type), 'posted', created_at::text FROM project_cost_entries ORDER BY created_at DESC LIMIT 12`
+		return `SELECT c.id::text, 'project_cost', COALESCE(NULLIF(c.description, ''), c.source_type), 'posted', c.created_at::text FROM project_cost_entries c JOIN projects p ON p.id = c.project_id WHERE ($1::uuid IS NULL OR p.organization_id IS NOT DISTINCT FROM $1) ORDER BY c.created_at DESC LIMIT 12`
 	case "project_evaluation", "feedback":
-		return `SELECT id::text, 'project_evaluation', evaluator_type, 'completed', created_at::text FROM project_evaluations ORDER BY created_at DESC LIMIT 12`
+		return `SELECT e.id::text, 'project_evaluation', e.evaluator_type, 'completed', e.created_at::text FROM project_evaluations e JOIN projects p ON p.id = e.project_id WHERE ($1::uuid IS NULL OR p.organization_id IS NOT DISTINCT FROM $1) ORDER BY e.created_at DESC LIMIT 12`
 	case "workflow", "workflow_instance":
-		return `SELECT id::text, 'workflow_instance', status, status, created_at::text FROM workflow_instances ORDER BY created_at DESC LIMIT 12`
+		return `SELECT id::text, 'workflow_instance', status, status, created_at::text FROM workflow_instances WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 12`
 	case "task":
-		return `SELECT id::text, 'task', stage_type, status, created_at::text FROM tasks ORDER BY created_at DESC LIMIT 12`
+		return `SELECT t.id::text, 'task', t.stage_type::text, t.status::text, t.created_at::text FROM tasks t JOIN workflow_instances wi ON wi.id = t.workflow_id WHERE ($1::uuid IS NULL OR wi.organization_id IS NOT DISTINCT FROM $1) ORDER BY t.created_at DESC LIMIT 12`
 	case "finance_settlement", "settlement", "settlement_order", "finance_accounting":
-		return `SELECT id::text, 'finance_settlement', COALESCE(NULLIF(title, ''), settlement_number), status, created_at::text FROM finance_settlement_orders ORDER BY created_at DESC LIMIT 12`
+		return `
+			SELECT f.id::text, 'finance_settlement', COALESCE(NULLIF(f.title, ''), f.settlement_number), f.status, f.created_at::text
+			FROM finance_settlement_orders f
+			LEFT JOIN projects p ON p.id = f.project_id
+			LEFT JOIN requirements req ON req.id = f.requirement_id
+			LEFT JOIN deliverables d ON d.id = f.deliverable_id
+			LEFT JOIN projects dp ON dp.id = d.project_id
+			WHERE ($1::uuid IS NULL OR p.organization_id IS NOT DISTINCT FROM $1 OR req.organization_id IS NOT DISTINCT FROM $1 OR dp.organization_id IS NOT DISTINCT FROM $1)
+			ORDER BY f.created_at DESC LIMIT 12`
 	case "finance_receivable", "receivable":
-		return `SELECT id::text, 'finance_receivable', COALESCE(NULLIF(invoice_number, ''), customer_name), status, created_at::text FROM finance_receivables ORDER BY created_at DESC LIMIT 12`
+		return `SELECT id::text, 'finance_receivable', COALESCE(NULLIF(invoice_number, ''), customer_name), status, created_at::text FROM finance_receivables WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 12`
 	case "finance_payable", "payable":
-		return `SELECT id::text, 'finance_payable', COALESCE(NULLIF(invoice_number, ''), vendor_name), status, created_at::text FROM finance_payables ORDER BY created_at DESC LIMIT 12`
+		return `SELECT id::text, 'finance_payable', COALESCE(NULLIF(invoice_number, ''), vendor_name), status, created_at::text FROM finance_payables WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 12`
 	case "cost_budget", "budget":
-		return `SELECT id::text, 'cost_budget', scope_type, status, created_at::text FROM cost_budgets ORDER BY created_at DESC LIMIT 12`
+		return `
+			SELECT b.id::text, 'cost_budget', b.scope_type, b.status, b.created_at::text
+			FROM cost_budgets b
+			WHERE ($1::uuid IS NULL
+				OR (b.scope_type = 'organization' AND b.scope_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (SELECT 1 FROM departments d WHERE b.scope_type = 'department' AND d.id = b.scope_id AND d.organization_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (SELECT 1 FROM requirements req WHERE b.scope_type = 'requirement' AND req.id = b.scope_id AND req.organization_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (SELECT 1 FROM projects p WHERE b.scope_type = 'project' AND p.id = b.scope_id AND p.organization_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (SELECT 1 FROM workflow_instances wi WHERE b.scope_type = 'workflow' AND wi.id = b.scope_id AND wi.organization_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (
+					SELECT 1
+					FROM tasks task
+					JOIN workflow_instances wi ON wi.id = task.workflow_id
+					WHERE b.scope_type = 'task' AND task.id = b.scope_id AND wi.organization_id IS NOT DISTINCT FROM $1
+				))
+			ORDER BY b.created_at DESC LIMIT 12`
 	case "cost_rate_card", "rate_card":
-		return `SELECT id::text, 'cost_rate_card', subject_type || ':' || rate_type, status, created_at::text FROM cost_rate_cards ORDER BY created_at DESC LIMIT 12`
+		return `
+			SELECT c.id::text, 'cost_rate_card', c.subject_type || ':' || c.rate_type, c.status, c.created_at::text
+			FROM cost_rate_cards c
+			WHERE ($1::uuid IS NULL
+				OR (c.scope_type = 'organization' AND c.scope_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (SELECT 1 FROM departments d WHERE c.scope_type = 'department' AND d.id = c.scope_id AND d.organization_id IS NOT DISTINCT FROM $1))
+			ORDER BY c.created_at DESC LIMIT 12`
 	case "cost_ledger_entry", "ledger_entry":
-		return `SELECT id::text, 'cost_ledger_entry', cost_category || ':' || source_type, status, created_at::text FROM cost_ledger_entries ORDER BY created_at DESC LIMIT 12`
+		return `SELECT id::text, 'cost_ledger_entry', cost_category || ':' || source_type, status, created_at::text FROM cost_ledger_entries WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 12`
 	default:
 		return ""
 	}
@@ -186,30 +281,43 @@ func contextQuery(moduleKey string) string {
 	switch strings.ToLower(moduleKey) {
 	case "requirement":
 		return `
-			SELECT id::text, 'requirement', title, status, created_at::text FROM requirements ORDER BY created_at DESC LIMIT 12`
+			SELECT id::text, 'requirement', title, status, created_at::text FROM requirements WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 12`
 	case "project", "delivery", "feedback":
 		return `
-			SELECT id::text, 'project', name, status, created_at::text FROM projects ORDER BY created_at DESC LIMIT 12`
+			SELECT id::text, 'project', name, status, created_at::text FROM projects WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 12`
 	case "project_cost", "cost":
 		return `
-			SELECT id::text, 'project_cost', COALESCE(NULLIF(description, ''), source_type), 'posted', created_at::text FROM project_cost_entries ORDER BY created_at DESC LIMIT 12`
+			SELECT c.id::text, 'project_cost', COALESCE(NULLIF(c.description, ''), c.source_type), 'posted', c.created_at::text
+			FROM project_cost_entries c
+			JOIN projects p ON p.id = c.project_id
+			WHERE ($1::uuid IS NULL OR p.organization_id IS NOT DISTINCT FROM $1)
+			ORDER BY c.created_at DESC LIMIT 12`
 	case "meta_resource":
 		return `
-			(SELECT id::text, 'meta_resource', name, status, created_at::text FROM meta_resources ORDER BY created_at DESC LIMIT 8)
+			(SELECT id::text, 'meta_resource', name, status, created_at::text FROM meta_resources WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 8)
 			UNION ALL
-			(SELECT id::text, 'pdca_cycle', COALESCE(NULLIF(summary, ''), current_stage), status, created_at::text FROM pdca_cycles ORDER BY created_at DESC LIMIT 4)
+			(SELECT c.id::text, 'pdca_cycle', COALESCE(NULLIF(c.summary, ''), c.current_stage), c.status, c.created_at::text
+			 FROM pdca_cycles c
+			 LEFT JOIN requirements req ON req.id = c.requirement_id
+			 LEFT JOIN projects p ON p.id = c.project_id
+			 WHERE ($1::uuid IS NULL OR req.organization_id IS NOT DISTINCT FROM $1 OR p.organization_id IS NOT DISTINCT FROM $1)
+			 ORDER BY c.created_at DESC LIMIT 4)
 			LIMIT 12`
 	case "organization":
 		return `
-			(SELECT id::text, 'department', name, status, created_at::text FROM departments ORDER BY created_at DESC LIMIT 6)
+			(SELECT id::text, 'department', name, status, created_at::text FROM departments WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 6)
 			UNION ALL
-			(SELECT id::text, 'position', name, status, created_at::text FROM positions ORDER BY created_at DESC LIMIT 6)
+			(SELECT id::text, 'position', name, status, created_at::text FROM positions WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 6)
 			LIMIT 12`
 	case "workflow":
 		return `
-			(SELECT id::text, 'workflow_instance', status, status, created_at::text FROM workflow_instances ORDER BY created_at DESC LIMIT 6)
+			(SELECT id::text, 'workflow_instance', status, status, created_at::text FROM workflow_instances WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 6)
 			UNION ALL
-			(SELECT id::text, 'task', stage_type, status, created_at::text FROM tasks ORDER BY created_at DESC LIMIT 6)
+			(SELECT t.id::text, 'task', t.stage_type::text, t.status::text, t.created_at::text
+			 FROM tasks t
+			 JOIN workflow_instances wi ON wi.id = t.workflow_id
+			 WHERE ($1::uuid IS NULL OR wi.organization_id IS NOT DISTINCT FROM $1)
+			 ORDER BY t.created_at DESC LIMIT 6)
 			LIMIT 12`
 	case "capability":
 		return `
@@ -218,7 +326,7 @@ func contextQuery(moduleKey string) string {
 		return `
 			(SELECT id::text, 'principle', name, CASE WHEN is_active THEN 'active' ELSE 'inactive' END, created_at::text FROM principles ORDER BY created_at DESC LIMIT 6)
 			UNION ALL
-			(SELECT id::text, 'access_decision', action, decision, created_at::text FROM access_decisions ORDER BY created_at DESC LIMIT 6)
+			(SELECT id::text, 'access_decision', action, decision, created_at::text FROM access_decisions WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 6)
 			LIMIT 12`
 	case "self_evolution":
 		return `
@@ -233,31 +341,57 @@ func contextQuery(moduleKey string) string {
 		return `
 			(SELECT id::text, 'model', model_key, status, created_at::text FROM models ORDER BY created_at DESC LIMIT 6)
 			UNION ALL
-			(SELECT id::text, 'ai_invocation', requested_model, status, created_at::text FROM ai_invocations ORDER BY created_at DESC LIMIT 6)
+			(SELECT id::text, 'ai_invocation', requested_model, status, created_at::text FROM ai_invocations WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 6)
 			LIMIT 12`
 	case "costing":
 		return `
-			(SELECT id::text, 'rate_card', subject_type || ':' || rate_type, status, created_at::text FROM cost_rate_cards ORDER BY created_at DESC LIMIT 6)
+			(SELECT c.id::text, 'rate_card', c.subject_type || ':' || c.rate_type, c.status, c.created_at::text
+			 FROM cost_rate_cards c
+			 WHERE ($1::uuid IS NULL
+				OR (c.scope_type = 'organization' AND c.scope_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (SELECT 1 FROM departments d WHERE c.scope_type = 'department' AND d.id = c.scope_id AND d.organization_id IS NOT DISTINCT FROM $1))
+			 ORDER BY c.created_at DESC LIMIT 6)
 			UNION ALL
-			(SELECT id::text, 'budget', scope_type, status, created_at::text FROM cost_budgets ORDER BY created_at DESC LIMIT 6)
+			(SELECT b.id::text, 'budget', b.scope_type, b.status, b.created_at::text
+			 FROM cost_budgets b
+			 WHERE ($1::uuid IS NULL
+				OR (b.scope_type = 'organization' AND b.scope_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (SELECT 1 FROM departments d WHERE b.scope_type = 'department' AND d.id = b.scope_id AND d.organization_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (SELECT 1 FROM requirements req WHERE b.scope_type = 'requirement' AND req.id = b.scope_id AND req.organization_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (SELECT 1 FROM projects p WHERE b.scope_type = 'project' AND p.id = b.scope_id AND p.organization_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (SELECT 1 FROM workflow_instances wi WHERE b.scope_type = 'workflow' AND wi.id = b.scope_id AND wi.organization_id IS NOT DISTINCT FROM $1)
+				OR EXISTS (
+					SELECT 1
+					FROM tasks task
+					JOIN workflow_instances wi ON wi.id = task.workflow_id
+					WHERE b.scope_type = 'task' AND task.id = b.scope_id AND wi.organization_id IS NOT DISTINCT FROM $1
+				))
+			 ORDER BY b.created_at DESC LIMIT 6)
 			UNION ALL
-			(SELECT id::text, 'cost_ledger_entry', cost_category || ':' || source_type, status, created_at::text FROM cost_ledger_entries ORDER BY created_at DESC LIMIT 6)
+			(SELECT id::text, 'cost_ledger_entry', cost_category || ':' || source_type, status, created_at::text FROM cost_ledger_entries WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 6)
 			LIMIT 12`
 	case "finance":
 		return `
-			(SELECT id::text, 'finance_settlement', COALESCE(NULLIF(title, ''), settlement_number), status, created_at::text FROM finance_settlement_orders ORDER BY created_at DESC LIMIT 4)
+			(SELECT f.id::text, 'finance_settlement', COALESCE(NULLIF(f.title, ''), f.settlement_number), f.status, f.created_at::text
+			 FROM finance_settlement_orders f
+			 LEFT JOIN projects p ON p.id = f.project_id
+			 LEFT JOIN requirements req ON req.id = f.requirement_id
+			 LEFT JOIN deliverables d ON d.id = f.deliverable_id
+			 LEFT JOIN projects dp ON dp.id = d.project_id
+			 WHERE ($1::uuid IS NULL OR p.organization_id IS NOT DISTINCT FROM $1 OR req.organization_id IS NOT DISTINCT FROM $1 OR dp.organization_id IS NOT DISTINCT FROM $1)
+			 ORDER BY f.created_at DESC LIMIT 4)
 			UNION ALL
-			(SELECT id::text, 'finance_receivable', COALESCE(NULLIF(invoice_number, ''), customer_name), status, created_at::text FROM finance_receivables ORDER BY created_at DESC LIMIT 4)
+			(SELECT id::text, 'finance_receivable', COALESCE(NULLIF(invoice_number, ''), customer_name), status, created_at::text FROM finance_receivables WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 4)
 			UNION ALL
-			(SELECT id::text, 'finance_payable', COALESCE(NULLIF(invoice_number, ''), vendor_name), status, created_at::text FROM finance_payables ORDER BY created_at DESC LIMIT 4)
+			(SELECT id::text, 'finance_payable', COALESCE(NULLIF(invoice_number, ''), vendor_name), status, created_at::text FROM finance_payables WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 4)
 			LIMIT 12`
 	case "meta_org":
 		return `
-			(SELECT id::text, 'requirement', title, status, created_at::text FROM requirements ORDER BY created_at DESC LIMIT 4)
+			(SELECT id::text, 'requirement', title, status, created_at::text FROM requirements WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 4)
 			UNION ALL
-			(SELECT id::text, 'project', name, status, created_at::text FROM projects ORDER BY created_at DESC LIMIT 4)
+			(SELECT id::text, 'project', name, status, created_at::text FROM projects WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 4)
 			UNION ALL
-			(SELECT id::text, 'ai_invocation', requested_model, status, created_at::text FROM ai_invocations ORDER BY created_at DESC LIMIT 4)
+			(SELECT id::text, 'ai_invocation', requested_model, status, created_at::text FROM ai_invocations WHERE ($1::uuid IS NULL OR organization_id IS NOT DISTINCT FROM $1) ORDER BY created_at DESC LIMIT 4)
 			LIMIT 12`
 	default:
 		return ""

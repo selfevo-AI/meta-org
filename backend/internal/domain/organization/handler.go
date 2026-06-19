@@ -783,6 +783,8 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	if errors.Is(err, ErrValidation) {
 		status = http.StatusBadRequest
+	} else if errors.Is(err, ErrForbidden) {
+		status = http.StatusForbidden
 	} else if dberrors.IsUniqueViolation(err) {
 		status = http.StatusConflict
 	}

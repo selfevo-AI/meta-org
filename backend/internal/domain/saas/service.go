@@ -1,0 +1,348 @@
+package saas
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"strings"
+
+	"github.com/google/uuid"
+	"github.com/selfevo-AI/meta-org/backend/internal/domain/identity"
+	"github.com/selfevo-AI/meta-org/backend/internal/pkg/middleware"
+	"golang.org/x/crypto/bcrypt"
+)
+
+var (
+	ErrValidation = errors.New("validation error")
+	ErrForbidden  = errors.New("forbidden")
+	ErrConflict   = errors.New("conflict")
+)
+
+type Service struct {
+	repo *Repository
+	mode string
+}
+
+func NewService(repo *Repository, mode string) *Service {
+	if mode != ModeSaaS {
+		mode = ModeSingleOrg
+	}
+	return &Service{repo: repo, mode: mode}
+}
+
+func (s *Service) Mode() string {
+	return s.mode
+}
+
+func (s *Service) BootstrapPlatformAdmin(ctx context.Context, email string, passwordHash string) error {
+	if s.mode != ModeSaaS {
+		return nil
+	}
+	email = strings.ToLower(strings.TrimSpace(email))
+	if email == "" || strings.TrimSpace(passwordHash) == "" {
+		return fmt.Errorf("%w: META_ORG_PLATFORM_ADMIN_EMAIL and META_ORG_PLATFORM_ADMIN_PASSWORD_HASH are required in saas mode", ErrValidation)
+	}
+	if _, err := bcrypt.Cost([]byte(passwordHash)); err != nil {
+		return fmt.Errorf("%w: platform admin password hash must be a bcrypt hash", ErrValidation)
+	}
+	return s.repo.BootstrapPlatformAdmin(ctx, email, passwordHash)
+}
+
+func (s *Service) GetProfile(ctx context.Context, userID uuid.UUID) (*UserProfile, error) {
+	profile, err := s.repo.GetUserProfile(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	profile.OnboardingRequired = s.mode == ModeSaaS && profile.PlatformRole == "" && profile.OnboardingStatus != OnboardingComplete
+	return profile, nil
+}
+
+func (s *Service) IdentitySessionProfile(ctx context.Context, userID uuid.UUID) (*identity.SessionProfile, error) {
+	profile, err := s.GetProfile(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	orgs := make([]identity.AuthOrganization, 0, len(profile.Organizations))
+	for _, org := range profile.Organizations {
+		orgs = append(orgs, identity.AuthOrganization{
+			ID:            org.ID,
+			Name:          org.Name,
+			Description:   org.Description,
+			MembershipID:  org.MembershipID,
+			AuthorityTier: org.AuthorityTier,
+			IsOwner:       org.IsOwner,
+		})
+	}
+	return &identity.SessionProfile{
+		OnboardingRequired:    profile.OnboardingRequired,
+		DefaultOrganizationID: profile.DefaultOrganizationID,
+		PlatformRole:          profile.PlatformRole,
+		Organizations:         orgs,
+		EnabledModules:        profile.EnabledModules,
+	}, nil
+}
+
+func (s *Service) ListModules(ctx context.Context) ([]Module, error) {
+	return s.repo.ListModules(ctx)
+}
+
+func (s *Service) CompleteOnboarding(ctx context.Context, userID uuid.UUID, input OnboardingOrganizationInput) (*OnboardingOrganizationResponse, error) {
+	input.OrganizationName = strings.TrimSpace(input.OrganizationName)
+	if input.OrganizationName == "" {
+		return nil, fmt.Errorf("%w: organization_name is required", ErrValidation)
+	}
+	modules := normalizeModuleKeys(input.EnabledModules)
+	if len(modules) == 0 {
+		defaults, err := s.repo.ListDefaultModuleKeys(ctx)
+		if err != nil {
+			return nil, err
+		}
+		modules = defaults
+	}
+	org, err := s.repo.CompleteOnboarding(ctx, userID, input, modules)
+	if err != nil {
+		return nil, err
+	}
+	profile, err := s.GetProfile(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &OnboardingOrganizationResponse{Profile: *profile, Organization: *org}, nil
+}
+
+func (s *Service) ListPlatformOrganizations(ctx context.Context, actorID uuid.UUID, limit int) ([]OrganizationAccount, error) {
+	if err := s.requirePlatformAdmin(ctx, actorID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListOrganizationsForPlatform(ctx, limit)
+}
+
+func (s *Service) GetSubscription(ctx context.Context, actorID uuid.UUID, orgID uuid.UUID) (*OrganizationSubscription, error) {
+	if err := s.requireOrgAdmin(ctx, actorID, orgID); err != nil {
+		return nil, err
+	}
+	return s.repo.GetSubscription(ctx, orgID)
+}
+
+func (s *Service) GetEntitlements(ctx context.Context, actorID uuid.UUID, orgID uuid.UUID) (map[string]bool, error) {
+	if err := s.requireOrgAdmin(ctx, actorID, orgID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListEnabledModules(ctx, orgID)
+}
+
+func (s *Service) UpdateOrganizationModules(ctx context.Context, actorID uuid.UUID, orgID uuid.UUID, input UpdateOrganizationModulesInput) (map[string]bool, error) {
+	if err := s.requireOrgAdmin(ctx, actorID, orgID); err != nil {
+		return nil, err
+	}
+	return s.repo.UpdateOrganizationModules(ctx, orgID, normalizeModuleKeys(input.EnabledModules))
+}
+
+func (s *Service) CreateInvitation(ctx context.Context, actorID uuid.UUID, orgID uuid.UUID, input CreateInvitationInput) (*Invitation, error) {
+	if err := s.requireOrgAdmin(ctx, actorID, orgID); err != nil {
+		return nil, err
+	}
+	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
+	input.Name = strings.TrimSpace(input.Name)
+	if input.Email == "" {
+		return nil, fmt.Errorf("%w: email is required", ErrValidation)
+	}
+	if input.AuthorityTier == "" {
+		input.AuthorityTier = "executor"
+	}
+	if !validAuthorityTier(input.AuthorityTier) {
+		return nil, fmt.Errorf("%w: invalid authority_tier", ErrValidation)
+	}
+	if input.ExpiresInDays <= 0 || input.ExpiresInDays > 90 {
+		input.ExpiresInDays = 7
+	}
+	token, err := newInviteToken()
+	if err != nil {
+		return nil, err
+	}
+	return s.repo.CreateInvitation(ctx, orgID, actorID, input, token)
+}
+
+func (s *Service) ListInvitations(ctx context.Context, actorID uuid.UUID, orgID uuid.UUID, limit int) ([]Invitation, error) {
+	if err := s.requireOrgAdmin(ctx, actorID, orgID); err != nil {
+		return nil, err
+	}
+	return s.repo.ListInvitations(ctx, orgID, limit)
+}
+
+func (s *Service) AcceptInvitation(ctx context.Context, token string, input AcceptInvitationInput) (*AcceptInvitationResponse, error) {
+	token = strings.TrimSpace(token)
+	input.Email = strings.ToLower(strings.TrimSpace(input.Email))
+	input.Name = strings.TrimSpace(input.Name)
+	if token == "" || input.Email == "" || input.Password == "" {
+		return nil, fmt.Errorf("%w: token, email, and password are required", ErrValidation)
+	}
+	if input.Name == "" {
+		input.Name = strings.Split(input.Email, "@")[0]
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+	if err != nil {
+		return nil, fmt.Errorf("hash invited password: %w", err)
+	}
+	org, userID, err := s.repo.AcceptInvitationWithNewUser(ctx, token, input, string(hash))
+	if err != nil {
+		return nil, err
+	}
+	profile, err := s.GetProfile(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	return &AcceptInvitationResponse{Profile: *profile, Organization: *org}, nil
+}
+
+func (s *Service) ResolveTenant(ctx context.Context, user middleware.AuthenticatedUser, requestedOrganizationID string) (*middleware.TenantContext, error) {
+	actorID, err := uuid.Parse(user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid actor id", ErrValidation)
+	}
+
+	var requested *uuid.UUID
+	if strings.TrimSpace(requestedOrganizationID) != "" {
+		parsed, err := uuid.Parse(strings.TrimSpace(requestedOrganizationID))
+		if err != nil {
+			return nil, fmt.Errorf("%w: invalid organization id", ErrValidation)
+		}
+		requested = &parsed
+	}
+
+	if user.Type == "ai" {
+		if requested == nil {
+			return nil, middleware.ErrTenantRequired
+		}
+		membership, err := s.repo.GetAgentMembership(ctx, actorID, *requested)
+		if err != nil {
+			return nil, middleware.ErrTenantForbidden
+		}
+		enabled, _ := s.repo.ListEnabledModules(ctx, *requested)
+		membershipID := membership.ID
+		orgID := membership.OrganizationID
+		return &middleware.TenantContext{
+			Mode:           s.mode,
+			UserID:         actorID,
+			OrganizationID: &orgID,
+			MembershipID:   &membershipID,
+			AuthorityTier:  membership.AuthorityTier,
+			EnabledModules: enabled,
+		}, nil
+	}
+
+	profile, err := s.GetProfile(ctx, actorID)
+	if err != nil {
+		return nil, err
+	}
+	if s.mode == ModeSaaS && profile.OnboardingRequired {
+		return nil, middleware.ErrOnboardingRequired
+	}
+
+	isPlatform := profile.PlatformRole != ""
+	var orgID *uuid.UUID
+	if requested != nil {
+		orgID = requested
+	} else if profile.DefaultOrganizationID != nil {
+		orgID = profile.DefaultOrganizationID
+	}
+	if orgID == nil && s.mode == ModeSingleOrg {
+		org, err := s.repo.EnsureSingleOrgForUser(ctx, actorID)
+		if err != nil {
+			return nil, err
+		}
+		orgID = &org.ID
+		profile, _ = s.GetProfile(ctx, actorID)
+	}
+	if orgID == nil {
+		return nil, middleware.ErrTenantRequired
+	}
+
+	var membershipID *uuid.UUID
+	authorityTier := ""
+	if isPlatform {
+		if _, err := s.repo.GetOrganizationAccount(ctx, *orgID); err != nil {
+			return nil, middleware.ErrTenantForbidden
+		}
+	} else {
+		membership, err := s.repo.GetHumanMembership(ctx, actorID, *orgID)
+		if err != nil {
+			return nil, middleware.ErrTenantForbidden
+		}
+		id := membership.ID
+		membershipID = &id
+		authorityTier = membership.AuthorityTier
+	}
+	enabled, _ := s.repo.ListEnabledModules(ctx, *orgID)
+	return &middleware.TenantContext{
+		Mode:             s.mode,
+		UserID:           actorID,
+		OrganizationID:   orgID,
+		IsPlatformAdmin:  isPlatform,
+		PlatformRole:     profile.PlatformRole,
+		MembershipID:     membershipID,
+		AuthorityTier:    authorityTier,
+		EnabledModules:   enabled,
+		OnboardingStatus: profile.OnboardingStatus,
+	}, nil
+}
+
+func (s *Service) requirePlatformAdmin(ctx context.Context, userID uuid.UUID) error {
+	role, err := s.repo.GetPlatformRole(ctx, userID)
+	if err != nil || role == "" {
+		return ErrForbidden
+	}
+	return nil
+}
+
+func (s *Service) requireOrgAdmin(ctx context.Context, userID uuid.UUID, orgID uuid.UUID) error {
+	if _, err := s.repo.GetPlatformRole(ctx, userID); err == nil {
+		return nil
+	}
+	membership, err := s.repo.GetHumanMembership(ctx, userID, orgID)
+	if err != nil {
+		return ErrForbidden
+	}
+	switch membership.AuthorityTier {
+	case AuthorityOwner, AuthorityAdmin:
+		return nil
+	default:
+		return ErrForbidden
+	}
+}
+
+func normalizeModuleKeys(values []string) []string {
+	seen := map[string]struct{}{}
+	result := []string{}
+	for _, value := range values {
+		key := strings.ToLower(strings.TrimSpace(value))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, key)
+	}
+	return result
+}
+
+func validAuthorityTier(value string) bool {
+	switch value {
+	case "organization_creator", "organization_admin", "reviewer", "executor":
+		return true
+	default:
+		return false
+	}
+}
+
+func newInviteToken() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate invite token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
